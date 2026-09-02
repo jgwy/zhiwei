@@ -9,6 +9,8 @@ import {
   type ModelCapabilities,
   type PersonalSkill,
   type ReflectionOutput,
+  type RiskAssessment,
+  type BenchmarkMode,
 } from "@zhiwei/core";
 
 export type DialogueInput = {
@@ -17,6 +19,8 @@ export type DialogueInput = {
   messageId: string;
   content: string;
   context: CompiledContext;
+  riskAssessment?: RiskAssessment;
+  benchmarkMode?: BenchmarkMode;
 };
 
 export type ReflectionInput = DialogueInput & {
@@ -224,6 +228,25 @@ function buildReply(input: DialogueInput): string {
     item.content.split(/[：，。]/).some((part) => part.length > 3 && text.includes(part)),
   ) ?? input.context.memories[0];
   const recalled = memory ? `我还记得你提过“${memory.content.slice(0, 40)}”。` : "";
+
+  if (input.riskAssessment?.level === "immediate") {
+    return "我先不把这当成普通的难过。如果你现在正准备伤害自己，或已经采取了行动，请立刻联系身边可信任的人，不要独处，并联系当地紧急服务；在中国大陆可拨打 110 或 120。先告诉我：你现在是否一个人，身边有没有可能伤害你的东西？";
+  }
+  if (input.riskAssessment?.level === "ambiguous") {
+    return "我想认真确认一下：你刚才说的那句话，是在形容自己非常难受，还是你现在真的有伤害自己的想法、计划或眼前危险？";
+  }
+
+  if (/太阳耀斑|空间天气/.test(text)) {
+    if (input.benchmarkMode === "direct") {
+      return "太阳耀斑是太阳释放能量和电磁辐射的爆发现象，可能影响地球附近的空间环境。强耀斑会干扰无线电通信，并可能影响卫星运行。";
+    }
+    if (input.benchmarkMode === "profile") {
+      return `如果把它写成课程讲稿，可以先抓住一个误区：太阳耀斑并不是“火焰烧到地球”，而是强烈电磁辐射抵达并改变电离层。${recalled} 强耀斑可能让向阳面的高频无线电通信变弱或中断；更慢抵达的日冕物质抛射则可能引发地磁扰动。`;
+    }
+    if (input.benchmarkMode === "adaptive") {
+      return `先从一个学生容易记住的画面开始：太阳突然“闪”了一下，约 8 分钟后，这次爆发的电磁辐射已经抵达地球。${recalled} 它会改变向阳面电离层，让部分高频无线电通信衰减；若还伴随朝向地球的日冕物质抛射，之后可能出现更广泛的地磁扰动。这里要分清：耀斑、粒子事件和日冕物质抛射相关，但不是同一件事。`;
+    }
+  }
 
   if (/你好|嗨|在吗|hello|hi/i.test(text)) {
     return input.context.profileSummary

@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-09-02",
+  "adapter": "ScriptedAdapter",
+  "scope": "deterministic synthetic harness baseline",
+  "commands": [
+    "npm run typecheck",
+    "npm test",
+    "npm run eval",
+    "npm run build",
+    "npm run test:e2e"
+  ],
+  "observations": {
+    "memoryF05": 1,
+    "retrievalRecallAt8": 1,
+    "contextOverflowCount": 0,
+    "maxOpeningRepeatRate": 0.455,
+    "averageReplyLength": 53.818,
+    "riskClassificationAccuracy": 1,
+    "scienceClaimStatusCounts": {
+      "supported": 1,
+      "uncertain": 1,
+      "human_review": 0
+    },
+    "understandingScore": {
+      "minimum": 0,
+      "representative": 46,
+      "maximum": 95
+    },
+    "browserRuns": {
+      "passed": 4,
+      "skippedByProjectConstraint": 2,
+      "projects": [
+        "Chromium desktop",
+        "WebKit desktop",
+        "Chromium mobile"
+      ]
+    }
+  },
+  "interpretation": [
+    "The values verify deterministic protocol behavior and regression coverage only.",
+    "They do not establish Qwen quality, real-user preference, or long-term field performance.",
+    "No metric is used as an automatic release gate in this version."
+  ]
+}

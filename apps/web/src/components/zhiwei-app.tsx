@@ -157,6 +157,27 @@ export function ZhiweiApp() {
     setData((current) => current ? { ...current, user: { ...current.user, settings: { ...current.user.settings, ...settings } } } : current);
   }
 
+  async function withdrawMemory(memoryId: string) {
+    const response = await fetch(`/api/memories/${memoryId}/withdraw`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "用户在画像界面主动撤回" }),
+    });
+    if (!response.ok) throw new Error("这条记忆没有撤回成功");
+    setToast("这条认识已撤回，之后不会再用于回答。");
+    await load();
+  }
+
+  async function deleteAllData(confirmation: string) {
+    const response = await fetch("/api/user/data", {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirmation }),
+    });
+    if (!response.ok) throw new Error("数据删除没有完成");
+    window.location.reload();
+  }
+
   function startMemoryCorrection(content: string) {
     setInput(`我想修正你对我的这条认识：“${content}”。新的说法是：`);
     setMobileMenu(null);
@@ -221,7 +242,13 @@ export function ZhiweiApp() {
 
       <div className={`insight-drawer ${mobileMenu === "insights" ? "mobile-open" : ""}`}>
         <button className="mobile-insight-close" onClick={() => setMobileMenu(null)}><ChevronLeft size={18} /> 返回对话</button>
-        <InsightPanel data={data} onMemoryClick={startMemoryCorrection} onSettings={(settings) => void updateSettings(settings)} />
+        <InsightPanel
+          data={data}
+          onMemoryClick={startMemoryCorrection}
+          onSettings={(settings) => void updateSettings(settings)}
+          onWithdraw={(memoryId) => void withdrawMemory(memoryId)}
+          onDeleteAll={(confirmation) => void deleteAllData(confirmation)}
+        />
       </div>
       {mobileMenu ? <button className="mobile-scrim" onClick={() => setMobileMenu(null)} aria-label="关闭面板" /> : null}
       {toast ? <div className="toast"><Check size={16} />{toast}</div> : null}

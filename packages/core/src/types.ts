@@ -111,7 +111,40 @@ export type MemoryRecord = {
   confidence: number;
   validUntil: string | null;
   reason: string;
+  status?: "active" | "superseded" | "withdrawn";
   createdAt: string;
+};
+
+export const RiskLevelSchema = z.enum(["ordinary", "ambiguous", "immediate"]);
+export type RiskLevel = z.infer<typeof RiskLevelSchema>;
+
+export type RiskAssessment = {
+  level: RiskLevel;
+  evidence: string[];
+  reason: string;
+  responsePath: "normal-dialogue" | "clarify-current-danger" | "urgent-real-world-support";
+};
+
+export const ClaimStatusSchema = z.enum(["supported", "uncertain", "human_review"]);
+export type ClaimStatus = z.infer<typeof ClaimStatusSchema>;
+
+export type AtomicClaim = {
+  text: string;
+  status: ClaimStatus;
+  sourceTitle?: string;
+  sourceUrl?: string;
+  note?: string;
+};
+
+export const BenchmarkModeSchema = z.enum(["direct", "profile", "adaptive"]);
+export type BenchmarkMode = z.infer<typeof BenchmarkModeSchema>;
+
+export type BenchmarkOutput = {
+  mode: BenchmarkMode;
+  content: string;
+  claims: AtomicClaim[];
+  latencyMs: number;
+  estimatedTokens: number;
 };
 
 export type ProfileSnapshot = {
@@ -146,4 +179,3 @@ export type StreamEvent =
   | { type: "tool.completed"; name: string }
   | { type: "message.completed"; messageId: string; jobId: string }
   | { type: "error"; code: string; message: string };
-

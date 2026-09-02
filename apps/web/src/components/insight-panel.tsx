@@ -1,7 +1,8 @@
 "use client";
 
 import { LineChart, Line, ResponsiveContainer, YAxis, Tooltip } from "recharts";
-import { ChevronRight, Settings2 } from "lucide-react";
+import { ChevronRight, Settings2, Undo2, Trash2 } from "lucide-react";
+import { useState } from "react";
 import type { BootstrapData } from "@/lib/client-types";
 import { categoryLabel } from "@zhiwei/core/client";
 import { Toggle } from "@/components/ui/toggle";
@@ -10,14 +11,19 @@ export function InsightPanel({
   data,
   onMemoryClick,
   onSettings,
+  onWithdraw,
+  onDeleteAll,
 }: {
   data: BootstrapData;
   onMemoryClick: (content: string) => void;
   onSettings: (settings: Record<string, boolean>) => void;
+  onWithdraw: (memoryId: string) => void;
+  onDeleteAll: (confirmation: string) => void;
 }) {
   const score = data.profile?.score ?? 0;
   const components = data.profile?.understanding;
   const settings = data.user.settings;
+  const [deleteConfirmation, setDeleteConfirmation] = useState("");
   return (
     <aside className="insight-panel">
       <div className="insight-heading">
@@ -79,10 +85,15 @@ export function InsightPanel({
         <p className="profile-summary">{data.profile?.summary ?? "我们还在初识阶段。等你多说一点，我会在这里形成一段会持续更新的理解。"}</p>
         <div className="memory-list">
           {data.memories.slice(0, 6).map((memory) => (
-            <button key={memory.versionId} onClick={() => onMemoryClick(memory.content)}>
-              <span><small>{categoryLabel(memory.category)}</small>{memory.content}</span>
-              <ChevronRight size={15} />
-            </button>
+            <div className="memory-row" key={memory.versionId}>
+              <button onClick={() => onMemoryClick(memory.content)}>
+                <span><small>{categoryLabel(memory.category)}</small>{memory.content}</span>
+                <ChevronRight size={15} />
+              </button>
+              <button className="withdraw-button" onClick={() => onWithdraw(memory.id)} aria-label={`撤回记忆：${memory.content}`} title="撤回这条认识">
+                <Undo2 size={13} />
+              </button>
+            </div>
           ))}
         </div>
       </section>
@@ -104,6 +115,12 @@ export function InsightPanel({
             />
           </div>
         ))}
+        <div className="delete-data-box">
+          <strong><Trash2 size={14} /> 删除全部数据</strong>
+          <small>输入“删除知微中的全部数据”后，将清除当前匿名档案的对话、画像、Memory、Skill 与 Trace。</small>
+          <input value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} placeholder="删除知微中的全部数据" />
+          <button disabled={deleteConfirmation !== "删除知微中的全部数据"} onClick={() => onDeleteAll(deleteConfirmation)}>永久删除当前档案</button>
+        </div>
       </section>
     </aside>
   );

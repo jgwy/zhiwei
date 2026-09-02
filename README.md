@@ -20,3 +20,11 @@
 - `npm run test:e2e`
 
 开发者模式由 `DEV_MODE=true` 开启，可查看运行 Trace、记忆与画像、Skill 演化过程。
+
+## 比赛验证
+
+本版本面向赛道三方向 1“从会回答到有温度”，在开发者模式增加“比赛实验室”：同一输入可依次运行直接回答、固定 Skills＋画像、Personal Skill 三种模式，并记录原子事实主张、来源状态和体验偏好。隐私控制支持单条记忆撤回与当前匿名用户全量数据清除；风险处理采用普通陪伴、澄清、紧急现实支持三条路径。
+
+当前版本使用确定性的 `ScriptedAdapter` 验证 Harness 全链路，未把仿真结果表述为真实模型或真人效果。版本化观察值见 `docs/evidence/competition-baseline.json`。接入 Qwen/百炼时只新增 Model Gateway 适配器，上层编排、Memory MCP 和评测协议保持不变。
+
+运行 `npm run package:source` 会从当前 `HEAD` 生成 `submission/source/zhiwei-source.zip`。该压缩包只包含 Git 已跟踪文件，因此不会混入 `.env`、数据库、运行报告、报名材料或技术文档草稿。

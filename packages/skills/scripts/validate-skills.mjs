@@ -13,6 +13,8 @@ const required = [
   "emotion-and-return",
   "fact-and-tool-use",
   "personal-skill-evolver",
+  "privacy-and-withdrawal",
+  "risk-and-boundary",
 ];
 for (const name of required) {
   const skill = manifest.skills.find((item) => item.name === name);
@@ -23,4 +25,3 @@ if (manifest.skills.length !== required.length) {
   throw new Error(`应恰好包含 ${required.length} 个基底 Skills`);
 }
 process.stdout.write(`Validated ${required.length} foundation skills.\n`);
-

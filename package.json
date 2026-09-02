@@ -20,7 +20,8 @@
     "validate:skills": "node packages/skills/scripts/validate-skills.mjs",
     "db:migrate": "npm run migrate --workspace @zhiwei/core",
     "compose:up": "docker compose up --build",
-    "compose:down": "docker compose down"
+    "compose:down": "docker compose down",
+    "package:source": "node scripts/package-source.mjs"
   },
   "engines": {
     "node": ">=22"

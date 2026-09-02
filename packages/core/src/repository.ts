@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { diffJson } from "diff";
 import type { PoolClient } from "pg";
 import { getPool, withTransaction } from "./db";
@@ -11,7 +11,10 @@ import type {
   ChatMessage,
   MemoryRecord,
   PersonalSkill,
+  BenchmarkMode,
+  BenchmarkOutput,
   ProfileSnapshot,
+  RiskAssessment,
   ReflectionOutput,
 } from "./types";
 
@@ -430,7 +433,7 @@ export async function commitReflection(input: {
       const memoryId = mutation.memoryId ?? randomUUID();
       if (mutation.memoryId) {
         await client.query(
-          `UPDATE memory_versions SET is_active = false
+          `UPDATE memory_versions SET is_active = false, status = 'superseded'
            WHERE memory_id = $1 AND user_id = $2 AND is_active = true`,
           [memoryId, input.userId],
         );
@@ -443,8 +446,8 @@ export async function commitReflection(input: {
       const versionId = randomUUID();
       await client.query(
         `INSERT INTO memory_versions
-          (id, memory_id, user_id, category, content, tier, confidence, valid_until, reason, is_active)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true)`,
+          (id, memory_id, user_id, category, content, tier, confidence, valid_until, reason, is_active, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, 'active')`,
         [
           versionId,
           memoryId,
@@ -662,6 +665,177 @@ export async function addFeedback(input: {
   );
   if (!result.rowCount) throw new Error("只能评价当前用户自己的消息");
   return id;
+}
+
+export async function withdrawMemory(input: {
+  userId: string;
+  memoryId: string;
+  reason?: string;
+}) {
+  return withTransaction(async (client) => {
+    const current = await client.query(
+      `SELECT mv.id, mv.category, mv.content FROM memories m
+       JOIN memory_versions mv ON mv.memory_id = m.id AND mv.is_active = true
+       WHERE m.id = $1 AND m.user_id = $2 FOR UPDATE`,
+      [input.memoryId, input.userId],
+    );
+    if (!current.rowCount) throw new Error("找不到可撤回的活动记忆");
+    const row = current.rows[0];
+    await client.query(
+      `UPDATE memory_versions SET is_active = false, status = 'withdrawn'
+       WHERE id = $1 AND user_id = $2`,
+      [row.id, input.userId],
+    );
+    const withdrawalId = randomUUID();
+    await client.query(
+      `INSERT INTO memory_withdrawals
+        (id, user_id, memory_id, category, content_hash, reason)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        withdrawalId,
+        input.userId,
+        input.memoryId,
+        row.category,
+        createHash("sha256").update(row.content).digest("hex"),
+        input.reason ?? "用户在画像界面主动撤回",
+      ],
+    );
+    return { withdrawalId, memoryId: input.memoryId, category: row.category };
+  });
+}
+
+export async function deleteAllUserData(userId: string): Promise<void> {
+  await withTransaction(async (client) => {
+    const tables = [
+      "benchmark_preferences",
+      "benchmark_outputs",
+      "benchmark_runs",
+      "risk_events",
+      "memory_withdrawals",
+      "mcp_calls",
+      "model_runs",
+      "trace_events",
+      "activity_events",
+      "jobs",
+      "return_notes",
+      "feedback",
+      "mood_samples",
+      "memory_evidence",
+      "memory_versions",
+      "memories",
+      "profile_snapshots",
+      "conversation_summaries",
+      "messages",
+      "conversations",
+      "personal_skill_versions",
+    ];
+    for (const table of tables) {
+      await client.query(`DELETE FROM ${table} WHERE user_id = $1`, [userId]);
+    }
+    await client.query(`DELETE FROM users WHERE id = $1`, [userId]);
+  });
+}
+
+export async function recordRiskEvent(input: {
+  userId: string;
+  conversationId: string;
+  messageId: string;
+  assessment: RiskAssessment;
+}) {
+  const id = randomUUID();
+  await getPool().query(
+    `INSERT INTO risk_events
+      (id, user_id, conversation_id, message_id, level, reason, response_path, evidence)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
+    [
+      id,
+      input.userId,
+      input.conversationId,
+      input.messageId,
+      input.assessment.level,
+      input.assessment.reason,
+      input.assessment.responsePath,
+      JSON.stringify(input.assessment.evidence),
+    ],
+  );
+  return id;
+}
+
+export async function createBenchmarkRun(input: {
+  userId: string;
+  prompt: string;
+  scenario: string;
+  adapterId: string;
+  outputs: BenchmarkOutput[];
+}) {
+  return withTransaction(async (client) => {
+    const id = randomUUID();
+    await client.query(
+      `INSERT INTO benchmark_runs (id, user_id, prompt, scenario, adapter_id)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [id, input.userId, input.prompt, input.scenario, input.adapterId],
+    );
+    for (const output of input.outputs) {
+      await client.query(
+        `INSERT INTO benchmark_outputs
+          (id, run_id, user_id, mode, content, claims, latency_ms, estimated_tokens)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)`,
+        [
+          randomUUID(),
+          id,
+          input.userId,
+          output.mode,
+          output.content,
+          JSON.stringify(output.claims),
+          output.latencyMs,
+          output.estimatedTokens,
+        ],
+      );
+    }
+    return { id, outputs: input.outputs };
+  });
+}
+
+export async function recordBenchmarkPreference(input: {
+  userId: string;
+  runId: string;
+  preferredMode: BenchmarkMode;
+  reason?: string;
+}) {
+  await getPool().query(
+    `INSERT INTO benchmark_preferences (id, run_id, user_id, preferred_mode, reason)
+     SELECT $1, id, $2, $3, $4 FROM benchmark_runs
+     WHERE id = $5 AND user_id = $2
+     ON CONFLICT (run_id, user_id) DO UPDATE
+       SET preferred_mode = EXCLUDED.preferred_mode, reason = EXCLUDED.reason`,
+    [randomUUID(), input.userId, input.preferredMode, input.reason ?? null, input.runId],
+  );
+}
+
+export async function getCompetitionData(userId: string) {
+  const [runs, risks, withdrawals] = await Promise.all([
+    getPool().query(
+      `SELECT br.*,
+        COALESCE(json_agg(bo ORDER BY bo.mode) FILTER (WHERE bo.id IS NOT NULL), '[]') AS outputs,
+        bp.preferred_mode, bp.reason AS preference_reason
+       FROM benchmark_runs br
+       LEFT JOIN benchmark_outputs bo ON bo.run_id = br.id
+       LEFT JOIN benchmark_preferences bp ON bp.run_id = br.id AND bp.user_id = br.user_id
+       WHERE br.user_id = $1
+       GROUP BY br.id, bp.preferred_mode, bp.reason
+       ORDER BY br.created_at DESC LIMIT 30`,
+      [userId],
+    ),
+    getPool().query(
+      `SELECT * FROM risk_events WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50`,
+      [userId],
+    ),
+    getPool().query(
+      `SELECT * FROM memory_withdrawals WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50`,
+      [userId],
+    ),
+  ]);
+  return { runs: runs.rows, risks: risks.rows, withdrawals: withdrawals.rows };
 }
 
 export async function recordTrace(input: {

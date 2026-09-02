@@ -9,7 +9,9 @@ import {
   listMessages,
   recordTrace,
   recordModelRun,
+  recordRiskEvent,
   searchMemories,
+  assessRisk,
   updateConversationTitle,
   type PersonalSkill,
   type StreamEvent,
@@ -41,6 +43,13 @@ export async function POST(
     content: input.content,
     metadata: { traceId },
   });
+  const riskAssessment = assessRisk(input.content);
+  const riskEventId = await recordRiskEvent({
+    userId,
+    conversationId,
+    messageId: userMessage.id,
+    assessment: riskAssessment,
+  });
   if (conversation.messages.length === 0) {
     await updateConversationTitle(userId, conversationId, createTitle(input.content));
   }
@@ -58,6 +67,8 @@ export async function POST(
       "zhiwei-persona",
       "dialogue-orchestrator",
       "fact-and-tool-use",
+      "risk-and-boundary",
+      "privacy-and-withdrawal",
     ]),
     personalSkill: activeSkill?.content as PersonalSkill,
     profile,
@@ -74,6 +85,7 @@ export async function POST(
       adapter: adapter.id,
       skillVersion: activeSkill?.version,
       memoryIds: memories.map((memory) => memory.id),
+      riskAssessment,
       compiled,
     },
   });
@@ -97,6 +109,7 @@ export async function POST(
           messageId: userMessage.id,
           content: input.content,
           context: compiled,
+          riskAssessment,
         })) {
           if (request.signal.aborted) break;
           output += delta;
@@ -110,17 +123,20 @@ export async function POST(
           content: output,
           metadata: { traceId, adapter: adapter.id },
         });
-        const jobId = await enqueueJob({
-          userId,
-          type: "reflection",
-          payload: {
-            conversationId,
-            messageId: userMessage.id,
-            content: input.content,
-            kind: "chat",
-            traceId,
-          },
-        });
+        const jobId =
+          riskAssessment.level === "ordinary"
+            ? await enqueueJob({
+                userId,
+                type: "reflection",
+                payload: {
+                  conversationId,
+                  messageId: userMessage.id,
+                  content: input.content,
+                  kind: "chat",
+                  traceId,
+                },
+              })
+            : riskEventId;
         await recordTrace({
           userId,
           traceId,
