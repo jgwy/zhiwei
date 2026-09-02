@@ -1,0 +1,12 @@
+{$ZHIWEI_DOMAIN} {
+  encode zstd gzip
+  reverse_proxy web:3000 {
+    flush_interval -1
+  }
+  header {
+    -Server
+    X-Content-Type-Options nosniff
+    Referrer-Policy strict-origin-when-cross-origin
+  }
+}
+

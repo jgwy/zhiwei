@@ -1,0 +1,38 @@
+{
+  "name": "@zhiwei/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --webpack",
+    "build": "next build --webpack",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests --exclude 'tests/e2e/**'",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@zhiwei/core": "0.1.0",
+    "@zhiwei/model-gateway": "0.1.0",
+    "@zhiwei/skills": "0.1.0",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "lucide-react": "1.39.0",
+    "next": "16.3.4",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "recharts": "3.10.1",
+    "tailwind-merge": "3.6.0",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@tailwindcss/postcss": "4.3.3",
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "postcss": "^8.5.6",
+    "tailwindcss": "4.3.3",
+    "typescript": "^5.9.3",
+    "vitest": "4.1.11"
+  }
+}

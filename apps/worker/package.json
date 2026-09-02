@@ -1,0 +1,23 @@
+{
+  "name": "@zhiwei/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/worker.ts",
+    "start": "node --import tsx src/worker.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@zhiwei/core": "0.1.0",
+    "@zhiwei/model-gateway": "0.1.0",
+    "@zhiwei/skills": "0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "tsx": "4.23.13",
+    "typescript": "^5.9.3",
+    "vitest": "4.1.11"
+  }
+}

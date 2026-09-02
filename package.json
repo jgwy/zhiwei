@@ -1,0 +1,28 @@
+{
+  "name": "zhiwei",
+  "version": "0.1.0",
+  "private": true,
+  "description": "知微——会在长期交流中逐渐了解用户的 AI 陪伴应用",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @zhiwei/web",
+    "dev:worker": "npm run dev --workspace @zhiwei/worker",
+    "dev:mcp": "npm run dev --workspace @zhiwei/memory-mcp",
+    "build": "npm run generate:skills && npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:e2e": "npm run test:e2e --workspace @zhiwei/web",
+    "eval": "npm run eval --workspace @zhiwei/eval",
+    "generate:skills": "node packages/skills/scripts/generate-manifest.mjs",
+    "validate:skills": "node packages/skills/scripts/validate-skills.mjs",
+    "db:migrate": "npm run migrate --workspace @zhiwei/core",
+    "compose:up": "docker compose up --build",
+    "compose:down": "docker compose down"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [{ "name": "next" }],
+    "types": ["node"],
+    "paths": {
+      "@/*": ["./src/*"],
+      "@zhiwei/core": ["../../packages/core/src/index.ts"],
+      "@zhiwei/core/client": ["../../packages/core/src/client.ts"],
+      "@zhiwei/model-gateway": ["../../packages/model-gateway/src/index.ts"],
+      "@zhiwei/skills": ["../../packages/skills/src/index.ts"]
+    }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
+}

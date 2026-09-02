@@ -1,0 +1,105 @@
+name: zhiwei
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: zhiwei
+      POSTGRES_USER: zhiwei
+      POSTGRES_PASSWORD: zhiwei
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zhiwei -d zhiwei"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - zhiwei-postgres:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:54329:5432"
+
+  migrate:
+    build:
+      context: .
+      target: runner
+    command: ["npm", "run", "db:migrate"]
+    environment: &app-env
+      DATABASE_URL: postgres://zhiwei:zhiwei@postgres:5432/zhiwei
+      ANON_COOKIE_SECRET: ${ANON_COOKIE_SECRET:-local-development-cookie-secret-change-before-deploy}
+      INTERNAL_MCP_TOKEN: ${INTERNAL_MCP_TOKEN:-local-development-mcp-token}
+      MEMORY_MCP_URL: http://memory-mcp:4100/mcp
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-scripted}
+      MODEL_NAME: ${MODEL_NAME:-zhiwei-scripted-v1}
+      MODEL_API_KEY: ${MODEL_API_KEY:-}
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-}
+      MODEL_BUDGET_CNY: ${MODEL_BUDGET_CNY:-500}
+      DEV_MODE: ${DEV_MODE:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  memory-mcp:
+    build:
+      context: .
+      target: runner
+    command: ["npm", "run", "start", "--workspace", "@zhiwei/memory-mcp"]
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4100/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  worker:
+    build:
+      context: .
+      target: runner
+    command: ["npm", "run", "start", "--workspace", "@zhiwei/worker"]
+    environment: *app-env
+    depends_on:
+      memory-mcp:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      target: web
+    environment:
+      <<: *app-env
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
+      NEXT_PUBLIC_ACTIVITY_STREAM: ${NEXT_PUBLIC_ACTIVITY_STREAM:-true}
+    depends_on:
+      memory-mcp:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["production"]
+    environment:
+      ZHIWEI_DOMAIN: ${ZHIWEI_DOMAIN:-localhost}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      web:
+        condition: service_healthy
+
+volumes:
+  zhiwei-postgres:
+  caddy-data:
+  caddy-config:
+

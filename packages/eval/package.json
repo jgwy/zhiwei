@@ -1,0 +1,21 @@
+{
+  "name": "@zhiwei/eval",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "eval": "node --import tsx src/run.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@zhiwei/core": "0.1.0",
+    "@zhiwei/model-gateway": "0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "tsx": "4.23.13",
+    "typescript": "^5.9.3",
+    "vitest": "4.1.11"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "@zhiwei/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./client": "./src/client.ts"
+  },
+  "scripts": {
+    "migrate": "node --import tsx scripts/migrate.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "diff": "9.0.0",
+    "pg": "8.23.0",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "@types/pg": "^8.15.5",
+    "tsx": "4.23.13",
+    "typescript": "^5.9.3",
+    "vitest": "4.1.11"
+  }
+}
