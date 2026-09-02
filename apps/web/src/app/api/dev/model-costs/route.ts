@@ -3,12 +3,22 @@ import { getModelGateway } from "@zhiwei/model-gateway";
 import { NextResponse } from "next/server";
 import { isDeveloperMode, jsonError } from "@/lib/http";
 import { getSessionUserId } from "@/lib/session";
+import { isNoDbMode } from "@/lib/no-db-store";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   if (!isDeveloperMode()) return NextResponse.json({ error: "开发者模式未开启" }, { status: 404 });
   try {
+    if (isNoDbMode()) {
+      return NextResponse.json({
+        totals: { total_cost: 0, input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, reasoning_tokens: 0, search_calls: 0 },
+        runs: [],
+        pricing: [],
+        searchPricing: { turboPerCallCny: 0.003, maxPerCallCny: 0.004 },
+        disclaimer: "当前为无数据库模式，模型调用与费用不会持久化记录。",
+      });
+    }
     const userId = await getSessionUserId();
     let data = await getModelCostData(userId);
     const refreshHours = Math.max(1, Number(process.env.MODEL_PRICING_REFRESH_HOURS ?? 24));

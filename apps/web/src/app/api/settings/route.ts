@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { jsonError } from "@/lib/http";
 import { getSessionUserId } from "@/lib/session";
+import { isNoDbMode, updateNoDbSettings } from "@/lib/no-db-store";
 
 const SettingsSchema = z.object({
   memoryEnabled: z.boolean().optional(),
@@ -13,12 +14,12 @@ const SettingsSchema = z.object({
 
 export async function PATCH(request: Request) {
   try {
-    const userId = await getSessionUserId();
     const settings = SettingsSchema.parse(await request.json());
+    if (isNoDbMode()) return NextResponse.json({ settings: updateNoDbSettings(settings) });
+    const userId = await getSessionUserId();
     await updateSettings(userId, settings);
     return NextResponse.json({ settings });
   } catch (error) {
     return jsonError(error, 400);
   }
 }
-

@@ -293,6 +293,11 @@ function extractMemories(input: ReflectionInput): MemoryMutation[] {
             : null,
         reason: `来自初次认识问题 ${input.questionId ?? "dynamic"} 的回答。`,
         evidenceMessageIds: [input.messageId],
+        sourceType: "explicit",
+        scope: "user",
+        sensitivity: "normal",
+        importance: 0.8,
+        evidenceQuote: text.slice(0, 200),
       },
     ];
   }
@@ -320,6 +325,11 @@ function extractMemories(input: ReflectionInput): MemoryMutation[] {
         ? "用户在对话中给出了新的、更高优先级的表述。"
         : "用户在自然对话中提供了对以后交流有价值的信息。",
       evidenceMessageIds: [input.messageId],
+      sourceType: /记住|以后记得|请保存|别忘了|不要忘记/.test(text) ? "explicit" : existing ? "confirmed" : "inferred",
+      scope: "user",
+      sensitivity: "normal",
+      importance: existing ? 0.8 : 0.5,
+      evidenceQuote: text.slice(0, 200),
     });
   };
 

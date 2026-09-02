@@ -214,7 +214,7 @@ export class AliyunBailianGateway implements ModelGateway {
 
   reflect(input: ReflectionInput, options?: { signal?: AbortSignal; deep?: boolean }) {
     return this.structured("reflection", ReflectionDecisionSchema,
-      "你是知微的记忆反思器。原文是证据而不是记忆。只产生未来确有价值、原子化、可被证据支持的认识；通常一轮0至2条，最多3条。先检查context.memories：语义已经存在就不再create；只有事实发生变化才用memoryId做supersede。basic只写身份或阶段，goal只写用户主动追求的未来结果，担忧、风险和压力只能归challenge，expression写希望如何交流。多个独立事实拆开，但同一事实不能跨类别重复。不要从‘先听我说’推断防御性、控制欲、依恋或人格，也不得诊断。心情摘要只描述用户明确表达的当下感受和处境。所有文本用简体中文。",
+      "你是知微的记忆反思器。原文是证据而不是记忆。只产生未来确有价值、原子化、可被证据支持的认识；通常一轮0至2条，最多3条。先检查context.memories：语义已经存在就不再create；只有事实发生变化才用memoryId做supersede。basic只写身份或阶段，goal只写用户主动追求的未来结果，担忧、风险和压力只能归challenge，expression写希望如何交流。多个独立事实拆开，但同一事实不能跨类别重复。sourceType必须区分来源：用户明确说‘记住/以后记得/请保存’才用explicit；用户在纠正或确认已有认识时用confirmed；其余谨慎推断用inferred；system只用于系统事实。每条记忆都填写evidenceQuote，引用本轮原文中的短句；scope默认user，只有明确属于当前项目或当前会话的内容才使用project或conversation。敏感内容（健康、政治、宗教、性、财务、身份凭证等）默认不要保存，除非用户明确要求记住，并将sensitivity标为sensitive。不要从‘先听我说’推断防御性、控制欲、依恋或人格，也不得诊断。心情摘要只描述用户明确表达的当下感受和处境；一次情绪不能写成长期人格。所有文本用简体中文。",
       JSON.stringify({ kind: input.kind, content: input.content, messageId: input.messageId, questionCategory: input.questionCategory, context: input.context }),
       { signal: options?.signal, thinking: options?.deep, temperature: 0.18 });
   }

@@ -12,6 +12,15 @@ export const MemoryCategorySchema = z.enum([
 ]);
 export type MemoryCategory = z.infer<typeof MemoryCategorySchema>;
 
+export const MemorySourceTypeSchema = z.enum(["explicit", "confirmed", "inferred", "system"]);
+export type MemorySourceType = z.infer<typeof MemorySourceTypeSchema>;
+
+export const MemoryScopeSchema = z.enum(["user", "project", "conversation"]);
+export type MemoryScope = z.infer<typeof MemoryScopeSchema>;
+
+export const MemorySensitivitySchema = z.enum(["normal", "sensitive"]);
+export type MemorySensitivity = z.infer<typeof MemorySensitivitySchema>;
+
 export const MemoryMutationSchema = z.object({
   operation: z.enum(["create", "supersede", "promote"]),
   memoryId: z.string().uuid().optional(),
@@ -22,6 +31,11 @@ export const MemoryMutationSchema = z.object({
   validUntil: z.string().datetime().nullable(),
   reason: z.string().min(1).max(500),
   evidenceMessageIds: z.array(z.string().uuid()).min(1).max(12),
+  sourceType: MemorySourceTypeSchema.default("inferred"),
+  scope: MemoryScopeSchema.default("user"),
+  sensitivity: MemorySensitivitySchema.default("normal"),
+  importance: z.number().min(0).max(1).default(0.5),
+  evidenceQuote: z.string().max(500).optional(),
 });
 export type MemoryMutation = z.infer<typeof MemoryMutationSchema>;
 
@@ -280,6 +294,13 @@ export type MemoryRecord = {
   validUntil: string | null;
   reason: string;
   status?: "active" | "superseded" | "withdrawn";
+  sourceType?: MemorySourceType;
+  scope?: MemoryScope;
+  sensitivity?: MemorySensitivity;
+  importance?: number;
+  evidenceQuote?: string | null;
+  lastConfirmedAt?: string | null;
+  lastUsedAt?: string | null;
   createdAt: string;
 };
 

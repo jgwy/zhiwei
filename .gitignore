@@ -11,3 +11,4 @@ submission
 .env.local
 *.log
 .DS_Store
+/apps/A/

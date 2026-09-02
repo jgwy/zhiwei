@@ -1,11 +1,20 @@
 import { getActivitiesSince } from "@zhiwei/core";
 import { getSessionUserId } from "@/lib/session";
+import { isNoDbMode } from "@/lib/no-db-store";
 
 const encoder = new TextEncoder();
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
+  if (isNoDbMode()) {
+    return new Response(": no-db mode\n\n", {
+      headers: {
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-cache, no-transform",
+      },
+    });
+  }
   const userId = await getSessionUserId();
   const url = new URL(request.url);
   let cursor = url.searchParams.get("since") ?? new Date(Date.now() - 5_000).toISOString();
@@ -36,4 +45,3 @@ export async function GET(request: Request) {
     },
   });
 }
-

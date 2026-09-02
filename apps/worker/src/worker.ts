@@ -140,7 +140,7 @@ async function handleReflection(job: any) {
   }
   const decision = {
     ...reflectionResult.data,
-    memories: filterMemoryMutations(reflectionResult.data.memories, memories),
+    memories: filterMemoryMutations(reflectionResult.data.memories, memories, payload.content),
   };
 
   let profileSummary = profile?.summary ?? "仍在形成第一轮认识。";
@@ -239,17 +239,27 @@ async function tryEmbedding(userId: string, traceId: string, conversationId: str
 }
 
 function equalWeights() { return { basic: 1, goal: 1, interest: 1, expression: 1, emotion: 1, experience: 1, challenge: 1, boundary: 1 }; }
-function filterMemoryMutations(mutations: any[], active: MemoryRecord[]) {
+function filterMemoryMutations(mutations: any[], active: MemoryRecord[], sourceText: string) {
   const accepted: any[] = [];
+  const explicitRequest = /记住|以后记得|请保存|别忘了|不要忘记/u.test(sourceText);
   for (const mutation of mutations) {
     if (accepted.length >= 2) break;
     if (mutation.category === "goal" && /^(担心|害怕|忧虑|压力|风险|困扰)/u.test(mutation.content.trim())) continue;
+    if (/(密码|口令|API\s*key|密钥|验证码|身份证号|银行卡号)/iu.test(mutation.content)) continue;
+    const sensitive = /(健康|疾病|用药|政治|宗教|性取向|财务|收入|债务|身份)/u.test(mutation.content);
+    if (sensitive && !explicitRequest) continue;
     const sameCategory = [
       ...active.filter((memory) => memory.category === mutation.category).map((memory) => memory.content),
       ...accepted.filter((memory) => memory.category === mutation.category).map((memory) => memory.content),
     ];
     if (mutation.operation === "create" && sameCategory.some((content) => semanticOverlap(content, mutation.content) >= 0.72)) continue;
-    accepted.push(mutation);
+    accepted.push({
+      ...mutation,
+      sourceType: explicitRequest ? "explicit" : mutation.sourceType ?? "inferred",
+      sensitivity: sensitive ? "sensitive" : mutation.sensitivity ?? "normal",
+      evidenceQuote: mutation.evidenceQuote ?? sourceText.slice(0, 200),
+      importance: mutation.importance ?? (explicitRequest ? 0.8 : 0.5),
+    });
   }
   return accepted;
 }
