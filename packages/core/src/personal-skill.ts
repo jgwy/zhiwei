@@ -4,7 +4,7 @@ export const defaultPersonalSkill: PersonalSkill = PersonalSkillSchema.parse({
   expression: {
     warmth: 8,
     directness: 6,
-    brevity: 8,
+    brevity: 5,
     formality: 3,
     humor: 3,
     emoji: "mirror",
@@ -25,7 +25,7 @@ export const defaultPersonalSkill: PersonalSkill = PersonalSkillSchema.parse({
   evolution: {
     triggerEvidenceIds: [],
     reason: "这是知微与新用户初次相识时使用的默认交互方式。",
-    expectedEffect: "保持温和、清醒和简短，在获得真实反馈后逐渐适应用户。",
+    expectedEffect: "保持温和、清醒且有充分内容，在获得真实反馈后逐渐适应用户。",
   },
 });
 
@@ -49,4 +49,3 @@ export function normalizeDimensionWeights(
   }
   return Object.fromEntries(entries.map(([key, value]) => [key, value / total]));
 }
-

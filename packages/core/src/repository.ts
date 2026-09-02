@@ -10,6 +10,9 @@ import {
 import type {
   ChatMessage,
   MemoryRecord,
+  ModelCallMeta,
+  ModelSource,
+  ModelTask,
   PersonalSkill,
   BenchmarkMode,
   BenchmarkOutput,
@@ -75,6 +78,8 @@ export async function listConversations(userId: string) {
   return result.rows.map((row) => ({
     id: row.id,
     title: row.title,
+    titleSource: row.title_source ?? "default",
+    titleLocked: row.title_locked ?? false,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     messages: (row.messages ?? []).map(mapMessage),
@@ -106,11 +111,16 @@ export async function updateConversationTitle(
   userId: string,
   conversationId: string,
   title: string,
+  source: "model" | "manual" = "model",
 ): Promise<void> {
   await getPool().query(
-    `UPDATE conversations SET title = $3, updated_at = now()
-     WHERE id = $1 AND user_id = $2`,
-    [conversationId, userId, title.slice(0, 36)],
+    `UPDATE conversations
+     SET title = $3, title_source = $4,
+         title_locked = CASE WHEN $4 = 'manual' THEN true ELSE title_locked END,
+         updated_at = now()
+     WHERE id = $1 AND user_id = $2
+       AND ($4 = 'manual' OR title_locked = false)`,
+    [conversationId, userId, title.slice(0, 36), source],
   );
 }
 
@@ -166,6 +176,30 @@ export async function getOnboardingAnswers(userId: string) {
   return result.rows;
 }
 
+export async function getOnboardingQuestionPlan(userId: string, step: number) {
+  const result = await getPool().query(
+    `SELECT question FROM onboarding_question_plans WHERE user_id = $1 AND step = $2`,
+    [userId, step],
+  );
+  return result.rows[0]?.question ?? null;
+}
+
+export async function saveOnboardingQuestionPlan(input: {
+  userId: string;
+  step: number;
+  question: unknown;
+  modelName: string;
+}) {
+  const result = await getPool().query(
+    `INSERT INTO onboarding_question_plans (id, user_id, step, question, model_name)
+     VALUES ($1, $2, $3, $4::jsonb, $5)
+     ON CONFLICT (user_id, step) DO UPDATE SET question = EXCLUDED.question
+     RETURNING question`,
+    [randomUUID(), input.userId, input.step, JSON.stringify(input.question), input.modelName],
+  );
+  return result.rows[0].question;
+}
+
 export async function setOnboardingComplete(
   userId: string,
   complete: boolean,
@@ -186,17 +220,35 @@ export async function updateSettings(
   );
 }
 
+export async function getUserSettings(userId: string) {
+  await ensureUser(userId);
+  const result = await getPool().query(`SELECT settings FROM users WHERE id = $1`, [userId]);
+  return result.rows[0]?.settings ?? {};
+}
+
 export async function enqueueJob(input: {
   userId: string;
-  type: "reflection" | "evolve_skill";
+  type:
+    | "reflection"
+    | "profile_synthesis"
+    | "session_summary"
+    | "return_note"
+    | "evolve_skill"
+    | "conversation_title"
+    | "memory_embedding";
   payload: Record<string, unknown>;
+  idempotencyKey?: string;
 }): Promise<string> {
   const id = randomUUID();
-  await getPool().query(
-    `INSERT INTO jobs (id, user_id, type, payload) VALUES ($1, $2, $3, $4::jsonb)`,
-    [id, input.userId, input.type, JSON.stringify(input.payload)],
+  const result = await getPool().query(
+    `INSERT INTO jobs (id, user_id, type, payload, idempotency_key)
+     VALUES ($1, $2, $3, $4::jsonb, $5)
+     ON CONFLICT (user_id, idempotency_key) WHERE idempotency_key IS NOT NULL
+     DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
+     RETURNING id`,
+    [id, input.userId, input.type, JSON.stringify(input.payload), input.idempotencyKey ?? null],
   );
-  return id;
+  return result.rows[0].id;
 }
 
 export async function claimJob(): Promise<any | null> {
@@ -227,11 +279,12 @@ export async function completeJob(jobId: string): Promise<void> {
 
 export async function failJob(job: any, error: unknown): Promise<void> {
   const terminal = Number(job.attempts ?? 0) + 1 >= 3;
+  const seconds = Math.min(60, 2 ** Math.max(1, Number(job.attempts ?? 1)));
   await getPool().query(
     `UPDATE jobs SET status = $2, last_error = $3,
-       run_after = CASE WHEN $2 = 'pending' THEN now() + interval '5 seconds' ELSE run_after END
+       run_after = CASE WHEN $2 = 'pending' THEN now() + make_interval(secs => $4) ELSE run_after END
      WHERE id = $1`,
-    [job.id, terminal ? "failed" : "pending", error instanceof Error ? error.message : String(error)],
+    [job.id, terminal ? "failed" : "pending", error instanceof Error ? error.message : String(error), seconds],
   );
 }
 
@@ -265,8 +318,53 @@ export async function searchMemories(
   userId: string,
   query: string,
   limit = 8,
+  queryEmbedding?: number[],
 ): Promise<MemoryRecord[]> {
+  if (queryEmbedding?.length === 1024) {
+    const vector = `[${queryEmbedding.join(",")}]`;
+    const result = await getPool().query(
+      `SELECT m.id, mv.id AS version_id, mv.category, mv.content, mv.tier,
+              mv.confidence, mv.valid_until, mv.reason, mv.created_at,
+              1 - (mv.embedding_v2 <=> $2::vector) AS similarity
+       FROM memories m
+       JOIN memory_versions mv ON mv.memory_id = m.id AND mv.is_active = true
+       JOIN users u ON u.id = m.user_id
+       WHERE m.user_id = $1
+         AND (u.settings->>'memoryEnabled')::boolean = true
+         AND (mv.valid_until IS NULL OR mv.valid_until > now())
+         AND mv.embedding_v2 IS NOT NULL
+       ORDER BY mv.embedding_v2 <=> $2::vector LIMIT 32`,
+      [userId, vector],
+    );
+    if (result.rowCount) {
+      return rankHybridMemories(result.rows, query, limit);
+    }
+  }
   return rankMemories(await getActiveMemories(userId), query, limit);
+}
+
+function rankHybridMemories(rows: any[], query: string, limit: number): MemoryRecord[] {
+  const terms = query.replace(/[，。！？,.!?]/g, " ").split(/\s+/).filter((term) => term.length >= 2).slice(0, 12);
+  const now = Date.now();
+  return rows.map((row) => {
+    const lexical = terms.length
+      ? terms.filter((term) => String(row.content).includes(term)).length / terms.length
+      : 0;
+    const ageDays = Math.max(0, (now - new Date(row.created_at).getTime()) / 86_400_000);
+    const freshness = Math.exp(-ageDays / 90);
+    const score = Number(row.similarity) * 0.55 + lexical * 0.15 + Number(row.confidence) * 0.15 + freshness * 0.1 + (row.tier === "long" ? 0.05 : 0);
+    return { row, score };
+  }).sort((a, b) => b.score - a.score).slice(0, limit).map(({ row }) => ({
+    id: row.id,
+    versionId: row.version_id,
+    category: row.category,
+    content: row.content,
+    tier: row.tier,
+    confidence: Number(row.confidence),
+    validUntil: row.valid_until,
+    reason: row.reason,
+    createdAt: row.created_at,
+  }));
 }
 
 export function rankMemories(
@@ -421,6 +519,7 @@ export async function commitReflection(input: {
   conversationId: string;
   sourceMessageId: string;
   reflection: ReflectionOutput;
+  embeddings?: Array<number[] | null>;
 }): Promise<{ memoryCount: number; profile: ProfileSnapshot | null }> {
   return withTransaction(async (client) => {
     const settingsResult = await client.query(`SELECT settings FROM users WHERE id = $1`, [
@@ -429,7 +528,7 @@ export async function commitReflection(input: {
     const settings = settingsResult.rows[0]?.settings ?? {};
     const memoryEnabled = settings.memoryEnabled !== false;
 
-    for (const mutation of memoryEnabled ? input.reflection.memories : []) {
+    for (const [mutationIndex, mutation] of (memoryEnabled ? input.reflection.memories : []).entries()) {
       const memoryId = mutation.memoryId ?? randomUUID();
       if (mutation.memoryId) {
         await client.query(
@@ -446,8 +545,8 @@ export async function commitReflection(input: {
       const versionId = randomUUID();
       await client.query(
         `INSERT INTO memory_versions
-          (id, memory_id, user_id, category, content, tier, confidence, valid_until, reason, is_active, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, 'active')`,
+          (id, memory_id, user_id, category, content, tier, confidence, valid_until, reason, embedding_v2, is_active, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector, true, 'active')`,
         [
           versionId,
           memoryId,
@@ -458,6 +557,9 @@ export async function commitReflection(input: {
           mutation.confidence,
           mutation.validUntil,
           mutation.reason,
+          input.embeddings?.[mutationIndex]?.length === 1024
+            ? `[${input.embeddings[mutationIndex]!.join(",")}]`
+            : null,
         ],
       );
       for (const evidenceId of mutation.evidenceMessageIds) {
@@ -469,7 +571,7 @@ export async function commitReflection(input: {
       }
     }
 
-    if (memoryEnabled) {
+    if (memoryEnabled && input.reflection.summaryChanged !== false) {
       await client.query(
         `INSERT INTO conversation_summaries (id, conversation_id, user_id, summary, source_message_id)
          VALUES ($1, $2, $3, $4, $5)`,
@@ -501,7 +603,7 @@ export async function commitReflection(input: {
     }
 
     let profile: ProfileSnapshot | null = null;
-    if (memoryEnabled) {
+    if (memoryEnabled && input.reflection.profileChanged !== false) {
       const memoriesResult = await client.query(
       `SELECT m.id, mv.id AS version_id, mv.category, mv.content, mv.tier,
               mv.confidence, mv.valid_until, mv.reason, mv.created_at
@@ -707,6 +809,8 @@ export async function withdrawMemory(input: {
 export async function deleteAllUserData(userId: string): Promise<void> {
   await withTransaction(async (client) => {
     const tables = [
+      "message_sources",
+      "onboarding_question_plans",
       "benchmark_preferences",
       "benchmark_outputs",
       "benchmark_runs",
@@ -766,14 +870,16 @@ export async function createBenchmarkRun(input: {
   prompt: string;
   scenario: string;
   adapterId: string;
+  modelName?: string;
+  transport?: string;
   outputs: BenchmarkOutput[];
 }) {
   return withTransaction(async (client) => {
     const id = randomUUID();
     await client.query(
-      `INSERT INTO benchmark_runs (id, user_id, prompt, scenario, adapter_id)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [id, input.userId, input.prompt, input.scenario, input.adapterId],
+      `INSERT INTO benchmark_runs (id, user_id, prompt, scenario, adapter_id, model_name, transport)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [id, input.userId, input.prompt, input.scenario, input.adapterId, input.modelName ?? null, input.transport ?? null],
     );
     for (const output of input.outputs) {
       await client.query(
@@ -813,7 +919,7 @@ export async function recordBenchmarkPreference(input: {
 }
 
 export async function getCompetitionData(userId: string) {
-  const [runs, risks, withdrawals] = await Promise.all([
+  const [runs, risks, withdrawals, conversations] = await Promise.all([
     getPool().query(
       `SELECT br.*,
         COALESCE(json_agg(bo ORDER BY bo.mode) FILTER (WHERE bo.id IS NOT NULL), '[]') AS outputs,
@@ -834,8 +940,9 @@ export async function getCompetitionData(userId: string) {
       `SELECT * FROM memory_withdrawals WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50`,
       [userId],
     ),
+    listConversations(userId),
   ]);
-  return { runs: runs.rows, risks: risks.rows, withdrawals: withdrawals.rows };
+  return { runs: runs.rows, risks: risks.rows, withdrawals: withdrawals.rows, conversations };
 }
 
 export async function recordTrace(input: {
@@ -862,40 +969,154 @@ export async function recordTrace(input: {
 export async function recordModelRun(input: {
   userId: string;
   traceId: string;
-  role: "dialogue" | "reflection" | "skill-evolution" | "question-planner" | "return-note";
+  role: ModelTask;
   adapterId: string;
+  modelName?: string;
+  transport?: string;
+  conversationId?: string;
   inputTokens: number;
   outputTokens: number;
+  cachedInputTokens?: number;
+  reasoningTokens?: number;
+  searchCalls?: number;
+  estimatedInputTokens?: number;
+  estimatedOutputTokens?: number;
   estimatedCostCny?: number;
+  firstTokenMs?: number;
+  requestId?: string;
+  retries?: number;
+  fallbackFrom?: string;
+  errorCode?: string;
+  thinking?: boolean;
+  sources?: ModelSource[];
+  promptVersion?: string;
+  status?: "running" | "completed" | "failed" | "cancelled";
   durationMs: number;
   finishReason: string;
 }) {
-  const configuredBudget = Number(process.env.MODEL_BUDGET_CNY ?? 500);
-  const spent = await getPool().query(
-    `SELECT COALESCE(sum(estimated_cost_cny), 0)::float AS total FROM model_runs`,
-  );
-  const projected = Number(spent.rows[0]?.total ?? 0) + (input.estimatedCostCny ?? 0);
-  if (projected > configuredBudget) {
-    throw new Error(`模型预算将超过 ¥${configuredBudget}，已停止新的付费调用`);
-  }
   await getPool().query(
     `INSERT INTO model_runs
       (id, user_id, trace_id, role, adapter_id, model_name, input_tokens,
-       output_tokens, estimated_cost_cny, duration_ms, finish_reason)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+       output_tokens, estimated_cost_cny, duration_ms, finish_reason,
+       conversation_id, status, cached_input_tokens, reasoning_tokens, search_calls,
+       estimated_input_tokens, estimated_output_tokens, first_token_ms, request_id,
+       retries, fallback_from, error_code, thinking, sources, prompt_version, transport)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+       $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25::jsonb, $26, $27)`,
     [
       randomUUID(),
       input.userId,
       input.traceId,
       input.role,
       input.adapterId,
-      process.env.MODEL_NAME ?? input.adapterId,
+      input.modelName ?? process.env.MODEL_NAME ?? input.adapterId,
       input.inputTokens,
       input.outputTokens,
       input.estimatedCostCny ?? 0,
       input.durationMs,
       input.finishReason,
+      input.conversationId ?? null,
+      input.status ?? "completed",
+      input.cachedInputTokens ?? 0,
+      input.reasoningTokens ?? 0,
+      input.searchCalls ?? 0,
+      input.estimatedInputTokens ?? input.inputTokens,
+      input.estimatedOutputTokens ?? input.outputTokens,
+      input.firstTokenMs ?? null,
+      input.requestId ?? null,
+      input.retries ?? 0,
+      input.fallbackFrom ?? null,
+      input.errorCode ?? null,
+      input.thinking ?? false,
+      JSON.stringify(input.sources ?? []),
+      input.promptVersion ?? "v1",
+      input.transport ?? "unknown",
     ],
+  );
+}
+
+export async function recordModelCallMeta(input: {
+  userId: string;
+  traceId: string;
+  conversationId?: string;
+  adapterId: string;
+  meta: ModelCallMeta;
+  promptVersion?: string;
+}) {
+  return recordModelRun({
+    userId: input.userId,
+    traceId: input.traceId,
+    conversationId: input.conversationId,
+    role: input.meta.task,
+    adapterId: input.adapterId,
+    modelName: input.meta.model,
+    transport: input.meta.transport,
+    inputTokens: input.meta.usage.inputTokens,
+    outputTokens: input.meta.usage.outputTokens,
+    cachedInputTokens: input.meta.usage.cachedInputTokens,
+    reasoningTokens: input.meta.usage.reasoningTokens,
+    searchCalls: input.meta.usage.searchCalls,
+    estimatedCostCny: input.meta.estimatedCostCny,
+    firstTokenMs: input.meta.firstTokenMs,
+    requestId: input.meta.requestId,
+    retries: input.meta.retries,
+    fallbackFrom: input.meta.fallbackFrom,
+    thinking: input.meta.thinking,
+    sources: input.meta.sources,
+    durationMs: input.meta.durationMs,
+    finishReason: input.meta.finishReason,
+    promptVersion: input.promptVersion,
+  });
+}
+
+export async function saveMessageSources(input: {
+  userId: string;
+  messageId: string;
+  sources: ModelSource[];
+}) {
+  for (const source of input.sources) {
+    await getPool().query(
+      `INSERT INTO message_sources (id, message_id, user_id, title, url, site_name)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [randomUUID(), input.messageId, input.userId, source.title, source.url, source.siteName ?? null],
+    );
+  }
+}
+
+export async function getModelCostData(userId: string) {
+  const [runs, totals, pricing] = await Promise.all([
+    getPool().query(`SELECT * FROM model_runs WHERE user_id = $1 ORDER BY created_at DESC LIMIT 200`, [userId]),
+    getPool().query(
+      `SELECT COALESCE(sum(estimated_cost_cny), 0)::float AS total_cost,
+              COALESCE(sum(input_tokens), 0)::int AS input_tokens,
+              COALESCE(sum(output_tokens), 0)::int AS output_tokens,
+              COALESCE(sum(cached_input_tokens), 0)::int AS cached_input_tokens,
+              COALESCE(sum(reasoning_tokens), 0)::int AS reasoning_tokens,
+              COALESCE(sum(search_calls), 0)::int AS search_calls
+       FROM model_runs WHERE user_id = $1`,
+      [userId],
+    ),
+    getPool().query(
+      `SELECT DISTINCT ON (model_name) * FROM model_pricing_snapshots
+       ORDER BY model_name, fetched_at DESC`,
+    ),
+  ]);
+  return { runs: runs.rows, totals: totals.rows[0], pricing: pricing.rows };
+}
+
+export async function recordPricingSnapshot(input: {
+  modelName: string;
+  provider: string;
+  prices: unknown;
+  capabilities?: unknown;
+  contextWindow?: number | null;
+  requestId?: string;
+}) {
+  return getPool().query(
+    `INSERT INTO model_pricing_snapshots
+      (id, model_name, provider, prices, capabilities, context_window, source_request_id)
+     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7)`,
+    [randomUUID(), input.modelName, input.provider, JSON.stringify(input.prices), JSON.stringify(input.capabilities ?? []), input.contextWindow ?? null, input.requestId ?? null],
   );
 }
 

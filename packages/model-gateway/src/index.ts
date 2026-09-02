@@ -13,6 +13,8 @@ import {
   type BenchmarkMode,
 } from "@zhiwei/core";
 
+export * from "./gateway";
+
 export type DialogueInput = {
   userId: string;
   conversationId: string;

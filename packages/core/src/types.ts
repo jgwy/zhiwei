@@ -52,6 +52,8 @@ export const ReflectionOutputSchema = z.object({
     .nullable(),
   shouldEvolveSkill: z.boolean(),
   evolutionReason: z.string().max(500).nullable(),
+  profileChanged: z.boolean().optional().default(true),
+  summaryChanged: z.boolean().optional().default(true),
 });
 export type ReflectionOutput = z.infer<typeof ReflectionOutputSchema>;
 
@@ -94,6 +96,172 @@ export type ModelCapabilities = {
   maxContextTokens: number;
 };
 
+export const ClaimStatusSchema = z.enum(["supported", "uncertain", "human_review"]);
+export type ClaimStatus = z.infer<typeof ClaimStatusSchema>;
+
+export const ModelTaskSchema = z.enum([
+  "dialogue",
+  "conversation-title",
+  "question-planner",
+  "reflection",
+  "profile-synthesis",
+  "session-summary",
+  "return-note",
+  "skill-evolution",
+  "fact-routing",
+  "fact-brief",
+  "embedding",
+]);
+export type ModelTask = z.infer<typeof ModelTaskSchema>;
+
+export type ModelSource = {
+  title: string;
+  url: string;
+  siteName?: string;
+};
+
+export type ModelUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  reasoningTokens: number;
+  searchCalls: number;
+};
+
+export type ModelCallMeta = {
+  task: ModelTask;
+  provider: string;
+  model: string;
+  transport: "openai-responses" | "openai-chat-completions" | "dashscope-multimodal+openai-chat" | "openai-embeddings" | "scripted" | "replay" | "fault";
+  requestId?: string;
+  usage: ModelUsage;
+  estimatedCostCny: number;
+  firstTokenMs?: number;
+  durationMs: number;
+  finishReason: string;
+  retries: number;
+  fallbackFrom?: string;
+  sources: ModelSource[];
+  thinking: boolean;
+};
+
+export type ModelStreamEvent =
+  | { type: "text.delta"; delta: string }
+  | { type: "source"; source: ModelSource }
+  | { type: "completed"; meta: ModelCallMeta };
+
+export const ConversationTitleOutputSchema = z.object({
+  title: z.string().trim().min(4).max(18),
+});
+export type ConversationTitleOutput = z.infer<typeof ConversationTitleOutputSchema>;
+
+export const QuestionPlannerOutputSchema = z.object({
+  gapCandidates: z.array(z.object({
+    category: MemoryCategorySchema,
+    text: z.string().min(4).max(60),
+    options: z.array(z.string().min(1).max(40)).min(2).max(4),
+    rationale: z.string().min(1).max(180),
+  })).min(2).max(4),
+  adjacentCandidates: z.array(z.object({
+    category: MemoryCategorySchema,
+    text: z.string().min(4).max(60),
+    options: z.array(z.string().min(1).max(40)).min(2).max(4),
+    rationale: z.string().min(1).max(180),
+  })).min(1).max(2),
+});
+export type QuestionPlannerOutput = z.infer<typeof QuestionPlannerOutputSchema>;
+
+export const ReflectionDecisionSchema = z.object({
+  memories: z.array(MemoryMutationSchema).max(12),
+  mood: z.object({
+    score: z.number().int().min(-5).max(5),
+    summary: z.string().min(1).max(240),
+    meaningful: z.boolean(),
+  }).nullable(),
+  refreshProfile: z.boolean(),
+  refreshSummary: z.boolean(),
+  returnTopic: z.string().min(1).max(240).nullable(),
+  shouldEvolveSkill: z.boolean(),
+  evolutionReason: z.string().max(500).nullable(),
+  needsDeepReview: z.boolean(),
+  decisionReason: z.string().min(1).max(500),
+});
+export type ReflectionDecision = z.infer<typeof ReflectionDecisionSchema>;
+
+export const ProfileSynthesisOutputSchema = z.object({
+  summary: z.string().min(1).max(1600),
+  dimensionWeights: z.object({
+    basic: z.number().min(0).max(1),
+    goal: z.number().min(0).max(1),
+    interest: z.number().min(0).max(1),
+    expression: z.number().min(0).max(1),
+    emotion: z.number().min(0).max(1),
+    experience: z.number().min(0).max(1),
+    challenge: z.number().min(0).max(1),
+    boundary: z.number().min(0).max(1),
+  }),
+});
+export type ProfileSynthesisOutput = z.infer<typeof ProfileSynthesisOutputSchema>;
+
+export const SessionSummaryOutputSchema = z.object({
+  summary: z.string().min(1).max(1200),
+});
+
+export const ReturnNoteOutputSchema = z.object({
+  content: z.string().min(1).max(300),
+});
+
+export const FactRoutingOutputSchema = z.object({
+  needsSearch: z.boolean(),
+  scientific: z.boolean().default(false),
+  responseMode: z.enum(["character", "emotional-deep"]).default("character"),
+  depth: z.enum(["light", "moderate", "high"]).default("light"),
+  physicalSymptom: z.boolean().default(false),
+  query: z.string().max(300),
+  impact: z.enum(["ordinary", "high"]),
+  reason: z.string().min(1).max(240),
+});
+export type FactRoutingOutput = z.infer<typeof FactRoutingOutputSchema>;
+
+export const EmotionalReplyOutputSchema = z.object({
+  paragraphs: z.array(z.string().trim().min(20).max(1_500)).min(2).max(4),
+  acknowledgedThreads: z.array(z.string().trim().min(1).max(120)).min(1).max(3),
+  primaryNeed: z.enum(["keep-listening", "clarify-together", "gentle-advice"]),
+  clarifyingDirection: z.string().trim().min(1).max(180).nullable(),
+}).superRefine((value, context) => {
+  const content = value.paragraphs.join("\n\n");
+  if (content.length < 120) {
+    context.addIssue({ code: "custom", message: "情绪回复正文至少需要120个字符" });
+  }
+  const questionCount = [...content.matchAll(/[？?]/gu)].length;
+  if (questionCount > 2) {
+    context.addIssue({ code: "custom", message: "情绪回复至多保留两个彼此相关的澄清问题" });
+  }
+});
+export type EmotionalReplyOutput = z.infer<typeof EmotionalReplyOutputSchema>;
+
+export const FactBriefOutputSchema = z.object({
+  claims: z.array(z.object({
+    text: z.string().min(1).max(500),
+    status: ClaimStatusSchema,
+    sourceIndices: z.array(z.number().int().min(1)).max(8),
+    note: z.string().max(240).optional(),
+  })).max(12),
+  summary: z.string().min(1).max(1600),
+});
+export type FactBriefOutput = z.infer<typeof FactBriefOutputSchema>;
+
+export const ScienceExplanationOutputSchema = z.object({
+  content: z.string().min(1).max(8_000),
+  claimIndicesUsed: z.array(z.number().int().min(1)).max(12),
+  analogy: z.object({
+    text: z.string().min(1).max(300),
+    boundary: z.string().min(1).max(300),
+  }).nullable(),
+  distinctions: z.array(z.string().min(1).max(240)).max(8),
+});
+export type ScienceExplanationOutput = z.infer<typeof ScienceExplanationOutputSchema>;
+
 export type ChatMessage = {
   id: string;
   role: "user" | "assistant" | "system";
@@ -124,9 +292,6 @@ export type RiskAssessment = {
   reason: string;
   responsePath: "normal-dialogue" | "clarify-current-danger" | "urgent-real-world-support";
 };
-
-export const ClaimStatusSchema = z.enum(["supported", "uncertain", "human_review"]);
-export type ClaimStatus = z.infer<typeof ClaimStatusSchema>;
 
 export type AtomicClaim = {
   text: string;
@@ -177,5 +342,5 @@ export type StreamEvent =
   | { type: "text.delta"; delta: string }
   | { type: "tool.started"; name: string }
   | { type: "tool.completed"; name: string }
-  | { type: "message.completed"; messageId: string; jobId: string }
+  | { type: "message.completed"; messageId: string; jobId: string; sources?: ModelSource[] }
   | { type: "error"; code: string; message: string };

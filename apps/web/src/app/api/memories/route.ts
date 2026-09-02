@@ -1,8 +1,8 @@
-import { getActiveMemories } from "@zhiwei/core";
+import { callMemoryMcp } from "@zhiwei/core";
 import { NextResponse } from "next/server";
 import { getSessionUserId } from "@/lib/session";
 
 export async function GET() {
-  return NextResponse.json({ memories: await getActiveMemories(await getSessionUserId()) });
+  const userId = await getSessionUserId();
+  return NextResponse.json(await callMemoryMcp({ tool: "memory_search", userId, arguments: { query: "当前活动认识", limit: 20 } }));
 }
-

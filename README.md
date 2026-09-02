@@ -10,7 +10,17 @@
 4. 运行 `docker compose up --build`。
 5. 打开 `http://localhost:3000`。
 
-默认使用零费用的 `ScriptedAdapter`。真实模型接入时只在服务端设置 `MODEL_PROVIDER`、`MODEL_NAME`、`MODEL_API_KEY` 与可选的 `MODEL_BASE_URL`。
+默认使用零费用的 `ScriptedGateway`。接入阿里云百炼时，在服务端设置：
+
+- `MODEL_PROVIDER=aliyun-bailian`
+- `MODEL_DIALOGUE_NAME=qwen-plus-character`
+- `MODEL_BACKGROUND_NAME=qwen3.8-flash`
+- `MODEL_EMBEDDING_NAME=qwen3.7-text-embedding`
+- `MODEL_API_KEY` 与工作空间专属 `MODEL_BASE_URL`
+
+真实模式按任务使用三种协议：普通陪伴回复走 Character Responses API 且不启用供应商长期记忆；高情绪浓度或身体不适与现实压力并存的回合由既有路由器识别，走 3.8 Flash 严格结构输出；其他结构化任务走 Chat Completions JSON Schema；事实查证走 DashScope 原生多模态接口以保留完整来源。向量仍使用 OpenAI 兼容 Embeddings。所有协议在上层统一为任务、流事件、usage、费用、延迟、来源与标准错误。
+
+科学问题会额外加载只读的 `scientific-answering` 基底 Skill，并经过独立 Science MCP：先审查来源等级和原子主张，再把通过审查的主张交给回答模型。它提供 `science_source_assess` 与 `science_claim_audit`，不联网、不调用模型、不读写用户记忆；高影响主张缺少权威一手证据时会转为需要人工复核。项目当前包含 11 个带版本与 SHA-256 清单的不可变基底 Skills。
 
 ## 验证
 
@@ -19,12 +29,12 @@
 - `npm run eval`
 - `npm run test:e2e`
 
-开发者模式由 `DEV_MODE=true` 开启，可查看运行 Trace、记忆与画像、Skill 演化过程。
+开发者模式由 `DEV_MODE=true` 开启，可查看运行追踪、记忆与画像、个人技能演化、比赛实验室和模型费用。费用按模型目录价格、实际 Token、缓存 Token 与搜索次数估算，不等同于阿里云账单，也不会触发产品停用。
 
 ## 比赛验证
 
 本版本面向赛道三方向 1“从会回答到有温度”，在开发者模式增加“比赛实验室”：同一输入可依次运行直接回答、固定 Skills＋画像、Personal Skill 三种模式，并记录原子事实主张、来源状态和体验偏好。隐私控制支持单条记忆撤回与当前匿名用户全量数据清除；风险处理采用普通陪伴、澄清、紧急现实支持三条路径。
 
-当前版本使用确定性的 `ScriptedAdapter` 验证 Harness 全链路，未把仿真结果表述为真实模型或真人效果。版本化观察值见 `docs/evidence/competition-baseline.json`。接入 Qwen/百炼时只新增 Model Gateway 适配器，上层编排、Memory MCP 和评测协议保持不变。
+免费回归默认使用确定性的 `ScriptedGateway`、`ReplayGateway` 与 `FaultGateway`，不会产生模型费用。真实模式使用百炼千问多协议网关，已覆盖模型生成标题、动态问卷、长期记忆、人物综述、心情、滚动摘要、回访、Personal Skill 演化、科学事实查证与来源审计；真实模式失败时不会静默退回仿真回答。版本化观察值见 `docs/evidence/competition-baseline.json`。
 
 运行 `npm run package:source` 会从当前 `HEAD` 生成 `submission/source/zhiwei-source.zip`。该压缩包只包含 Git 已跟踪文件，因此不会混入 `.env`、数据库、运行报告、报名材料或技术文档草稿。

@@ -2,6 +2,7 @@
 
 import {
   ArrowUp,
+  ArrowDown,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -23,6 +24,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessage } from "@zhiwei/core/client";
 import type { BootstrapData, ConversationView } from "@/lib/client-types";
 import { readSseStream, formatTime } from "@/lib/utils";
+import { isNearChatBottom } from "@/lib/chat-scroll";
 import { Button } from "@/components/ui/button";
 import { Onboarding } from "@/components/onboarding";
 import { InsightPanel } from "@/components/insight-panel";
@@ -30,31 +32,63 @@ import { DeveloperPanel } from "@/components/developer-panel";
 
 export function ZhiweiApp() {
   const [data, setData] = useState<BootstrapData | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [insightOpen, setInsightOpen] = useState(true);
   const [mobileMenu, setMobileMenu] = useState<"conversations" | "insights" | null>(null);
   const [developerMode, setDeveloperMode] = useState(false);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [receipts, setReceipts] = useState<Record<string, { count: number; open: boolean }>>({});
   const abortRef = useRef<AbortController | null>(null);
   const messageEndRef = useRef<HTMLDivElement | null>(null);
+  const messageScrollRef = useRef<HTMLDivElement | null>(null);
+  const followLatestRef = useRef(true);
+  const forceScrollRef = useRef(false);
+  const lastScrolledConversationRef = useRef<string | null>(null);
   const dataRef = useRef<BootstrapData | null>(null);
   const activeIdRef = useRef<string | null>(null);
 
   async function load() {
-    const response = await fetch("/api/bootstrap", { cache: "no-store" });
-    if (!response.ok) throw new Error("知微没有成功启动，请稍后重试。 ");
-    const next = (await response.json()) as BootstrapData;
-    setData(next);
-    setActiveId((current) => current ?? next.conversations[0]?.id ?? null);
+    try {
+      const response = await fetch("/api/bootstrap", { cache: "no-store" });
+      if (!response.ok) throw new Error(await responseMessage(response, "知微没有成功启动，请稍后重试。"));
+      const next = (await response.json()) as BootstrapData;
+      setData(next);
+      setLoadError(null);
+      setActiveId((current) => current ?? next.conversations[0]?.id ?? null);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "知微没有成功启动，请稍后重试。");
+    }
   }
 
   useEffect(() => { void load(); }, []);
   useEffect(() => { dataRef.current = data; }, [data]);
   useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
-  useEffect(() => { messageEndRef.current?.scrollIntoView({ behavior: streaming ? "auto" : "smooth" }); }, [data, streaming]);
+  const active = useMemo(
+    () => data?.conversations.find((conversation) => conversation.id === activeId) ?? null,
+    [data, activeId],
+  );
+  const lastMessage = active?.messages.at(-1);
+  const messageScrollSignal = `${activeId ?? "none"}:${active?.messages.length ?? 0}:${lastMessage?.id ?? "none"}:${lastMessage?.content.length ?? 0}:${lastMessage?.metadata?.status ?? ""}`;
+
+  useEffect(() => {
+    const conversationChanged = lastScrolledConversationRef.current !== activeId;
+    if (!conversationChanged && !forceScrollRef.current && !followLatestRef.current) return;
+
+    lastScrolledConversationRef.current = activeId;
+    forceScrollRef.current = false;
+    const frame = window.requestAnimationFrame(() => {
+      const container = messageScrollRef.current;
+      if (!container) return;
+      container.scrollTop = container.scrollHeight;
+      followLatestRef.current = true;
+      setShowJumpToLatest(false);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeId, messageScrollSignal]);
   useEffect(() => {
     if (!data?.onboarding.complete || process.env.NEXT_PUBLIC_ACTIVITY_STREAM === "false") return;
     const source = new EventSource("/api/activity/stream");
@@ -75,24 +109,44 @@ export function ZhiweiApp() {
       window.setTimeout(() => setToast(null), 3_500);
       void load();
     });
+    source.addEventListener("conversation.title.updated", (raw) => {
+      const event = JSON.parse((raw as MessageEvent).data);
+      setData((current) => current ? {
+        ...current,
+        conversations: current.conversations.map((conversation) => conversation.id === event.payload.conversationId
+          ? { ...conversation, title: event.payload.title, titleSource: "model" }
+          : conversation),
+      } : current);
+    });
     return () => source.close();
   }, [data?.onboarding.complete]);
 
-  const active = useMemo(
-    () => data?.conversations.find((conversation) => conversation.id === activeId) ?? null,
-    [data, activeId],
-  );
-
-  if (!data) return <div className="app-loading"><div className="loading-mark">知微</div><span>正在准备一段安静的对话…</span></div>;
+  if (!data) return <div className="app-loading"><div className="loading-mark">知微</div><span>{loadError ?? "正在准备一段安静的对话…"}</span>{loadError ? <button onClick={() => void load()}>重新加载</button> : null}</div>;
   if (!data.onboarding.complete) return <Onboarding onboarding={data.onboarding} onComplete={async () => { await fetch("/api/onboarding/complete", { method: "POST" }); await load(); }} />;
   if (developerMode) return <DeveloperPanel onClose={() => setDeveloperMode(false)} />;
 
   async function createConversation() {
     const response = await fetch("/api/conversations", { method: "POST" });
+    if (!response.ok) throw new Error(await responseMessage(response, "新的对话没有创建成功，请重试。"));
     const result = await response.json();
     await load();
     setActiveId(result.conversation.id);
     setMobileMenu(null);
+  }
+
+  async function renameConversation(conversation: ConversationView) {
+    const title = window.prompt("给这段对话起个名字", conversation.title)?.trim();
+    if (!title || title === conversation.title) return;
+    const response = await fetch(`/api/conversations/${conversation.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    if (!response.ok) {
+      setToast(await responseMessage(response, "标题没有修改成功，请重试。"));
+      return;
+    }
+    setData((current) => current ? { ...current, conversations: current.conversations.map((item) => item.id === conversation.id ? { ...item, title, titleSource: "manual", titleLocked: true } : item) } : current);
   }
 
   async function sendMessage(content = input) {
@@ -107,6 +161,9 @@ export function ZhiweiApp() {
     if (!conversationId) throw new Error("无法创建新的对话");
     const userMessage: ChatMessage = { id: crypto.randomUUID(), role: "user", content: text, createdAt: new Date().toISOString() };
     const assistantTemp: ChatMessage = { id: crypto.randomUUID(), role: "assistant", content: "", createdAt: new Date().toISOString(), metadata: { streaming: true } };
+    followLatestRef.current = true;
+    forceScrollRef.current = true;
+    setShowJumpToLatest(false);
     updateConversationMessages(conversationId, (messages) => [...messages, userMessage, assistantTemp]);
     setInput("");
     setStreaming(true);
@@ -119,7 +176,7 @@ export function ZhiweiApp() {
         body: JSON.stringify({ content: text }),
         signal: abort.signal,
       });
-      if (!response.ok) throw new Error("这句话没能送达，请再试一次。 ");
+      if (!response.ok) throw new Error(await responseMessage(response, "这句话没能送达，请再试一次。"));
       await readSseStream(response, (event) => {
         if (event.type === "message.started") {
           updateConversationMessages(conversationId!, (messages) => messages.map((message) => message.id === assistantTemp.id ? { ...message, id: event.messageId, metadata: { traceId: event.traceId, streaming: true } } : message));
@@ -129,13 +186,16 @@ export function ZhiweiApp() {
           updateConversationMessages(conversationId!, (messages) => messages.map((message) => message.id === assistantTemp.id ? { ...message, content: message.content + event.delta } : message));
         }
         if (event.type === "message.completed") {
-          updateConversationMessages(conversationId!, (messages) => messages.map((message) => message.id === event.messageId ? { ...message, metadata: { ...message.metadata, streaming: false } } : message));
+          updateConversationMessages(conversationId!, (messages) => messages.map((message) => message.id === event.messageId ? { ...message, metadata: { ...message.metadata, streaming: false, status: "completed", sources: event.sources ?? [] } } : message));
         }
-        if (event.type === "error") throw new Error(event.message);
+        if (event.type === "error") {
+          updateConversationMessages(conversationId!, (messages) => messages.map((message) => message.id === assistantTemp.id ? { ...message, metadata: { ...message.metadata, streaming: false, status: abort.signal.aborted ? "stopped" : "interrupted" } } : message));
+          throw new Error(event.message);
+        }
       });
       window.setTimeout(() => void load(), 500);
     } catch (error) {
-      if (!abort.signal.aborted) setToast(error instanceof Error ? error.message : "回复中断了");
+      if (!abort.signal.aborted) setToast(error instanceof Error ? error.message : "回复中断了，可以重试。");
     } finally {
       setStreaming(false);
       abortRef.current = null;
@@ -147,13 +207,15 @@ export function ZhiweiApp() {
   }
 
   async function feedback(messageId: string, value: "understood" | "not-me", reason?: string) {
-    await fetch("/api/feedback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messageId, value, reason }) });
-    setToast(value === "understood" ? "我记住这种相处方式了。" : "谢谢你纠正我，我会重新调整。 ");
+    const response = await fetch("/api/feedback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messageId, value, reason }) });
+    if (!response.ok) throw new Error(await responseMessage(response, "这次反馈没有保存成功，请重试。"));
+    setToast(value === "understood" ? "我记住这种相处方式了。" : "谢谢你纠正我，我会重新调整。");
     window.setTimeout(() => setToast(null), 2_800);
   }
 
   async function updateSettings(settings: Record<string, boolean>) {
-    await fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(settings) });
+    const response = await fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(settings) });
+    if (!response.ok) throw new Error(await responseMessage(response, "设置没有保存成功，请重试。"));
     setData((current) => current ? { ...current, user: { ...current.user, settings: { ...current.user.settings, ...settings } } } : current);
   }
 
@@ -163,7 +225,7 @@ export function ZhiweiApp() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ reason: "用户在画像界面主动撤回" }),
     });
-    if (!response.ok) throw new Error("这条记忆没有撤回成功");
+    if (!response.ok) throw new Error(await responseMessage(response, "这条认识没有撤回成功，请重试。"));
     setToast("这条认识已撤回，之后不会再用于回答。");
     await load();
   }
@@ -174,7 +236,7 @@ export function ZhiweiApp() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ confirmation }),
     });
-    if (!response.ok) throw new Error("数据删除没有完成");
+    if (!response.ok) throw new Error(await responseMessage(response, "数据删除没有完成；你的数据仍然保留。"));
     window.location.reload();
   }
 
@@ -184,28 +246,44 @@ export function ZhiweiApp() {
     window.setTimeout(() => document.querySelector<HTMLTextAreaElement>(".chat-composer textarea")?.focus(), 50);
   }
 
+  function handleMessageScroll() {
+    const container = messageScrollRef.current;
+    if (!container) return;
+    const nearBottom = isNearChatBottom(container);
+    followLatestRef.current = nearBottom;
+    setShowJumpToLatest(!nearBottom);
+  }
+
+  function scrollToLatest() {
+    const container = messageScrollRef.current;
+    followLatestRef.current = true;
+    forceScrollRef.current = false;
+    setShowJumpToLatest(false);
+    container?.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+  }
+
   return (
     <main className={insightOpen ? "app-shell" : "app-shell insight-closed"}>
       <aside className={`conversation-sidebar ${mobileMenu === "conversations" ? "mobile-open" : ""}`}>
         <div className="sidebar-brand"><span>知微</span><button className="mobile-close" onClick={() => setMobileMenu(null)}><X size={18} /></button></div>
         <Button variant="secondary" className="new-chat-button" onClick={() => void createConversation()}><Plus size={17} /> 新的对话</Button>
         <nav className="conversation-list">
-          {data.conversations.map((conversation) => <button key={conversation.id} className={conversation.id === activeId ? "active" : ""} onClick={() => { setActiveId(conversation.id); setMobileMenu(null); }}><MessageCircleMore size={16} /><span>{conversation.title}</span><MoreHorizontal size={15} /></button>)}
+          {data.conversations.map((conversation) => <div className={conversation.id === activeId ? "conversation-row active" : "conversation-row"} key={conversation.id}><button className="conversation-open" onClick={() => { setActiveId(conversation.id); setMobileMenu(null); }}><MessageCircleMore size={16} /><span>{conversation.title}</span></button><button className="conversation-more" onClick={() => void renameConversation(conversation)} aria-label={`修改对话标题：${conversation.title}`}><MoreHorizontal size={15} /></button></div>)}
         </nav>
         <div className="sidebar-footer">
           {data.developerModeAvailable ? <button onClick={() => setDeveloperMode(true)}><Code2 size={16} /><span>开发者模式</span></button> : null}
-          <div className="adapter-badge"><i />{data.adapter === "scripted" ? "仿真模式" : data.adapter}</div>
+          <div className="adapter-badge"><i />{data.modelModeLabel}</div>
         </div>
       </aside>
 
       <section className="chat-column">
         <header className="chat-header">
           <button className="mobile-nav-button" onClick={() => setMobileMenu("conversations")}><Menu size={19} /></button>
-          <div><strong>{active?.title ?? "新的对话"}</strong><span>知微会记住真正重要的部分</span></div>
+          <div><strong>{active?.title ?? "新的对话"}</strong><span>相关的认识，会在你的授权下用于之后的对话</span></div>
           <button className="insight-toggle" onClick={() => { if (window.innerWidth < 900) setMobileMenu("insights"); else setInsightOpen(!insightOpen); }} aria-label="打开或收起洞察栏">{insightOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}</button>
         </header>
 
-        <div className="message-scroll">
+        <div className="message-scroll" ref={messageScrollRef} onScroll={handleMessageScroll}>
           {data.returnNote ? <button className="return-note" onClick={() => setInput(data.returnNote!.content)}><span>上次说到这里</span><p>{data.returnNote.content}</p><ChevronRight size={17} /></button> : null}
           {!active?.messages.length ? (
             <div className="empty-conversation"><div className="empty-word">知微</div><h1>现在，你想从哪里聊起？</h1><p>可以是一件具体的事，也可以只是此刻说不清楚的心情。</p><div>{["最近脑子有点乱", "我有件事拿不定主意", "只是想找个人说说话"].map((prompt) => <button key={prompt} onClick={() => setInput(prompt)}>{prompt}</button>)}</div></div>
@@ -231,12 +309,14 @@ export function ZhiweiApp() {
           )}
         </div>
 
+        {showJumpToLatest ? <button className="jump-to-latest" onClick={scrollToLatest}><ArrowDown size={15} /><span>回到最新</span></button> : null}
+
         <div className="composer-wrap">
           <div className="chat-composer">
             <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} rows={1} placeholder="和知微说点什么…" aria-label="消息内容" />
             {streaming ? <Button size="icon" variant="primary" onClick={() => abortRef.current?.abort()} aria-label="停止回复"><Square size={15} fill="currentColor" /></Button> : <Button size="icon" variant="primary" onClick={() => void sendMessage()} disabled={!input.trim()} aria-label="发送消息"><ArrowUp size={18} /></Button>}
           </div>
-          <small>Enter 发送 · Shift + Enter 换行</small>
+          <small>按 Enter 发送 · 按 Shift + Enter 换行</small>
         </div>
       </section>
 
@@ -251,7 +331,7 @@ export function ZhiweiApp() {
         />
       </div>
       {mobileMenu ? <button className="mobile-scrim" onClick={() => setMobileMenu(null)} aria-label="关闭面板" /> : null}
-      {toast ? <div className="toast"><Check size={16} />{toast}</div> : null}
+      {toast ? <div className="toast" aria-live="polite"><Check size={16} />{toast}</div> : null}
     </main>
   );
 }
@@ -262,6 +342,8 @@ function Message({ message, receipt, onToggleReceipt, onFeedback, onRetry }: { m
   return (
     <article className={assistant ? "message assistant" : "message user"}>
       <div className="message-content">{message.content || (message.metadata?.streaming ? <span className="typing"><i /><i /><i /></span> : null)}</div>
+      {message.metadata?.status === "interrupted" ? <div className="message-status">回复中断了，可以重试。</div> : null}
+      {Array.isArray(message.metadata?.sources) && message.metadata.sources.length ? <details className="message-sources"><summary>查看事实来源（{message.metadata.sources.length}）</summary>{message.metadata.sources.map((source: any) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer"><span>{source.title}</span>{source.siteName ? <small>{source.siteName}</small> : null}</a>)}</details> : null}
       <footer>
         <time>{formatTime(message.createdAt)}</time>
         {assistant && message.content ? <div className="message-actions"><button onClick={() => navigator.clipboard.writeText(message.content)} aria-label="复制"><Clipboard size={14} /></button><button onClick={() => void onFeedback(message.id, "understood")} aria-label="有被懂到"><ThumbsUp size={14} /></button><button onClick={() => setFeedbackOpen(!feedbackOpen)} aria-label="不太像我"><ThumbsDown size={14} /></button>{onRetry ? <button onClick={onRetry} aria-label="重试"><RotateCcw size={14} /></button> : null}</div> : null}
@@ -274,3 +356,12 @@ function Message({ message, receipt, onToggleReceipt, onFeedback, onRetry }: { m
 }
 
 function SparkleDot() { return <span className="sparkle-dot" />; }
+
+async function responseMessage(response: Response, fallback: string) {
+  try {
+    const body = await response.json();
+    return typeof body.error === "string" ? body.error : fallback;
+  } catch {
+    return fallback;
+  }
+}

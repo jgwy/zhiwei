@@ -10,6 +10,7 @@ import {
   publishPersonalSkill,
   recordMcpCall,
   searchMemories,
+  withdrawMemory,
 } from "@zhiwei/core";
 import { z } from "zod";
 
@@ -17,11 +18,20 @@ const port = Number(process.env.MCP_PORT ?? 4100);
 const token = process.env.INTERNAL_MCP_TOKEN ?? "local-development-mcp-token";
 
 const toolSchemas = {
-  memory_search: z.object({ query: z.string().max(1_000), limit: z.number().int().min(1).max(20).default(8) }),
+  memory_search: z.object({
+    query: z.string().max(1_000),
+    limit: z.number().int().min(1).max(20).default(8),
+    queryEmbedding: z.array(z.number()).length(1024).optional(),
+  }),
   memory_commit_reflection: z.object({
     conversationId: z.string().uuid(),
     sourceMessageId: z.string().uuid(),
     reflection: ReflectionOutputSchema,
+    embeddings: z.array(z.array(z.number()).length(1024).nullable()).max(12).optional(),
+  }),
+  memory_withdraw: z.object({
+    memoryId: z.string().uuid(),
+    reason: z.string().max(300).optional(),
   }),
   profile_get_current: z.object({}),
   profile_commit_snapshot: z.object({
@@ -127,9 +137,11 @@ server.listen(port, "0.0.0.0", () => {
 async function invokeTool(tool: keyof typeof toolSchemas, userId: string, args: any) {
   switch (tool) {
     case "memory_search":
-      return { memories: await searchMemories(userId, args.query, args.limit) };
+      return { memories: await searchMemories(userId, args.query, args.limit, args.queryEmbedding) };
     case "memory_commit_reflection":
       return commitReflection({ userId, ...args });
+    case "memory_withdraw":
+      return withdrawMemory({ userId, ...args });
     case "profile_get_current":
       return { profile: await getLatestProfile(userId) };
     case "profile_commit_snapshot":
@@ -147,6 +159,7 @@ function toolDescription(name: string): string {
   const descriptions: Record<string, string> = {
     memory_search: "在当前用户的活动记忆中检索最多八条相关内容。",
     memory_commit_reflection: "提交由模型生成的记忆、画像、情绪和会话摘要。",
+    memory_withdraw: "撤回当前用户的一条活动记忆，使其不再参与检索。",
     profile_get_current: "读取当前用户最新画像快照。",
     profile_commit_snapshot: "提交模型生成的画像综述与维度权重。",
     personal_skill_get_active: "读取当前用户正在生效的个人 Skill。",
@@ -180,4 +193,3 @@ function sendJson(response: import("node:http").ServerResponse, status: number, 
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(payload));
 }
-

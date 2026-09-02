@@ -11,6 +11,7 @@
     "dev": "npm run dev --workspace @zhiwei/web",
     "dev:worker": "npm run dev --workspace @zhiwei/worker",
     "dev:mcp": "npm run dev --workspace @zhiwei/memory-mcp",
+    "dev:science-mcp": "npm run dev --workspace @zhiwei/science-mcp",
     "build": "npm run generate:skills && npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",

@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@zhiwei/core": "0.1.0",
+    "openai": "^7.9.0",
     "zod": "4.5.4"
   },
   "devDependencies": {

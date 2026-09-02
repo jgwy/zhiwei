@@ -1,8 +1,8 @@
-import { getLatestProfile } from "@zhiwei/core";
+import { callMemoryMcp } from "@zhiwei/core";
 import { NextResponse } from "next/server";
 import { getSessionUserId } from "@/lib/session";
 
 export async function GET() {
-  return NextResponse.json({ profile: await getLatestProfile(await getSessionUserId()) });
+  const userId = await getSessionUserId();
+  return NextResponse.json(await callMemoryMcp({ tool: "profile_get_current", userId }));
 }
-

@@ -18,6 +18,7 @@ export async function POST(request: Request) {
     const jobId = await enqueueJob({
       userId,
       type: "evolve_skill",
+      idempotencyKey: `evolve_skill:feedback:${feedbackId}:v1`,
       payload: {
         evidenceIds: [input.messageId],
         feedback: input.value,
@@ -30,4 +31,3 @@ export async function POST(request: Request) {
     return jsonError(error, 400);
   }
 }
-

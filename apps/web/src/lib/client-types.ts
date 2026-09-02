@@ -9,6 +9,8 @@ import type {
 export type ConversationView = {
   id: string;
   title: string;
+  titleSource: "default" | "model" | "manual";
+  titleLocked: boolean;
   createdAt: string;
   updatedAt: string;
   messages: ChatMessage[];
@@ -41,4 +43,13 @@ export type BootstrapData = {
   returnNote: { content: string } | null;
   developerModeAvailable: boolean;
   adapter: string;
+  modelModeLabel: string;
+  modelCapabilities: {
+    streaming: boolean;
+    structuredOutput: boolean;
+    toolCalls: boolean;
+    nativeWebSearch: boolean;
+    usage: boolean;
+    maxContextTokens: number;
+  };
 };

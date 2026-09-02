@@ -16,21 +16,42 @@ export function Onboarding({
   const [answer, setAnswer] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [showInfo, setShowInfo] = useState(current.answeredCount === 0);
+  const [error, setError] = useState("");
+
+  async function responseError(response: Response, fallback: string) {
+    const payload = await response.json().catch(() => null);
+    return typeof payload?.error === "string" && payload.error.trim() ? payload.error : fallback;
+  }
 
   async function submit(value = answer) {
     if (!current.question || !value.trim() || submitting) return;
     setSubmitting(true);
+    setError("");
     try {
       const response = await fetch("/api/onboarding/answer", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ questionId: current.question.id, answer: value.trim() }),
       });
-      if (!response.ok) throw new Error("这句话没有保存成功，请再试一次。 ");
+      if (!response.ok) throw new Error(await responseError(response, "这句话没有保存成功，请再试一次。"));
       const next = await response.json();
       setCurrent((previous) => ({ ...previous, ...next }));
       setAnswer("");
+    } catch (cause) {
+      setError(cause instanceof Error && cause.message ? cause.message : "这句话没有保存成功，请再试一次。");
     } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function complete() {
+    if (submitting) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      await onComplete();
+    } catch (cause) {
+      setError(cause instanceof Error && cause.message ? cause.message : "暂时无法开始聊天，请稍后再试。");
       setSubmitting(false);
     }
   }
@@ -47,7 +68,7 @@ export function Onboarding({
           <div className="privacy-notes">
             <div><Sparkles size={18} /><span><strong>什么时候记住</strong>　每次回答或聊天结束后，知微会整理新的认识。</span></div>
             <div><Check size={18} /><span><strong>什么时候使用</strong>　只在未来确实相关的对话里使用，不会塞入全部历史。</span></div>
-            <div><Info size={18} /><span><strong>怎么修改</strong>　在画像里点选内容，回到聊天告诉知微新的说法；授权可在设置里直接关闭。</span></div>
+            <div><Info size={18} /><span><strong>怎么修改</strong>　在右侧“关于你”中点选内容，回到聊天告诉知微新的说法；授权可在设置里直接关闭。</span></div>
           </div>
           <Button variant="primary" onClick={() => setShowInfo(false)}>
             开始认识 <ArrowRight size={17} />
@@ -95,11 +116,12 @@ export function Onboarding({
             </Button>
           </div>
         ) : null}
+        {error ? <p className="onboarding-error" role="alert">{error}</p> : null}
         <footer className="onboarding-footer">
           <span>{current.answeredCount < 3 ? `再回答 ${3 - current.answeredCount} 题即可开始聊天` : "已经可以开始聊天"}</span>
           {current.canFinish ? (
-            <button className="text-button" onClick={() => void onComplete()}>
-              先聊到这里，开始聊天
+            <button className="text-button" onClick={() => void complete()} disabled={submitting}>
+              {submitting ? "正在准备对话…" : "先聊到这里，开始聊天"}
             </button>
           ) : null}
         </footer>
@@ -107,4 +129,3 @@ export function Onboarding({
     </main>
   );
 }
-

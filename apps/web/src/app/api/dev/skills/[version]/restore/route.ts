@@ -15,11 +15,10 @@ export async function POST(
     await addActivity({
       userId,
       type: "skill.evolved",
-      payload: { version: restored.version, message: "已恢复所选 Skill 版本。" },
+      payload: { version: restored.version, message: "已恢复所选个人技能版本。" },
     });
     return NextResponse.json({ restored });
   } catch (error) {
     return jsonError(error, 400);
   }
 }
-

@@ -71,7 +71,7 @@ export function InsightPanel({
                   contentStyle={{ borderRadius: 12, border: "1px solid #e8e8e8", boxShadow: "0 10px 30px rgba(0,0,0,.08)", fontSize: 12 }}
                   labelFormatter={(value) => new Date(String(value ?? "")).toLocaleDateString("zh-CN", { month: "short", day: "numeric" })}
                 />
-                <Line type="monotone" dataKey="score" stroke="#222" strokeWidth={2.2} dot={{ r: 3, fill: "white", strokeWidth: 2 }} activeDot={{ r: 4 }} />
+                <Line name="心情值" type="monotone" dataKey="score" stroke="#222" strokeWidth={2.2} dot={{ r: 3, fill: "white", strokeWidth: 2 }} activeDot={{ r: 4 }} />
               </LineChart>
             </ResponsiveContainer>
           ) : (
@@ -103,7 +103,7 @@ export function InsightPanel({
         {([
           ["memoryEnabled", "长期记忆", "关闭后不再记录或使用画像"],
           ["emotionTrackingEnabled", "情绪趋势", "关闭后不再生成新的心情样本"],
-          ["skillEvolutionEnabled", "相处方式学习", "关闭后个人 Skill 保持当前版本"],
+          ["skillEvolutionEnabled", "相处方式学习", "关闭后保持目前学到的相处方式"],
           ["returnNotesEnabled", "站内回访", "关闭后不再展示未完话题提醒"],
         ] as const).map(([key, label, description]) => (
           <div className="setting-row" key={key}>
@@ -117,9 +117,9 @@ export function InsightPanel({
         ))}
         <div className="delete-data-box">
           <strong><Trash2 size={14} /> 删除全部数据</strong>
-          <small>输入“删除知微中的全部数据”后，将清除当前匿名档案的对话、画像、Memory、Skill 与 Trace。</small>
+          <small>输入“删除知微中的全部数据”后，将清除这份知微档案的对话、画像、记忆、相处方式和运行记录。</small>
           <input value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} placeholder="删除知微中的全部数据" />
-          <button disabled={deleteConfirmation !== "删除知微中的全部数据"} onClick={() => onDeleteAll(deleteConfirmation)}>永久删除当前档案</button>
+          <button disabled={deleteConfirmation !== "删除知微中的全部数据"} onClick={() => onDeleteAll(deleteConfirmation)}>永久删除全部数据</button>
         </div>
       </section>
     </aside>
