@@ -22,6 +22,20 @@ test("从空白问卷进入聊天并生成画像、memory 与 Skill 证据", asy
     await expect(page.getByRole("heading", { name: "关于你" })).toBeVisible();
   }
 
+  if (testInfo.project.name.includes("mobile")) {
+    await page.locator(".mobile-nav-button").click();
+  }
+  await page.getByRole("button", { name: "关于", exact: true }).click();
+  const aboutDialog = page.getByRole("dialog", { name: "知微" });
+  await expect(aboutDialog).toBeVisible();
+  await expect(aboutDialog.getByRole("img")).toHaveCount(5);
+  await expect(aboutDialog.getByText("真切地陪伴你的数字分身", { exact: true })).toBeVisible();
+  await expect(aboutDialog.getByText("刘一民", { exact: true })).toBeVisible();
+  await expect(aboutDialog.getByText("（华中科技大学）", { exact: true })).toBeVisible();
+  await expect(aboutDialog.getByText("版本 1.0beta", { exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(aboutDialog).not.toBeVisible();
+
   const composer = page.getByLabel("消息内容");
   await composer.fill("最近工作压力有点大，我总觉得自己做得不够好。");
   await page.getByRole("button", { name: "发送消息" }).click();

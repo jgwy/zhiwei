@@ -83,6 +83,38 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #222; outline-
 .adapter-badge { margin: 8px 10px 0; display: flex; gap: 7px; align-items: center; color: #999; font-size: 11px; }
 .adapter-badge i { width: 6px; height: 6px; background: #79a782; border-radius: 50%; }
 
+.about-dialog { width: 100vw; max-width: none; height: 100dvh; max-height: none; margin: 0; padding: 20px; border: 0; background: transparent; overflow: hidden; }
+.about-dialog[open] { display: grid; place-items: center; }
+.about-dialog::backdrop { background: rgba(20,20,20,.32); backdrop-filter: blur(5px); animation: about-backdrop-in .2s ease; }
+.about-dialog-panel { width: min(800px, 100%); max-height: calc(100dvh - 40px); display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; border: 1px solid rgba(0,0,0,.08); border-radius: 26px; background: rgba(255,255,255,.98); box-shadow: 0 28px 100px rgba(0,0,0,.2); animation: about-panel-in .24s ease; }
+.about-dialog-toolbar { min-height: 56px; display: flex; align-items: center; justify-content: space-between; padding: 8px 14px 0 24px; }
+.about-dialog-toolbar > span { color: #999; font-size: 11px; letter-spacing: .04em; }
+.about-dialog-toolbar button { width: 36px; height: 36px; display: grid; place-items: center; border: 0; border-radius: 10px; background: transparent; color: #777; cursor: pointer; }
+.about-dialog-toolbar button:hover { background: #f3f3f3; color: #111; }
+.about-dialog-scroll { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 4px 48px 34px; }
+.about-logo-strip { width: min(490px, 100%); margin: 6px auto 0; display: grid; grid-template-columns: repeat(3, 54px) repeat(2, minmax(92px, 112px)); align-items: center; justify-content: center; gap: 18px; }
+.about-logo { min-width: 0; display: grid; place-items: center; }
+.about-logo img { display: block; width: 100%; height: 54px; object-fit: contain; }
+.about-logo-round img { border-radius: 50%; }
+.about-logo-wide img { height: 46px; }
+.about-hero { margin: 29px auto 34px; text-align: center; }
+.about-hero h2 { margin: 0; font-family: Georgia, "Songti SC", serif; font-size: 34px; font-weight: 540; letter-spacing: .18em; text-indent: .18em; }
+.about-hero p { margin: 9px 0 0; color: #777; font-size: 14px; letter-spacing: .04em; }
+.about-project { padding: 25px 0 27px; border-top: 1px solid #ededed; border-bottom: 1px solid #ededed; }
+.about-project h3, .about-team h3 { margin: 0 0 12px; color: #999; font-size: 11px; font-weight: 590; letter-spacing: .08em; }
+.about-project p { margin: 0; color: #4f4f4f; font-size: 13px; line-height: 1.9; text-align: justify; }
+.about-team { display: grid; grid-template-columns: 1fr 1fr; gap: 27px 38px; padding: 28px 0 12px; }
+.about-team section > p { margin: 0 0 9px; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: #666; font-size: 12px; line-height: 1.55; }
+.about-team section > p strong { flex: 0 0 auto; color: #222; font-size: 13px; font-weight: 620; }
+.about-members-section { grid-column: 1 / -1; }
+.about-members { margin: 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 11px 18px; list-style: none; }
+.about-members li { display: flex; align-items: baseline; white-space: nowrap; }
+.about-members strong { font-size: 13px; font-weight: 590; }
+.about-members small { color: #aaa; font-size: 9px; }
+.about-version { margin-top: 17px; padding-top: 17px; border-top: 1px solid #f0f0f0; color: #aaa; font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 10px; text-align: center; }
+@keyframes about-backdrop-in { from { opacity: 0; } }
+@keyframes about-panel-in { from { opacity: 0; transform: translateY(8px) scale(.985); } }
+
 .chat-column { min-width: 0; display: grid; grid-template-rows: 65px minmax(0, 1fr) auto; position: relative; }
 .chat-header { display: grid; grid-template-columns: 40px 1fr 40px; align-items: center; border-bottom: 1px solid #f0f0f0; padding: 0 20px; }
 .chat-header > div { text-align: center; display: flex; flex-direction: column; gap: 3px; }
@@ -215,6 +247,23 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #222; outline-
   .messages { padding-top: 24px; gap: 25px; }.message-content { font-size: 14px; }.message.user .message-content { padding: 9px 13px; }
   .empty-conversation h1 { font-size: 24px; }.empty-conversation p { max-width: 270px; line-height: 1.6; }.empty-conversation > div:last-child { flex-direction: column; }
   .composer-wrap { padding-bottom: max(10px, env(safe-area-inset-bottom)); }.composer-wrap > small { display: none; }
+  .about-dialog { padding: 0; }
+  .about-dialog-panel { width: 100%; height: 100dvh; max-height: none; border: 0; border-radius: 0; }
+  .about-dialog-toolbar { min-height: 54px; padding: max(8px, env(safe-area-inset-top)) 10px 0 20px; }
+  .about-dialog-scroll { padding: 7px 20px max(28px, env(safe-area-inset-bottom)); }
+  .about-logo-strip { width: min(300px, 100%); grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 14px 10px; }
+  .about-logo:nth-child(-n+3) { grid-column: span 2; padding: 0 8px; }
+  .about-logo:nth-child(n+4) { grid-column: span 3; padding: 0 10px; }
+  .about-logo img { height: 47px; }
+  .about-logo-wide img { height: 42px; }
+  .about-hero { margin: 23px auto 29px; }
+  .about-hero h2 { font-size: 30px; }
+  .about-hero p { font-size: 13px; }
+  .about-project { padding: 22px 0 24px; }
+  .about-project p { font-size: 12px; line-height: 1.85; }
+  .about-team { grid-template-columns: 1fr; gap: 22px; padding-top: 24px; }
+  .about-members-section { grid-column: auto; }
+  .about-members { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
   .developer-content { width: calc(100% - 24px); padding-top: 28px; }.dev-section-heading { align-items: start; flex-direction: column; gap: 8px; }.dev-section-heading h1 { font-size: 22px; }
   .cost-summary-grid { grid-template-columns: 1fr 1fr; }.cost-summary-grid article { min-height: 100px; padding: 13px; }.cost-summary-grid strong { font-size: 18px; }.model-run-card dl { grid-template-columns: repeat(2, 1fr); }
 }

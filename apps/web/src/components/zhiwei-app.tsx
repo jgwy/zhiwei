@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Clipboard,
   Code2,
+  Info,
   Menu,
   MessageCircleMore,
   MoreHorizontal,
@@ -39,12 +40,15 @@ export function ZhiweiApp() {
   const [insightOpen, setInsightOpen] = useState(true);
   const [mobileMenu, setMobileMenu] = useState<"conversations" | "insights" | null>(null);
   const [developerMode, setDeveloperMode] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [receipts, setReceipts] = useState<Record<string, { count: number; open: boolean }>>({});
   const abortRef = useRef<AbortController | null>(null);
   const messageEndRef = useRef<HTMLDivElement | null>(null);
   const messageScrollRef = useRef<HTMLDivElement | null>(null);
+  const aboutTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const mobileNavRef = useRef<HTMLButtonElement | null>(null);
   const followLatestRef = useRef(true);
   const forceScrollRef = useRef(false);
   const lastScrolledConversationRef = useRef<string | null>(null);
@@ -262,6 +266,19 @@ export function ZhiweiApp() {
     container?.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
   }
 
+  function openAbout() {
+    setMobileMenu(null);
+    setAboutOpen(true);
+  }
+
+  function closeAbout() {
+    setAboutOpen(false);
+    window.requestAnimationFrame(() => {
+      const returnTarget = window.innerWidth < 900 ? mobileNavRef.current : aboutTriggerRef.current;
+      returnTarget?.focus();
+    });
+  }
+
   return (
     <main className={insightOpen ? "app-shell" : "app-shell insight-closed"}>
       <aside className={`conversation-sidebar ${mobileMenu === "conversations" ? "mobile-open" : ""}`}>
@@ -271,6 +288,7 @@ export function ZhiweiApp() {
           {data.conversations.map((conversation) => <div className={conversation.id === activeId ? "conversation-row active" : "conversation-row"} key={conversation.id}><button className="conversation-open" onClick={() => { setActiveId(conversation.id); setMobileMenu(null); }}><MessageCircleMore size={16} /><span>{conversation.title}</span></button><button className="conversation-more" onClick={() => void renameConversation(conversation)} aria-label={`修改对话标题：${conversation.title}`}><MoreHorizontal size={15} /></button></div>)}
         </nav>
         <div className="sidebar-footer">
+          <button ref={aboutTriggerRef} onClick={openAbout}><Info size={16} /><span>关于</span></button>
           {data.developerModeAvailable ? <button onClick={() => setDeveloperMode(true)}><Code2 size={16} /><span>开发者模式</span></button> : null}
           <div className="adapter-badge"><i />{data.modelModeLabel}</div>
         </div>
@@ -278,7 +296,7 @@ export function ZhiweiApp() {
 
       <section className="chat-column">
         <header className="chat-header">
-          <button className="mobile-nav-button" onClick={() => setMobileMenu("conversations")}><Menu size={19} /></button>
+          <button ref={mobileNavRef} className="mobile-nav-button" onClick={() => setMobileMenu("conversations")}><Menu size={19} /></button>
           <div><strong>{active?.title ?? "新的对话"}</strong><span>相关的认识，会在你的授权下用于之后的对话</span></div>
           <button className="insight-toggle" onClick={() => { if (window.innerWidth < 900) setMobileMenu("insights"); else setInsightOpen(!insightOpen); }} aria-label="打开或收起洞察栏">{insightOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}</button>
         </header>
@@ -331,8 +349,103 @@ export function ZhiweiApp() {
         />
       </div>
       {mobileMenu ? <button className="mobile-scrim" onClick={() => setMobileMenu(null)} aria-label="关闭面板" /> : null}
+      {aboutOpen ? <AboutDialog onClose={closeAbout} /> : null}
       {toast ? <div className="toast" aria-live="polite"><Check size={16} />{toast}</div> : null}
     </main>
+  );
+}
+
+const ABOUT_LOGOS = [
+  { src: "/about/seu-emblem.png", alt: "东南大学校徽", kind: "round" },
+  { src: "/about/seu-chem.png", alt: "东南大学化学化工学院院徽", kind: "round" },
+  { src: "/about/seu-cs.png", alt: "东南大学计算机学院计算机科学徽标", kind: "round" },
+  { src: "/about/seu-science-park.png", alt: "东南大学国家大学科技园", kind: "wide" },
+  { src: "/about/aliyun-cloud.png", alt: "阿里云", kind: "wide" },
+] as const;
+
+const PROJECT_MEMBERS = [
+  { name: "刘欣颖", university: "东南大学" },
+  { name: "李煜", university: "东南大学" },
+  { name: "许益嘉", university: "东南大学" },
+  { name: "孙浩宸", university: "东南大学" },
+  { name: "沈嘉栩", university: "东南大学" },
+  { name: "刘一民", university: "华中科技大学" },
+  { name: "张子阅", university: "东南大学" },
+  { name: "胡鼎", university: "东南大学" },
+] as const;
+
+function AboutDialog({ onClose }: { onClose: () => void }) {
+  const dialogRef = useRef<HTMLDialogElement | null>(null);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    dialog.showModal();
+    return () => {
+      if (dialog.open) dialog.close();
+    };
+  }, []);
+
+  return (
+    <dialog
+      ref={dialogRef}
+      className="about-dialog"
+      aria-labelledby="about-title"
+      aria-describedby="about-description"
+      onCancel={(event) => { event.preventDefault(); onClose(); }}
+      onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
+    >
+      <article className="about-dialog-panel">
+        <header className="about-dialog-toolbar">
+          <span>关于知微</span>
+          <button onClick={onClose} aria-label="关闭关于知微"><X size={19} /></button>
+        </header>
+
+        <div className="about-dialog-scroll">
+          <div className="about-logo-strip" role="group" aria-label="项目相关单位标识">
+            {ABOUT_LOGOS.map((logo) => (
+              <div className={`about-logo about-logo-${logo.kind}`} key={logo.src}>
+                <img src={logo.src} alt={logo.alt} />
+              </div>
+            ))}
+          </div>
+
+          <div className="about-hero">
+            <h2 id="about-title">知微</h2>
+            <p>真切地陪伴你的数字分身</p>
+          </div>
+
+          <section className="about-project">
+            <h3>项目简介</h3>
+            <p id="about-description">知微是一款面向长期陪伴场景的数字分身应用。它以对话为入口，在用户可知、可控、可撤回的前提下，持续理解个人经历、偏好与情绪变化，将分散的信息沉淀为可追溯、可演化的长期记忆，并据此提供连贯、自然、有温度的个性化回应。项目融合大模型、多层记忆与技能演化机制，致力于让人工智能从“回答一次问题”走向“长期理解一个人”，探索可信、可持续的人机陪伴新形态。</p>
+          </section>
+
+          <div className="about-team">
+            <section>
+              <h3>团队负责人、主要开发者</h3>
+              <p><span>东南大学化学化工学院</span><strong>张正明</strong></p>
+            </section>
+
+            <section>
+              <h3>指导老师</h3>
+              <p><span>东南大学计算机学院</span><strong>教授 冯磊</strong></p>
+              <p><span>东南大学化学化工学院</span><strong>教授 梁爽</strong></p>
+            </section>
+
+            <section className="about-members-section">
+              <h3>项目组成员</h3>
+              <ul className="about-members">
+                {PROJECT_MEMBERS.map((member) => (
+                  <li key={member.name}><strong>{member.name}</strong><small>（{member.university}）</small></li>
+                ))}
+              </ul>
+            </section>
+          </div>
+
+          <footer className="about-version">版本 1.0beta</footer>
+        </div>
+      </article>
+    </dialog>
   );
 }
 

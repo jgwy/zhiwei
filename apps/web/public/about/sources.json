@@ -1,0 +1,23 @@
+{
+  "seu-emblem.png": {
+    "source": "https://www.seu.edu.cn/_upload/article/images/99/67/fecb6e794dc3afe3442ad7e1ef8b/b5e2b5d5-a230-462a-b22b-dff07dfd3875.png",
+    "page": "https://www.seu.edu.cn/p47323c47313/list.psp"
+  },
+  "seu-chem.png": {
+    "source": "https://chem.seu.edu.cn/_upload/article/images/d8/bc/389bb7894986875c019d3cb3e7ef/9bff40a3-4cfa-4fc1-b0bc-c68c1da904d6.png",
+    "page": "https://chem.seu.edu.cn/xyyh/list.htm"
+  },
+  "seu-cs.png": {
+    "source": "https://cse.seu.edu.cn/_upload/article/images/88/45/7a16c78e42479d5044cbdccf4ff4/969ae2e2-acc5-4de5-985e-27a937c49797.png",
+    "page": "https://cse.seu.edu.cn/49478/list.htm",
+    "assetName": "东南大学计算机科学拔尖学生培养基地徽标"
+  },
+  "seu-science-park.png": {
+    "source": "https://www.seuiec.com/storage/topimg/20210120/d7aYRzoCIEtYTquNwYpiqASDcsEJD9X47MCIqTbH.png",
+    "page": "https://www.seuiec.com/fbrandActivity/activityImageDetails/6/"
+  },
+  "aliyun-cloud.png": {
+    "source": "https://img.alicdn.com/imgextra/i4/O1CN01cMRNZN1Q3rqeuFGkP_!!6000000001921-55-tps-296-37.svg",
+    "page": "https://www.alibabacloud.com/"
+  }
+}
