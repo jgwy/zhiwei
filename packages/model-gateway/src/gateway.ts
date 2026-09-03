@@ -147,16 +147,18 @@ export class AliyunBailianGateway implements ModelGateway {
           stream: true,
           reasoning: { effort: "none" },
           temperature: 0.58,
-          max_output_tokens: 1_200,
+          max_output_tokens: 4_000,
           store: false,
         } as any, { signal: options.signal });
         let finishReason = "completed";
         let requestId: string | undefined;
+        let incomplete = false;
         for await (const event of stream as any) {
           if (event.type === "response.completed") {
             const response = event.response;
             requestId = response?.id ?? requestId;
             finishReason = response?.status ?? finishReason;
+            incomplete = response?.status === "incomplete" || Boolean(response?.incomplete_details?.reason);
             usage = parseUsage(response?.usage, usage);
           }
           if (event.type === "response.failed") throw new Error("provider_unavailable");
@@ -167,6 +169,7 @@ export class AliyunBailianGateway implements ModelGateway {
             yield { type: "text.delta", delta };
           }
         }
+        if (incomplete) throw new Error("invalid_response");
         const meta = createMeta({
           task: "dialogue",
           model,
@@ -422,6 +425,7 @@ export class AliyunBailianGateway implements ModelGateway {
               schema: stripJsonSchema(z.toJSONSchema(schema)),
             },
           },
+          max_tokens: 4_000,
           enable_thinking: options.thinking ?? false,
           reasoning_effort: options.thinking ? "medium" : "none",
           clear_thinking: true,
@@ -433,6 +437,7 @@ export class AliyunBailianGateway implements ModelGateway {
           } : undefined,
         } as any, { signal: options.signal });
         const content = response.choices[0]?.message?.content ?? "";
+        if (response.choices[0]?.finish_reason === "length") throw new Error("invalid_response");
         const data = schema.parse(repairStructuredShape(task, JSON.parse(content)));
         assertTaskQuality(task, data);
         const usage = parseUsage(response.usage, zeroUsage());
@@ -710,6 +715,10 @@ function delay(ms: number) { return new Promise((resolve) => setTimeout(resolve,
 function isRetryable(error: unknown) { const status = Number((error as any)?.status ?? 0); return status === 429 || status >= 500; }
 function normalizeProviderError(error: unknown) {
   const normalized = (code: string) => new Error(code, { cause: error });
+  const message = error instanceof Error ? error.message : String(error);
+  if (["rate_limited", "provider_unavailable", "invalid_response", "request_cancelled", "provider_authentication_failed"].includes(message)) {
+    return normalized(message);
+  }
   if ((error as any)?.name === "AbortError") return normalized("request_cancelled");
   const status = Number((error as any)?.status ?? 0);
   if (status === 429) return normalized("rate_limited");

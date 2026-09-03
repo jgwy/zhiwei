@@ -185,7 +185,7 @@ describe("Aliyun structured-output quality retry contract", () => {
       stream: true,
       store: false,
       temperature: 0.58,
-      max_output_tokens: 1_200,
+      max_output_tokens: 4_000,
       reasoning: { effort: "none" },
     });
     const system = request.input[0].content as string;
@@ -198,6 +198,44 @@ describe("Aliyun structured-output quality retry contract", () => {
       type: "completed",
       meta: { task: "dialogue", model: "qwen-plus-character" },
     });
+  });
+
+  it("surfaces a provider-incomplete long reply instead of marking it completed", async () => {
+    openAiMock.responseCreate.mockResolvedValue({
+      async *[Symbol.asyncIterator]() {
+        yield { type: "response.output_text.delta", delta: "回答还没写完" };
+        yield {
+          type: "response.completed",
+          response: {
+            id: "response-incomplete",
+            status: "incomplete",
+            incomplete_details: { reason: "max_output_tokens" },
+          },
+        };
+      },
+    });
+    const context: CompiledContext = {
+      foundationInstructions: "知微基底技能",
+      personalSkill: defaultPersonalSkill,
+      profileSummary: "",
+      memories: [],
+      sessionSummary: "",
+      recentMessages: [],
+      estimatedTokens: 0,
+      truncated: false,
+    };
+
+    await expect(async () => {
+      for await (const _event of new AliyunBailianGateway().streamDialogue({
+        userId: crypto.randomUUID(),
+        conversationId: crypto.randomUUID(),
+        messageId: crypto.randomUUID(),
+        content: "请详细回答这个问题",
+        context,
+      })) {
+        // Consume the partial stream so the incomplete status is handled.
+      }
+    }).rejects.toThrow("invalid_response");
   });
 
   it("routes high-emotion and physical-symptom signals in the existing fact-routing call", async () => {
