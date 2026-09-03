@@ -21,6 +21,24 @@ import type {
   ReflectionOutput,
 } from "./types";
 
+const UNDERSTANDING_OBSERVATIONS_SQL = `
+  SELECT
+    count(DISTINCT msg.conversation_id)::int AS sessions,
+    COALESCE(
+      extract(epoch FROM (max(msg.created_at) - min(msg.created_at))) / 86400,
+      0
+    )::double precision AS span_days
+  FROM memory_evidence me
+  JOIN memory_versions mv
+    ON mv.id = me.memory_version_id
+   AND mv.user_id = me.user_id
+  JOIN messages msg
+    ON msg.id = me.message_id
+   AND msg.user_id = me.user_id
+  WHERE me.user_id = $1
+    AND mv.is_active = true
+    AND (mv.valid_until IS NULL OR mv.valid_until > now())`;
+
 export async function ensureUser(userId: string): Promise<void> {
   await withTransaction(async (client) => {
     const inserted = await client.query(
@@ -428,24 +446,29 @@ export async function commitProfileSnapshot(input: {
   dimensionWeights: Record<string, number>;
 }) {
   const memories = await getActiveMemories(input.userId);
-  const feedback = await getPool().query(
-    `SELECT
-      count(*) FILTER (WHERE value = 'understood')::int AS positive,
-      count(*) FILTER (WHERE value = 'not-me')::int AS negative
-     FROM feedback WHERE user_id = $1`,
-    [input.userId],
-  );
-  const corrected = await getPool().query(
-    `SELECT count(*)::int AS count FROM memory_versions
-     WHERE user_id = $1 AND is_active = false`,
-    [input.userId],
-  );
+  const [feedback, corrected, observations] = await Promise.all([
+    getPool().query(
+      `SELECT
+        count(DISTINCT message_id) FILTER (WHERE value = 'understood')::int AS positive,
+        count(DISTINCT message_id) FILTER (WHERE value = 'not-me')::int AS negative
+       FROM feedback WHERE user_id = $1`,
+      [input.userId],
+    ),
+    getPool().query(
+      `SELECT count(*)::int AS count FROM memory_versions
+       WHERE user_id = $1 AND is_active = false`,
+      [input.userId],
+    ),
+    getPool().query(UNDERSTANDING_OBSERVATIONS_SQL, [input.userId]),
+  ]);
   const components = deriveUnderstandingComponents({
     memories,
     dimensionWeights: input.dimensionWeights,
     positiveFeedback: feedback.rows[0]?.positive ?? 0,
     negativeFeedback: feedback.rows[0]?.negative ?? 0,
     correctedMemories: corrected.rows[0]?.count ?? 0,
+    observationSessions: observations.rows[0]?.sessions ?? 0,
+    observationSpanDays: observations.rows[0]?.span_days ?? 0,
   });
   const score = calculateUnderstandingScore(components);
   const result = await getPool().query(
@@ -624,8 +647,8 @@ export async function commitReflection(input: {
     }));
       const feedback = await client.query(
       `SELECT
-        count(*) FILTER (WHERE value = 'understood')::int AS positive,
-        count(*) FILTER (WHERE value = 'not-me')::int AS negative
+        count(DISTINCT message_id) FILTER (WHERE value = 'understood')::int AS positive,
+        count(DISTINCT message_id) FILTER (WHERE value = 'not-me')::int AS negative
        FROM feedback WHERE user_id = $1`,
       [input.userId],
     );
@@ -634,12 +657,18 @@ export async function commitReflection(input: {
        WHERE mv.user_id = $1 AND mv.is_active = false`,
       [input.userId],
     );
+      const observations = await client.query(
+        UNDERSTANDING_OBSERVATIONS_SQL,
+        [input.userId],
+      );
       const components = deriveUnderstandingComponents({
       memories,
       dimensionWeights: input.reflection.dimensionWeights,
       positiveFeedback: feedback.rows[0]?.positive ?? 0,
       negativeFeedback: feedback.rows[0]?.negative ?? 0,
       correctedMemories: corrected.rows[0]?.count ?? 0,
+      observationSessions: observations.rows[0]?.sessions ?? 0,
+      observationSpanDays: observations.rows[0]?.span_days ?? 0,
     });
       const score = calculateUnderstandingScore(components);
       const profileId = randomUUID();
