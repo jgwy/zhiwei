@@ -68,13 +68,28 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #222; outline-
 .sidebar-brand span { font-family: Georgia, "Songti SC", serif; font-size: 19px; letter-spacing: .15em; }
 .mobile-close { display: none; }
 .new-chat-button { width: 100%; justify-content: flex-start; background: white; border-color: #e8e8e8; margin-bottom: 18px; }
-.conversation-list { display: flex; flex-direction: column; gap: 3px; overflow: auto; }
+.conversation-list { display: flex; flex-direction: column; gap: 5px; overflow: auto; }
+.conversation-group { min-width: 0; }
+.conversation-group-toggle { width: 100%; min-height: 34px; display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 4px; padding: 0 9px; border: 0; border-radius: 8px; background: transparent; color: #8a8a8a; cursor: pointer; text-align: left; font-size: 11px; font-weight: 590; letter-spacing: .02em; }
+.conversation-group-toggle:hover { background: #eeeeee; color: #444; }
+.conversation-group-toggle:focus-visible { outline: 2px solid #777; outline-offset: 2px; }
+.conversation-group-toggle small { color: #b0b0b0; font-size: 10px; font-weight: 500; }
+.conversation-group.current > .conversation-group-toggle { color: #555; }
+.conversation-group-chevron { color: #aaa; transition: transform .18s ease; }
+.conversation-group.expanded > .conversation-group-toggle .conversation-group-chevron { transform: rotate(90deg); color: #666; }
+.conversation-group-content { display: grid; gap: 3px; min-width: 0; }
+.conversation-group-content[hidden] { display: none; }
+.conversation-group-month > .conversation-group-toggle { padding-left: 18px; font-size: 10px; font-weight: 560; }
+.conversation-group-week > .conversation-group-toggle { padding-left: 27px; color: #a0a0a0; font-size: 10px; font-weight: 500; }
+.conversation-group-month > .conversation-group-content { padding-left: 8px; border-left: 1px solid #e6e6e6; margin-left: 16px; }
+.conversation-group-week > .conversation-group-content { padding-left: 8px; margin-left: 25px; }
 .conversation-row { display: grid; grid-template-columns: minmax(0, 1fr) 30px; align-items: center; border-radius: 10px; color: #646464; }
 .conversation-row:hover, .conversation-row.active { background: #ebebeb; color: #222; }
 .conversation-open, .conversation-more { border: 0; background: transparent; color: inherit; cursor: pointer; }
 .conversation-open { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 7px; align-items: center; min-height: 39px; padding: 0 0 0 10px; text-align: left; font-size: 13px; }
 .conversation-open span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conversation-more { opacity: 0; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; }
+.conversation-open:focus-visible, .conversation-more:focus-visible { outline: 2px solid #777; outline-offset: -2px; }
 .conversation-row:hover .conversation-more, .conversation-more:focus-visible { opacity: 1; }
 .conversation-more:hover { background: #dedede; }
 .sidebar-footer { margin-top: auto; border-top: 1px solid #e7e7e7; padding-top: 10px; }
@@ -82,6 +97,12 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #222; outline-
 .sidebar-footer > button:hover { background: #ececec; }
 .adapter-badge { margin: 8px 10px 0; display: flex; gap: 7px; align-items: center; color: #999; font-size: 11px; }
 .adapter-badge i { width: 6px; height: 6px; background: #79a782; border-radius: 50%; }
+
+@media (pointer: coarse) {
+  .conversation-group-toggle, .conversation-open { min-height: 44px; }
+  .conversation-row { grid-template-columns: minmax(0, 1fr) 44px; }
+  .conversation-more { opacity: 1; width: 40px; height: 40px; }
+}
 
 .about-dialog { width: 100vw; max-width: none; height: 100dvh; max-height: none; margin: 0; padding: 20px; border: 0; background: transparent; overflow: hidden; }
 .about-dialog[open] { display: grid; place-items: center; }

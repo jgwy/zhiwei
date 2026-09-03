@@ -156,3 +156,92 @@ test("编辑历史用户消息会截断后续聊天并重新回复", async ({ pa
     return state.conversations[0]?.historyRevision;
   }).toBe(3);
 });
+
+test("历史对话按年、月、周分组并在刷新后恢复默认开合", async ({ page }, testInfo) => {
+  const day = 86_400_000;
+  const now = Date.now();
+  const conversation = (id: string, offsetDays: number) => {
+    const updatedAt = new Date(now - offsetDays * day).toISOString();
+    return {
+      id,
+      title: id,
+      titleSource: "default",
+      titleLocked: false,
+      createdAt: updatedAt,
+      updatedAt,
+      historyRevision: 0,
+      messages: [],
+    };
+  };
+  const bootstrap = {
+    user: {
+      id: "00000000-0000-0000-0000-000000000001",
+      onboarding_complete: true,
+      settings: {},
+      timezone: "Asia/Shanghai",
+    },
+    conversations: [
+      conversation("本周对话", 0),
+      conversation("上周对话", 8),
+      conversation("上月对话", 40),
+      conversation("去年对话", 400),
+    ],
+    profile: null,
+    memories: [],
+    mood: [],
+    skill: null,
+    onboarding: { complete: true, answeredCount: 3, canFinish: true, question: null },
+    returnNote: null,
+    developerModeAvailable: false,
+    adapter: "scripted",
+    modelModeLabel: "仿真模式",
+    modelCapabilities: {
+      streaming: true,
+      structuredOutput: true,
+      toolCalls: false,
+      nativeWebSearch: false,
+      usage: false,
+      maxContextTokens: 8_192,
+    },
+  };
+
+  await page.route("**/api/bootstrap", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify(bootstrap),
+  }));
+  await page.route("**/api/activity/stream", (route) => route.abort());
+  await page.goto("/");
+
+  if (testInfo.project.name.includes("mobile")) {
+    await page.locator(".mobile-nav-button").click();
+  }
+
+  const history = page.locator("nav.conversation-list");
+  await expect(history).toHaveAttribute("aria-label", "历史对话");
+  await expect(history).toBeVisible();
+  const yearGroups = history.locator(":scope > .conversation-group-year");
+  await expect(yearGroups).toHaveCount(2);
+  await expect(yearGroups.nth(0).locator(":scope > .conversation-group-toggle")).toHaveAttribute("aria-expanded", "true");
+  await expect(yearGroups.nth(1).locator(":scope > .conversation-group-toggle")).toHaveAttribute("aria-expanded", "false");
+
+  const currentYear = yearGroups.nth(0);
+  const currentMonthGroups = currentYear.locator(":scope > .conversation-group-content > .conversation-group-month");
+  await expect(currentMonthGroups.nth(0).locator(":scope > .conversation-group-toggle")).toHaveAttribute("aria-expanded", "true");
+  await expect(currentMonthGroups.nth(1).locator(":scope > .conversation-group-toggle")).toHaveAttribute("aria-expanded", "false");
+  await expect(currentMonthGroups.nth(0).locator(".conversation-group-week").first().locator(":scope > .conversation-group-toggle")).toHaveAttribute("aria-expanded", "true");
+
+  const oldYearToggle = yearGroups.nth(1).locator(":scope > .conversation-group-toggle");
+  await oldYearToggle.click();
+  await expect(oldYearToggle).toHaveAttribute("aria-expanded", "true");
+  const oldMonth = yearGroups.nth(1).locator(":scope > .conversation-group-content > .conversation-group-month").first();
+  await oldMonth.locator(":scope > .conversation-group-toggle").click();
+  const oldWeek = oldMonth.locator(":scope > .conversation-group-content > .conversation-group-week").first();
+  await oldWeek.locator(":scope > .conversation-group-toggle").click();
+  await expect(yearGroups.nth(1).getByRole("button", { name: "去年对话", exact: true })).toBeVisible();
+  await page.reload();
+  if (testInfo.project.name.includes("mobile")) {
+    await page.locator(".mobile-nav-button").click();
+  }
+  await expect(page.locator("nav.conversation-list").locator(":scope > .conversation-group-year").nth(1).locator(":scope > .conversation-group-toggle")).toHaveAttribute("aria-expanded", "false");
+});

@@ -22,10 +22,11 @@ import {
   ThumbsUp,
   X,
 } from "lucide-react";
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessage } from "@zhiwei/core/client";
 import type { BootstrapData, ConversationView } from "@/lib/client-types";
 import { formatDateDivider, formatFullTime, formatRelativeDateTime, localDateKey, readSseStream } from "@/lib/utils";
+import { groupConversationsByTime, type ConversationHistory } from "@/lib/conversation-history";
 import { isNearChatBottom } from "@/lib/chat-scroll";
 import { Button } from "@/components/ui/button";
 import { Onboarding } from "@/components/onboarding";
@@ -178,7 +179,8 @@ export function ZhiweiApp() {
       setToast(await responseMessage(response, "标题没有修改成功，请重试。"));
       return;
     }
-    setData((current) => current ? { ...current, conversations: current.conversations.map((item) => item.id === conversation.id ? { ...item, title, titleSource: "manual", titleLocked: true } : item) } : current);
+    const updatedAt = new Date().toISOString();
+    setData((current) => current ? { ...current, conversations: current.conversations.map((item) => item.id === conversation.id ? { ...item, title, titleSource: "manual", titleLocked: true, updatedAt } : item) } : current);
   }
 
   async function sendMessage(content = input) {
@@ -197,7 +199,7 @@ export function ZhiweiApp() {
     followLatestRef.current = true;
     forceScrollRef.current = true;
     setShowJumpToLatest(false);
-    updateConversationMessages(conversationId, (messages) => [...messages, userMessage, assistantTemp]);
+    updateConversationMessages(conversationId, (messages) => [...messages, userMessage, assistantTemp], userMessage.createdAt);
     setInput("");
     setStreaming(true);
     const abort = new AbortController();
@@ -275,11 +277,11 @@ export function ZhiweiApp() {
           const deleted = new Set<string>(event.deletedMessageIds);
           updateConversationMessages(conversationId, (messages) => messages
             .filter((item) => !deleted.has(item.id))
-            .map((item) => item.id === event.message.id ? event.message : item));
+            .map((item) => item.id === event.message.id ? event.message : item), new Date().toISOString());
           setData((current) => current ? {
             ...current,
             conversations: current.conversations.map((item) => item.id === conversationId
-              ? { ...item, historyRevision: event.historyRevision }
+              ? { ...item, historyRevision: event.historyRevision, updatedAt: new Date().toISOString() }
               : item),
           } : current);
           setReceipts((current) => Object.fromEntries(Object.entries(current).filter(([id]) => !deleted.has(id))));
@@ -334,8 +336,13 @@ export function ZhiweiApp() {
     }
   }
 
-  function updateConversationMessages(conversationId: string, updater: (messages: ChatMessage[]) => ChatMessage[]) {
-    setData((current) => current ? { ...current, conversations: current.conversations.map((conversation) => conversation.id === conversationId ? { ...conversation, messages: updater(conversation.messages) } : conversation) } : current);
+  function updateConversationMessages(conversationId: string, updater: (messages: ChatMessage[]) => ChatMessage[], updatedAt?: string) {
+    setData((current) => current ? {
+      ...current,
+      conversations: current.conversations.map((conversation) => conversation.id === conversationId
+        ? { ...conversation, ...(updatedAt ? { updatedAt } : {}), messages: updater(conversation.messages) }
+        : conversation),
+    } : current);
   }
 
   async function feedback(messageId: string, value: "understood" | "not-me", reason?: string) {
@@ -412,9 +419,13 @@ export function ZhiweiApp() {
       <aside className={`conversation-sidebar ${mobileMenu === "conversations" ? "mobile-open" : ""}`}>
         <div className="sidebar-brand"><span>知微</span><button className="mobile-close" onClick={() => setMobileMenu(null)}><X size={18} /></button></div>
         <Button variant="secondary" className="new-chat-button" onClick={() => void createConversation()}><Plus size={17} /> 新的对话</Button>
-        <nav className="conversation-list">
-          {data.conversations.map((conversation) => <div className={conversation.id === activeId ? "conversation-row active" : "conversation-row"} key={conversation.id}><button className="conversation-open" onClick={() => { setActiveId(conversation.id); setMobileMenu(null); }}><MessageCircleMore size={16} /><span>{conversation.title}</span></button><button className="conversation-more" onClick={() => void renameConversation(conversation)} aria-label={`修改对话标题：${conversation.title}`}><MoreHorizontal size={15} /></button></div>)}
-        </nav>
+        <ConversationHistoryNav
+          conversations={data.conversations}
+          activeId={activeId}
+          timeZone={data.user.timezone}
+          onOpen={(conversationId) => { setActiveId(conversationId); setMobileMenu(null); }}
+          onRename={renameConversation}
+        />
         <div className="sidebar-footer">
           <button ref={aboutTriggerRef} onClick={openAbout}><Info size={16} /><span>关于</span></button>
           {data.developerModeAvailable ? <button onClick={() => setDeveloperMode(true)}><Code2 size={16} /><span>开发者模式</span></button> : null}
@@ -493,6 +504,152 @@ export function ZhiweiApp() {
       {aboutOpen ? <AboutDialog onClose={closeAbout} /> : null}
       {toast ? <div className="toast" aria-live="polite"><Check size={16} />{toast}</div> : null}
     </main>
+  );
+}
+
+type ConversationHistoryNavProps = {
+  conversations: ConversationView[];
+  activeId: string | null;
+  timeZone: string;
+  onOpen: (conversationId: string) => void;
+  onRename: (conversation: ConversationView) => Promise<void> | void;
+};
+
+function ConversationHistoryNav({ conversations, activeId, timeZone, onOpen, onRename }: ConversationHistoryNavProps) {
+  const [now, setNow] = useState(() => new Date());
+  const history = useMemo<ConversationHistory>(
+    () => groupConversationsByTime(conversations, timeZone, now),
+    [conversations, timeZone, now],
+  );
+  const currentPathSignature = history.currentPath.join("|");
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set(history.currentPath));
+  const previousPathRef = useRef(currentPathSignature);
+
+  useEffect(() => {
+    const previousPathSignature = previousPathRef.current;
+    if (previousPathSignature === currentPathSignature) return;
+    const previousPath = previousPathSignature.split("|").filter(Boolean);
+    setOpenGroups((current) => {
+      const next = new Set(current);
+      previousPath.forEach((groupId) => {
+        if (!history.currentPath.includes(groupId)) next.delete(groupId);
+      });
+      history.currentPath.forEach((groupId) => next.add(groupId));
+      return next;
+    });
+    previousPathRef.current = currentPathSignature;
+  }, [currentPathSignature, history.currentPath]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setNow(new Date()), 60_000);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  function toggleGroup(groupId: string) {
+    setOpenGroups((current) => {
+      const next = new Set(current);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  }
+
+  return (
+    <nav className="conversation-list" aria-label="历史对话">
+      {history.years.map((year) => (
+        <ConversationTimeGroup
+          key={year.id}
+          id={year.id}
+          label={year.label}
+          count={year.count}
+          level="year"
+          isCurrent={year.isCurrent}
+          open={openGroups.has(year.id)}
+          onToggle={() => toggleGroup(year.id)}
+        >
+          {year.months.map((month) => (
+            <ConversationTimeGroup
+              key={month.id}
+              id={month.id}
+              label={month.label}
+              count={month.count}
+              level="month"
+              isCurrent={month.isCurrent}
+              open={openGroups.has(month.id)}
+              onToggle={() => toggleGroup(month.id)}
+            >
+              {month.weeks.map((week) => (
+                <ConversationTimeGroup
+                  key={week.id}
+                  id={week.id}
+                  label={week.label}
+                  count={week.conversations.length}
+                  level="week"
+                  isCurrent={week.isCurrent}
+                  open={openGroups.has(week.id)}
+                  onToggle={() => toggleGroup(week.id)}
+                >
+                  {week.conversations.map((conversation) => {
+                    const active = conversation.id === activeId;
+                    return (
+                      <div className={active ? "conversation-row active" : "conversation-row"} key={conversation.id}>
+                        <button
+                          className="conversation-open"
+                          onClick={() => onOpen(conversation.id)}
+                          aria-current={active ? "page" : undefined}
+                        >
+                          <MessageCircleMore size={16} />
+                          <span>{conversation.title}</span>
+                        </button>
+                        <button
+                          className="conversation-more"
+                          onClick={() => void onRename(conversation)}
+                          aria-label={`修改对话标题：${conversation.title}`}
+                        >
+                          <MoreHorizontal size={15} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </ConversationTimeGroup>
+              ))}
+            </ConversationTimeGroup>
+          ))}
+        </ConversationTimeGroup>
+      ))}
+    </nav>
+  );
+}
+
+function ConversationTimeGroup({ id, label, count, level, isCurrent, open, onToggle, children }: {
+  id: string;
+  label: string;
+  count: number;
+  level: "year" | "month" | "week";
+  isCurrent: boolean;
+  open: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  const contentId = `conversation-group-${id.replace(/[^a-z0-9_-]/gi, "-")}`;
+  return (
+    <section className={`conversation-group conversation-group-${level}${isCurrent ? " current" : ""}${open ? " expanded" : ""}`}>
+      <button
+        className="conversation-group-toggle"
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        aria-controls={contentId}
+        aria-label={`${label}，${count}段对话，${open ? "收起" : "展开"}`}
+      >
+        <ChevronRight size={14} className="conversation-group-chevron" aria-hidden="true" />
+        <span>{label}</span>
+        <small>{count}</small>
+      </button>
+      <div id={contentId} className="conversation-group-content" role="group" hidden={!open}>
+        {children}
+      </div>
+    </section>
   );
 }
 
