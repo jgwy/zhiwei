@@ -7,6 +7,8 @@ import { isNoDbMode, updateNoDbSettings } from "@/lib/no-db-store";
 
 const SettingsSchema = z.object({
   memoryEnabled: z.boolean().optional(),
+  shortTermMemoryEnabled: z.boolean().optional(),
+  longTermMemoryEnabled: z.boolean().optional(),
   emotionTrackingEnabled: z.boolean().optional(),
   skillEvolutionEnabled: z.boolean().optional(),
   returnNotesEnabled: z.boolean().optional(),

@@ -4,7 +4,7 @@ import { LineChart, Line, ResponsiveContainer, YAxis, Tooltip } from "recharts";
 import { Check, ChevronRight, Pencil, Settings2, ShieldCheck, Undo2, Trash2, X } from "lucide-react";
 import { useState } from "react";
 import type { BootstrapData } from "@/lib/client-types";
-import { categoryLabel } from "@zhiwei/core/client";
+import { categoryLabel, memoryKindLabel } from "@zhiwei/core/client";
 import { Toggle } from "@/components/ui/toggle";
 
 export function InsightPanel({
@@ -46,6 +46,49 @@ export function InsightPanel({
     } finally {
       setSavingId(null);
     }
+  }
+  const pendingMemories = data.memories.filter((memory) => memory.status === "pending");
+  const activeMemories = data.memories.filter((memory) => memory.status !== "pending");
+
+  function renderMemory(memory: BootstrapData["memories"][number]) {
+    const lifetime = memory.tier === "long" ? "长期 · 跨对话" : "短期 · 当前对话";
+    const source = memory.status === "pending"
+      ? "等待你确认"
+      : memory.sourceType === "explicit"
+        ? "用户明确提供"
+        : memory.sourceType === "confirmed"
+          ? "用户已确认"
+          : memory.sourceType === "system"
+            ? "系统记录"
+            : "对话推断";
+    return (
+      <div className={`memory-row ${memory.status === "pending" ? "memory-pending" : ""}`} key={memory.versionId}>
+        {editingId === memory.id ? (
+          <div className="memory-editor">
+            <textarea value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={600} rows={3} aria-label="编辑记忆内容" />
+            <div className="memory-editor-actions">
+              <button onClick={() => void saveEdit(memory)} disabled={!draft.trim() || savingId === memory.id} title="保存修改"><Check size={14} /> 保存</button>
+              <button onClick={() => setEditingId(null)} disabled={savingId === memory.id} title="取消编辑"><X size={14} /> 取消</button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <button onClick={() => onMemoryClick(memory.content)}>
+              <span>
+                <small>{categoryLabel(memory.category)} · {memoryKindLabel(memory.kind)} · {lifetime} · {source}</small>
+                {memory.content}
+              </span>
+              <ChevronRight size={15} />
+            </button>
+            <div className="memory-actions">
+              {memory.status === "pending" || memory.sourceType === "inferred" ? <button className="memory-action-button" onClick={() => void onMemoryConfirm(memory.id)} aria-label={`确认记忆：${memory.content}`} title="确认后加入长期记忆"><ShieldCheck size={13} /></button> : null}
+              <button className="memory-action-button" onClick={() => beginEdit(memory)} aria-label={`编辑记忆：${memory.content}`} title="编辑这条认识"><Pencil size={13} /></button>
+              <button className="withdraw-button" onClick={() => onWithdraw(memory.id)} aria-label={`撤回记忆：${memory.content}`} title="撤回这条认识"><Undo2 size={13} /></button>
+            </div>
+          </>
+        )}
+      </div>
+    );
   }
   return (
     <aside className="insight-panel">
@@ -104,44 +147,23 @@ export function InsightPanel({
       </section>
 
       <section className="insight-section">
-        <div className="section-title"><h3>知微眼中的你</h3><span>{data.memories.length} 条认识</span></div>
+        <div className="section-title"><h3>知微眼中的你</h3><span>{activeMemories.length} 条生效</span></div>
         <p className="profile-summary">{data.profile?.summary ?? "我们还在初识阶段。等你多说一点，我会在这里形成一段会持续更新的理解。"}</p>
-        <div className="memory-list">
-          {data.memories.slice(0, 6).map((memory) => (
-            <div className="memory-row" key={memory.versionId}>
-              {editingId === memory.id ? (
-                <div className="memory-editor">
-                  <textarea value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={600} rows={3} aria-label="编辑记忆内容" />
-                  <div className="memory-editor-actions">
-                    <button onClick={() => void saveEdit(memory)} disabled={!draft.trim() || savingId === memory.id} title="保存修改"><Check size={14} /> 保存</button>
-                    <button onClick={() => setEditingId(null)} disabled={savingId === memory.id} title="取消编辑"><X size={14} /> 取消</button>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <button onClick={() => onMemoryClick(memory.content)}>
-                    <span>
-                      <small>{categoryLabel(memory.category)} · {memory.tier === "long" ? "长期" : "短期"} · {memory.sourceType === "explicit" ? "用户明确提供" : memory.sourceType === "confirmed" ? "用户已确认" : memory.sourceType === "system" ? "系统记录" : "对话推断"}</small>
-                      {memory.content}
-                    </span>
-                    <ChevronRight size={15} />
-                  </button>
-                  <div className="memory-actions">
-                    {memory.sourceType === "inferred" ? <button className="memory-action-button" onClick={() => void onMemoryConfirm(memory.id)} aria-label={`确认记忆：${memory.content}`} title="确认这条认识"><ShieldCheck size={13} /></button> : null}
-                    <button className="memory-action-button" onClick={() => beginEdit(memory)} aria-label={`编辑记忆：${memory.content}`} title="编辑这条认识"><Pencil size={13} /></button>
-                    <button className="withdraw-button" onClick={() => onWithdraw(memory.id)} aria-label={`撤回记忆：${memory.content}`} title="撤回这条认识"><Undo2 size={13} /></button>
-                  </div>
-                </>
-              )}
-            </div>
-          ))}
-        </div>
+        {pendingMemories.length ? (
+          <div className="memory-candidate-box">
+            <div><strong>待确认</strong><span>{pendingMemories.length} 条 · 确认前不会用于回答</span></div>
+            <div className="memory-list">{pendingMemories.slice(0, 6).map(renderMemory)}</div>
+          </div>
+        ) : null}
+        <p className="memory-guide">短期记忆只延续当前对话并在 7 天内过期；长期记忆用于跨对话的稳定画像、学习进度和概念误区。</p>
+        <div className="memory-list">{activeMemories.slice(0, 8).map(renderMemory)}</div>
       </section>
 
       <section className="insight-section settings-section" id="memory-settings">
         <div className="section-title"><h3>授权范围</h3></div>
         {([
-          ["memoryEnabled", "长期记忆", "关闭后不再记录或使用画像"],
+          ["shortTermMemoryEnabled", "短期上下文", "仅延续当前对话，最长保留 7 天"],
+          ["longTermMemoryEnabled", "长期记忆", "跨对话使用已确认的稳定认识"],
           ["emotionTrackingEnabled", "情绪趋势", "关闭后不再生成新的心情样本"],
           ["skillEvolutionEnabled", "相处方式学习", "关闭后保持目前学到的相处方式"],
           ["returnNotesEnabled", "站内回访", "关闭后不再展示未完话题提醒"],

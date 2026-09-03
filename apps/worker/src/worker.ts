@@ -10,6 +10,9 @@ import {
   failJob,
   getConversationSummary,
   getUserSettings,
+  inferMemoryKind,
+  isExplicitMemoryRequest,
+  isMemoryDenial,
   listMessages,
   normalizeDimensionWeights,
   recordModelCallMeta,
@@ -85,7 +88,13 @@ async function handleReflection(job: any) {
       tool: "memory_search",
       userId: job.user_id,
       traceId,
-      arguments: { query: payload.content, limit: 8, ...(queryEmbedding?.[0] ? { queryEmbedding: queryEmbedding[0] } : {}) },
+      arguments: {
+        query: payload.content,
+        limit: 8,
+        conversationId: payload.conversationId,
+        includePending: true,
+        ...(queryEmbedding?.[0] ? { queryEmbedding: queryEmbedding[0] } : {}),
+      },
     }),
   ]);
   const personalSkill = PersonalSkillSchema.parse(skillResult.skill.content) as PersonalSkill;
@@ -145,10 +154,15 @@ async function handleReflection(job: any) {
 
   let profileSummary = profile?.summary ?? "仍在形成第一轮认识。";
   let dimensionWeights = normalizeDimensionWeights(profile?.dimensionWeights ?? equalWeights());
-  const shouldRefreshProfile = settings.memoryEnabled !== false && (decision.refreshProfile || decision.memories.length > 0 || !profile);
+  const activeLongMemories = memories.filter((memory) => memory.tier === "long" && memory.status !== "pending");
+  const confirmedLongMutations = decision.memories.filter((memory) => (
+    memory.tier === "long" && (memory.sourceType === "explicit" || memory.sourceType === "confirmed")
+  ));
+  const shouldRefreshProfile = settings.memoryEnabled !== false && settings.longTermMemoryEnabled !== false
+    && (confirmedLongMutations.length > 0 || (!profile && activeLongMemories.length > 0));
   if (shouldRefreshProfile) {
     const result = await gateway.synthesizeProfile({
-      memories: [...memories.map((memory) => memory.content), ...decision.memories.map((memory) => memory.content)],
+      memories: [...activeLongMemories.map((memory) => memory.content), ...confirmedLongMutations.map((memory) => memory.content)],
       currentSummary: profile?.summary,
       latestMessage: payload.content,
     });
@@ -241,21 +255,31 @@ async function tryEmbedding(userId: string, traceId: string, conversationId: str
 function equalWeights() { return { basic: 1, goal: 1, interest: 1, expression: 1, emotion: 1, experience: 1, challenge: 1, boundary: 1 }; }
 function filterMemoryMutations(mutations: any[], active: MemoryRecord[], sourceText: string) {
   const accepted: any[] = [];
-  const explicitRequest = /记住|以后记得|请保存|别忘了|不要忘记/u.test(sourceText);
+  if (isMemoryDenial(sourceText)) return accepted;
+  const explicitRequest = isExplicitMemoryRequest(sourceText);
+  const correctionSignal = /(?:其实|不是|改成|纠正|记错|不再|现在是|准确地说)/u.test(sourceText);
   for (const mutation of mutations) {
     if (accepted.length >= 2) break;
     if (mutation.category === "goal" && /^(担心|害怕|忧虑|压力|风险|困扰)/u.test(mutation.content.trim())) continue;
     if (/(密码|口令|API\s*key|密钥|验证码|身份证号|银行卡号)/iu.test(mutation.content)) continue;
     const sensitive = /(健康|疾病|用药|政治|宗教|性取向|财务|收入|债务|身份)/u.test(mutation.content);
     if (sensitive && !explicitRequest) continue;
-    const sameCategory = [
-      ...active.filter((memory) => memory.category === mutation.category).map((memory) => memory.content),
-      ...accepted.filter((memory) => memory.category === mutation.category).map((memory) => memory.content),
-    ];
-    if (mutation.operation === "create" && sameCategory.some((content) => semanticOverlap(content, mutation.content) >= 0.72)) continue;
+    const kind = inferMemoryKind(mutation.content, mutation.kind);
+    const sameCategory = active.filter((memory) => memory.category === mutation.category && (memory.kind ?? "profile") === kind);
+    const duplicate = sameCategory.find((memory) => semanticOverlap(memory.content, mutation.content) >= 0.72);
+    if (mutation.operation === "create" && duplicate && !correctionSignal) continue;
+    const conflict = correctionSignal
+      ? [...sameCategory].sort((left, right) => semanticOverlap(right.content, mutation.content) - semanticOverlap(left.content, mutation.content))[0]
+      : undefined;
+    const shouldSupersede = mutation.operation === "create" && conflict
+      && semanticOverlap(conflict.content, mutation.content) >= 0.28;
     accepted.push({
       ...mutation,
-      sourceType: explicitRequest ? "explicit" : mutation.sourceType ?? "inferred",
+      operation: shouldSupersede ? "supersede" : mutation.operation,
+      memoryId: shouldSupersede ? conflict.id : mutation.memoryId,
+      kind,
+      tier: explicitRequest || kind === "learning" || kind === "misconception" ? "long" : mutation.tier,
+      sourceType: explicitRequest ? "explicit" : shouldSupersede ? "confirmed" : mutation.sourceType ?? "inferred",
       sensitivity: sensitive ? "sensitive" : mutation.sensitivity ?? "normal",
       evidenceQuote: mutation.evidenceQuote ?? sourceText.slice(0, 200),
       importance: mutation.importance ?? (explicitRequest ? 0.8 : 0.5),

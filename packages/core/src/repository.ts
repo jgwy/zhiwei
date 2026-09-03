@@ -3,6 +3,7 @@ import { diffJson } from "diff";
 import type { PoolClient } from "pg";
 import { getPool, withTransaction } from "./db";
 import { defaultPersonalSkill } from "./personal-skill";
+import { inferMemoryKind, memoryIsRecallable, normalizeMemoryMutation } from "./memory-policy";
 import {
   calculateUnderstandingScore,
   deriveUnderstandingComponents,
@@ -50,7 +51,7 @@ export async function getUserState(userId: string) {
     getPool().query(`SELECT * FROM users WHERE id = $1`, [userId]),
     listConversations(userId),
     getLatestProfile(userId),
-    getActiveMemories(userId),
+    listMemoriesForUser(userId),
     getMoodSeries(userId),
     getActiveSkill(userId),
   ]);
@@ -288,20 +289,56 @@ export async function failJob(job: any, error: unknown): Promise<void> {
   );
 }
 
-export async function getActiveMemories(userId: string): Promise<MemoryRecord[]> {
+export type MemorySearchContext = {
+  conversationId?: string;
+  projectId?: string;
+  includePending?: boolean;
+  recordUsage?: boolean;
+};
+
+const memorySelectColumns = `m.id, mv.id AS version_id, mv.category, mv.content, mv.tier,
+  mv.confidence, mv.valid_until, mv.reason, mv.created_at, mv.status,
+  mv.source_type, mv.scope, mv.scope_key, mv.sensitivity, mv.importance,
+  mv.memory_kind, mv.evidence_quote, mv.last_confirmed_at, mv.last_used_at`;
+
+export async function listMemoriesForUser(userId: string): Promise<MemoryRecord[]> {
   const result = await getPool().query(
-    `SELECT m.id, mv.id AS version_id, mv.category, mv.content, mv.tier,
-            mv.confidence, mv.valid_until, mv.reason, mv.created_at,
-            mv.source_type, mv.scope, mv.sensitivity, mv.importance,
-            mv.evidence_quote, mv.last_confirmed_at, mv.last_used_at
+    `SELECT ${memorySelectColumns}
      FROM memories m
-     JOIN memory_versions mv ON mv.memory_id = m.id AND mv.is_active = true
+     JOIN memory_versions mv ON mv.memory_id = m.id
+     WHERE m.user_id = $1
+       AND mv.status IN ('active', 'pending')
+       AND (mv.valid_until IS NULL OR mv.valid_until > now())
+     ORDER BY CASE WHEN mv.status = 'pending' THEN 0 ELSE 1 END, mv.created_at DESC
+     LIMIT 100`,
+    [userId],
+  );
+  return result.rows.map(mapMemoryRow);
+}
+
+export async function getActiveMemories(
+  userId: string,
+  context: MemorySearchContext = {},
+): Promise<MemoryRecord[]> {
+  const result = await getPool().query(
+    `SELECT ${memorySelectColumns}
+     FROM memories m
+     JOIN memory_versions mv ON mv.memory_id = m.id
      JOIN users u ON u.id = m.user_id
      WHERE m.user_id = $1
        AND (u.settings->>'memoryEnabled')::boolean = true
+       AND mv.is_active = true
+       AND mv.status = 'active'
        AND (mv.valid_until IS NULL OR mv.valid_until > now())
+       AND (
+         (COALESCE((u.settings->>'longTermMemoryEnabled')::boolean, true) = true AND mv.tier = 'long'
+           AND (mv.scope = 'user' OR (mv.scope = 'project' AND mv.scope_key = $3)))
+         OR (COALESCE((u.settings->>'shortTermMemoryEnabled')::boolean, true) = true
+             AND mv.tier = 'short' AND mv.memory_kind = 'episode'
+             AND mv.scope = 'conversation' AND mv.scope_key = $2)
+       )
      ORDER BY mv.confidence DESC, mv.created_at DESC LIMIT 100`,
-    [userId],
+    [userId, context.conversationId ?? null, context.projectId ?? null],
   );
   return result.rows.map(mapMemoryRow);
 }
@@ -311,30 +348,70 @@ export async function searchMemories(
   query: string,
   limit = 8,
   queryEmbedding?: number[],
+  context: MemorySearchContext = {},
 ): Promise<MemoryRecord[]> {
   if (queryEmbedding?.length === 1024) {
     const vector = `[${queryEmbedding.join(",")}]`;
     const result = await getPool().query(
-      `SELECT m.id, mv.id AS version_id, mv.category, mv.content, mv.tier,
-              mv.confidence, mv.valid_until, mv.reason, mv.created_at,
-              mv.source_type, mv.scope, mv.sensitivity, mv.importance,
-              mv.evidence_quote, mv.last_confirmed_at, mv.last_used_at,
+      `SELECT ${memorySelectColumns},
               1 - (mv.embedding_v2 <=> $2::vector) AS similarity
        FROM memories m
-       JOIN memory_versions mv ON mv.memory_id = m.id AND mv.is_active = true
+       JOIN memory_versions mv ON mv.memory_id = m.id
        JOIN users u ON u.id = m.user_id
        WHERE m.user_id = $1
          AND (u.settings->>'memoryEnabled')::boolean = true
+         AND (mv.status = 'active' OR ($5::boolean = true AND mv.status = 'pending'))
+         AND (mv.is_active = true OR ($5::boolean = true AND mv.status = 'pending'))
          AND (mv.valid_until IS NULL OR mv.valid_until > now())
          AND mv.embedding_v2 IS NOT NULL
+         AND (
+           (COALESCE((u.settings->>'longTermMemoryEnabled')::boolean, true) = true AND mv.tier = 'long'
+             AND (mv.scope = 'user' OR (mv.scope = 'project' AND mv.scope_key = $4)))
+           OR (COALESCE((u.settings->>'shortTermMemoryEnabled')::boolean, true) = true
+               AND mv.tier = 'short' AND mv.memory_kind = 'episode'
+               AND mv.scope = 'conversation' AND mv.scope_key = $3)
+         )
        ORDER BY mv.embedding_v2 <=> $2::vector LIMIT 32`,
-      [userId, vector],
+      [userId, vector, context.conversationId ?? null, context.projectId ?? null, context.includePending === true],
     );
     if (result.rowCount) {
-      return rankHybridMemories(result.rows, query, limit);
+      const memories = rankHybridMemories(result.rows, query, limit);
+      if (context.recordUsage) await recordMemoryUsage(userId, memories);
+      return memories;
     }
   }
-  return rankMemories(await getActiveMemories(userId), query, limit);
+  const candidates = context.includePending
+    ? (await listMemoriesForUser(userId)).filter((memory) => {
+        if (memory.status === "pending") {
+          return memory.tier === "long" && (
+            memory.scope === "user"
+            || (memory.scope === "project" && Boolean(context.projectId) && memory.scopeKey === context.projectId)
+          );
+        }
+        return memoryIsRecallable(memory, context);
+      })
+    : await getActiveMemories(userId, context);
+  const memories = rankMemories(candidates, query, limit);
+  if (context.recordUsage) await recordMemoryUsage(userId, memories);
+  return memories;
+}
+
+async function recordMemoryUsage(userId: string, memories: MemoryRecord[]) {
+  if (!memories.length) return;
+  const versionIds = memories.map((memory) => memory.versionId);
+  await getPool().query(
+    `UPDATE memory_versions SET last_used_at = now()
+     WHERE user_id = $1 AND id = ANY($2::uuid[]) AND status = 'active'`,
+    [userId, versionIds],
+  );
+  for (const memory of memories) {
+    await getPool().query(
+      `INSERT INTO memory_events
+        (id, user_id, memory_id, version_id, event_type, content_hash, payload)
+       VALUES ($1, $2, $3, $4, 'used', $5, $6::jsonb)`,
+      [randomUUID(), userId, memory.id, memory.versionId, createHash("sha256").update(memory.content).digest("hex"), JSON.stringify({ tier: memory.tier, kind: memory.kind, scope: memory.scope })],
+    );
+  }
 }
 
 function rankHybridMemories(rows: any[], query: string, limit: number): MemoryRecord[] {
@@ -411,7 +488,7 @@ export async function getProfileForContext(
   const settings = await getPool().query(`SELECT settings FROM users WHERE id = $1`, [
     userId,
   ]);
-  if (settings.rows[0]?.settings?.memoryEnabled === false) return null;
+  if (settings.rows[0]?.settings?.memoryEnabled === false || settings.rows[0]?.settings?.longTermMemoryEnabled === false) return null;
   return getLatestProfile(userId);
 }
 
@@ -466,6 +543,7 @@ export async function getConversationSummary(
      JOIN users u ON u.id = cs.user_id
      WHERE cs.user_id = $1 AND cs.conversation_id = $2
        AND (u.settings->>'memoryEnabled')::boolean = true
+       AND COALESCE((u.settings->>'shortTermMemoryEnabled')::boolean, true) = true
      ORDER BY cs.created_at DESC LIMIT 1`,
     [userId, conversationId],
   );
@@ -510,6 +588,7 @@ export async function getActiveSkill(userId: string) {
 export async function commitReflection(input: {
   userId: string;
   conversationId: string;
+  projectId?: string;
   sourceMessageId: string;
   reflection: ReflectionOutput;
   embeddings?: Array<number[] | null>;
@@ -520,8 +599,17 @@ export async function commitReflection(input: {
     ]);
     const settings = settingsResult.rows[0]?.settings ?? {};
     const memoryEnabled = settings.memoryEnabled !== false;
+    const shortTermMemoryEnabled = memoryEnabled && settings.shortTermMemoryEnabled !== false;
+    const longTermMemoryEnabled = memoryEnabled && settings.longTermMemoryEnabled !== false;
+    const mutations = input.reflection.memories
+      .map((rawMutation, mutationIndex) => ({ rawMutation, mutationIndex }))
+      .filter(({ rawMutation }) => rawMutation.tier === "short" ? shortTermMemoryEnabled : longTermMemoryEnabled);
 
-    for (const [mutationIndex, mutation] of (memoryEnabled ? input.reflection.memories : []).entries()) {
+    for (const { rawMutation, mutationIndex } of mutations) {
+      const mutation = normalizeMemoryMutation(rawMutation, {
+        conversationId: input.conversationId,
+        projectId: input.projectId,
+      });
       const evidenceResult = await client.query(
         `SELECT count(*)::int AS count FROM messages
          WHERE id = ANY($1::uuid[]) AND user_id = $2 AND conversation_id = $3`,
@@ -539,8 +627,9 @@ export async function commitReflection(input: {
         if (!existing.rowCount) throw new Error("要更新的记忆不存在或不属于当前用户");
         await client.query(
           `UPDATE memory_versions SET is_active = false, status = 'superseded'
-           WHERE memory_id = $1 AND user_id = $2 AND is_active = true`,
-          [memoryId, input.userId],
+           WHERE memory_id = $1 AND user_id = $2
+             AND (status = 'pending' OR ($3::boolean = true AND status = 'active'))`,
+          [memoryId, input.userId, mutation.status === "active"],
         );
       } else {
         await client.query(
@@ -555,10 +644,10 @@ export async function commitReflection(input: {
       await client.query(
         `INSERT INTO memory_versions
           (id, memory_id, user_id, category, content, tier, confidence, valid_until, reason,
-           embedding_v2, source_type, scope, sensitivity, importance, evidence_quote,
-           last_confirmed_at, is_active, status)
+           embedding_v2, source_type, scope, scope_key, sensitivity, importance, memory_kind,
+           evidence_quote, last_confirmed_at, is_active, status)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector,
-                 $11, $12, $13, $14, $15, $16, true, 'active')`,
+                 $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
         [
           versionId,
           memoryId,
@@ -574,10 +663,14 @@ export async function commitReflection(input: {
             : null,
           mutation.sourceType,
           mutation.scope,
+          mutation.scopeKey,
           mutation.sensitivity,
           mutation.importance,
+          mutation.kind,
           mutation.evidenceQuote ?? null,
           confirmedAt,
+          mutation.status === "active",
+          mutation.status,
         ],
       );
       for (const evidenceId of mutation.evidenceMessageIds) {
@@ -598,13 +691,16 @@ export async function commitReflection(input: {
           operation: mutation.operation,
           sourceType: mutation.sourceType,
           scope: mutation.scope,
+          scopeKey: mutation.scopeKey,
+          kind: mutation.kind,
+          status: mutation.status,
           sensitivity: mutation.sensitivity,
           importance: mutation.importance,
         },
       });
     }
 
-    if (memoryEnabled && input.reflection.summaryChanged !== false) {
+    if (shortTermMemoryEnabled && input.reflection.summaryChanged !== false) {
       await client.query(
         `INSERT INTO conversation_summaries (id, conversation_id, user_id, summary, source_message_id)
          VALUES ($1, $2, $3, $4, $5)`,
@@ -636,14 +732,12 @@ export async function commitReflection(input: {
     }
 
     let profile: ProfileSnapshot | null = null;
-    if (memoryEnabled && input.reflection.profileChanged !== false) {
+    if (longTermMemoryEnabled && input.reflection.profileChanged !== false) {
       const memoriesResult = await client.query(
-      `SELECT m.id, mv.id AS version_id, mv.category, mv.content, mv.tier,
-              mv.confidence, mv.valid_until, mv.reason, mv.created_at,
-              mv.source_type, mv.scope, mv.sensitivity, mv.importance,
-              mv.evidence_quote, mv.last_confirmed_at, mv.last_used_at
-       FROM memories m JOIN memory_versions mv ON mv.memory_id = m.id AND mv.is_active = true
-       WHERE m.user_id = $1`,
+      `SELECT ${memorySelectColumns}
+       FROM memories m JOIN memory_versions mv ON mv.memory_id = m.id
+       WHERE m.user_id = $1 AND mv.is_active = true AND mv.status = 'active'
+         AND mv.tier = 'long' AND mv.scope = 'user'`,
       [input.userId],
     );
       const memories: MemoryRecord[] = memoriesResult.rows.map(mapMemoryRow);
@@ -708,7 +802,7 @@ export async function commitReflection(input: {
       );
     }
     return {
-      memoryCount: memoryEnabled ? input.reflection.memories.length : 0,
+      memoryCount: mutations.length,
       profile,
     };
   });
@@ -806,17 +900,29 @@ export async function updateMemory(input: {
   return withTransaction(async (client) => {
     const currentResult = await client.query(
       `SELECT m.id AS memory_id, mv.id AS version_id, mv.* FROM memories m
-       JOIN memory_versions mv ON mv.memory_id = m.id AND mv.is_active = true
-       WHERE m.id = $1 AND m.user_id = $2 FOR UPDATE`,
+       JOIN memory_versions mv ON mv.memory_id = m.id
+       WHERE m.id = $1 AND m.user_id = $2 AND mv.status IN ('pending', 'active')
+       ORDER BY CASE WHEN mv.status = 'pending' THEN 0 ELSE 1 END, mv.created_at DESC
+       LIMIT 1 FOR UPDATE`,
       [input.memoryId, input.userId],
     );
-    if (!currentResult.rowCount) throw new Error("找不到可编辑的活动记忆");
+    if (!currentResult.rowCount) throw new Error("找不到可编辑的记忆");
     const current = currentResult.rows[0];
     const versionId = randomUUID();
+    const tier = input.tier ?? current.tier;
+    if (tier === "short" && !current.scope_key) throw new Error("短期记忆必须绑定原会话");
+    const kind = tier === "short"
+      ? "episode"
+      : inferMemoryKind(input.content, current.memory_kind === "episode" ? undefined : current.memory_kind);
+    const scope = tier === "short" ? "conversation" : current.scope === "project" ? "project" : "user";
+    const scopeKey = scope === "user" ? null : current.scope_key;
+    const validUntil = tier === "short"
+      ? (input.validUntil === undefined ? current.valid_until : input.validUntil)
+      : (input.validUntil === undefined ? current.valid_until : input.validUntil);
     await client.query(
       `UPDATE memory_versions SET is_active = false, status = 'superseded'
-       WHERE id = $1 AND user_id = $2`,
-      [current.version_id, input.userId],
+       WHERE memory_id = $1 AND user_id = $2 AND status IN ('pending', 'active')`,
+      [input.memoryId, input.userId],
     );
     await recordMemoryEvent(client, {
       userId: input.userId,
@@ -829,10 +935,10 @@ export async function updateMemory(input: {
     const result = await client.query(
       `INSERT INTO memory_versions
         (id, memory_id, user_id, category, content, tier, confidence, valid_until, reason,
-         embedding_v2, source_type, scope, sensitivity, importance, evidence_quote,
-         last_confirmed_at, is_active, status)
+         embedding_v2, source_type, scope, scope_key, sensitivity, importance, memory_kind,
+         evidence_quote, last_confirmed_at, is_active, status)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL,
-               'confirmed', $10, $11, $12, $13, now(), true, 'active')
+               'confirmed', $10, $11, $12, $13, $14, $15, now(), true, 'active')
        RETURNING *`,
       [
         versionId,
@@ -840,13 +946,15 @@ export async function updateMemory(input: {
         input.userId,
         input.category ?? current.category,
         input.content.trim(),
-        input.tier ?? current.tier,
+        tier,
         1,
-        input.validUntil === undefined ? current.valid_until : input.validUntil,
+        validUntil,
         input.reason ?? "用户主动修改了这条认识",
-        current.scope ?? "user",
+        scope,
+        scopeKey,
         current.sensitivity ?? "normal",
         Number(current.importance ?? 0.5),
+        kind,
         "用户编辑后的确认内容",
       ],
     );
@@ -865,28 +973,38 @@ export async function updateMemory(input: {
 
 export async function confirmMemory(input: { userId: string; memoryId: string }) {
   return withTransaction(async (client) => {
-    const result = await client.query(
-      `UPDATE memory_versions mv SET source_type = 'confirmed', last_confirmed_at = now()
-       FROM memories m
-       WHERE mv.memory_id = m.id AND mv.id = (
-         SELECT latest.id FROM memory_versions latest
-         WHERE latest.memory_id = m.id AND latest.user_id = $2 AND latest.is_active = true
-         ORDER BY latest.created_at DESC LIMIT 1
-       ) AND m.id = $1 AND m.user_id = $2
-       RETURNING mv.*`,
+    const candidate = await client.query(
+      `SELECT mv.* FROM memories m JOIN memory_versions mv ON mv.memory_id = m.id
+       WHERE m.id = $1 AND m.user_id = $2 AND mv.status IN ('pending', 'active')
+       ORDER BY CASE WHEN mv.status = 'pending' THEN 0 ELSE 1 END, mv.created_at DESC
+       LIMIT 1 FOR UPDATE`,
       [input.memoryId, input.userId],
     );
-    if (!result.rowCount) throw new Error("找不到可确认的活动记忆");
-    const row = result.rows[0];
+    if (!candidate.rowCount) throw new Error("找不到可确认的记忆");
+    const row = candidate.rows[0];
+    if (row.status === "pending") {
+      await client.query(
+        `UPDATE memory_versions SET is_active = false, status = 'superseded'
+         WHERE memory_id = $1 AND user_id = $2 AND status = 'active'`,
+        [input.memoryId, input.userId],
+      );
+    }
+    const result = await client.query(
+      `UPDATE memory_versions
+       SET source_type = 'confirmed', last_confirmed_at = now(), is_active = true, status = 'active'
+       WHERE id = $1 AND user_id = $2 RETURNING *`,
+      [row.id, input.userId],
+    );
+    const confirmed = result.rows[0];
     await recordMemoryEvent(client, {
       userId: input.userId,
       memoryId: input.memoryId,
-      versionId: row.id,
+      versionId: confirmed.id,
       eventType: "confirmed",
-      content: row.content,
+      content: confirmed.content,
       payload: { sourceType: "confirmed" },
     });
-    return mapMemoryRow({ ...row, id: input.memoryId, version_id: row.id });
+    return mapMemoryRow({ ...confirmed, id: input.memoryId, version_id: confirmed.id });
   });
 }
 
@@ -898,16 +1016,18 @@ export async function withdrawMemory(input: {
   return withTransaction(async (client) => {
     const current = await client.query(
       `SELECT mv.id, mv.category, mv.content FROM memories m
-       JOIN memory_versions mv ON mv.memory_id = m.id AND mv.is_active = true
-       WHERE m.id = $1 AND m.user_id = $2 FOR UPDATE`,
+       JOIN memory_versions mv ON mv.memory_id = m.id
+       WHERE m.id = $1 AND m.user_id = $2 AND mv.status IN ('pending', 'active')
+       ORDER BY CASE WHEN mv.status = 'pending' THEN 0 ELSE 1 END, mv.created_at DESC
+       LIMIT 1 FOR UPDATE`,
       [input.memoryId, input.userId],
     );
     if (!current.rowCount) throw new Error("找不到可撤回的活动记忆");
     const row = current.rows[0];
     await client.query(
       `UPDATE memory_versions SET is_active = false, status = 'withdrawn'
-       WHERE id = $1 AND user_id = $2`,
-      [row.id, input.userId],
+       WHERE memory_id = $1 AND user_id = $2 AND status IN ('pending', 'active')`,
+      [input.memoryId, input.userId],
     );
     const withdrawalId = randomUUID();
     await client.query(
@@ -1374,8 +1494,10 @@ function mapMemoryRow(row: any): MemoryRecord {
     validUntil: row.valid_until,
     reason: row.reason,
     status: row.status,
+    kind: row.memory_kind,
     sourceType: row.source_type,
     scope: row.scope,
+    scopeKey: row.scope_key ?? null,
     sensitivity: row.sensitivity,
     importance: row.importance == null ? undefined : Number(row.importance),
     evidenceQuote: row.evidence_quote ?? null,

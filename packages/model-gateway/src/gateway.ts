@@ -14,6 +14,8 @@ import {
   ScienceExplanationOutputSchema,
   SessionSummaryOutputSchema,
   estimateModelCostCny,
+  inferMemoryKind,
+  isExplicitMemoryRequest,
   type CompiledContext,
   type ConversationTitleOutput,
   type FactBriefOutput,
@@ -214,7 +216,7 @@ export class AliyunBailianGateway implements ModelGateway {
 
   reflect(input: ReflectionInput, options?: { signal?: AbortSignal; deep?: boolean }) {
     return this.structured("reflection", ReflectionDecisionSchema,
-      "你是知微的记忆反思器。原文是证据而不是记忆。只产生未来确有价值、原子化、可被证据支持的认识；通常一轮0至2条，最多3条。先检查context.memories：语义已经存在就不再create；只有事实发生变化才用memoryId做supersede。basic只写身份或阶段，goal只写用户主动追求的未来结果，担忧、风险和压力只能归challenge，expression写希望如何交流。多个独立事实拆开，但同一事实不能跨类别重复。sourceType必须区分来源：用户明确说‘记住/以后记得/请保存’才用explicit；用户在纠正或确认已有认识时用confirmed；其余谨慎推断用inferred；system只用于系统事实。每条记忆都填写evidenceQuote，引用本轮原文中的短句；scope默认user，只有明确属于当前项目或当前会话的内容才使用project或conversation。敏感内容（健康、政治、宗教、性、财务、身份凭证等）默认不要保存，除非用户明确要求记住，并将sensitivity标为sensitive。不要从‘先听我说’推断防御性、控制欲、依恋或人格，也不得诊断。心情摘要只描述用户明确表达的当下感受和处境；一次情绪不能写成长期人格。所有文本用简体中文。",
+      "你是知微的记忆反思器。原文是证据而不是记忆。只产生未来确有价值、原子化、可被证据支持的认识；通常一轮0至2条，最多3条。先检查context.memories：语义已经存在就不再create；只有事实发生变化才用memoryId做supersede；同一事实在不同情境下成立时，应在内容中写清情境，不要互相覆盖。短期与长期不得重叠：short只保存当前会话仍需继续使用的临时事件，kind必须是episode、scope必须是conversation且会自动过期；long只保存跨会话稳定信息，kind使用profile、learning或misconception，scope使用user或有明确项目时使用project。learning只记录用户明确展现的掌握状态或学习进度；misconception只记录有证据的具体概念误区，并同时写清正确区分，不能因为用户提问就推断其不懂。basic只写身份或阶段，goal只写用户主动追求的未来结果，担忧、风险和压力只能归challenge，expression写希望如何交流。多个独立事实拆开，但同一事实不能跨类别重复。sourceType必须区分来源：用户明确说‘记住/以后记得/请保存’才用explicit；用户在纠正或确认已有认识时用confirmed；其余谨慎推断用inferred；system只用于系统事实。每条记忆都填写evidenceQuote，引用本轮原文中的短句。敏感内容（健康、政治、宗教、性、财务、身份凭证等）默认不要保存，除非用户明确要求记住，并将sensitivity标为sensitive。不要从‘先听我说’推断防御性、控制欲、依恋或人格，也不得诊断。心情摘要只描述用户明确表达的当下感受和处境；一次情绪不能写成长期人格。所有文本用简体中文。",
       JSON.stringify({ kind: input.kind, content: input.content, messageId: input.messageId, questionCategory: input.questionCategory, context: input.context }),
       { signal: options?.signal, thinking: options?.deep, temperature: 0.18 });
   }
@@ -494,7 +496,25 @@ export class ScriptedGateway implements ModelGateway {
   async reflect(input: ReflectionInput) {
     const content = input.content.trim();
     const category = input.questionCategory ?? (/先听|别建议|简短|直接/.test(content) ? "expression" : /压力|焦虑|困难|烦/.test(content) ? "challenge" : "interest");
-    const memories = content ? [{ operation: "create" as const, category, content: content.slice(0, 240), tier: input.kind === "onboarding" ? "long" as const : "short" as const, confidence: input.kind === "onboarding" ? 0.86 : 0.68, validUntil: null, reason: "由当前用户的明确表达形成。", evidenceMessageIds: [input.messageId] }] : [];
+    const explicit = isExplicitMemoryRequest(content);
+    const kind = inferMemoryKind(content);
+    const tier = input.kind === "onboarding" || explicit || kind === "learning" || kind === "misconception" ? "long" as const : "short" as const;
+    const memories = content ? [{
+      operation: "create" as const,
+      category,
+      content: content.slice(0, 240),
+      tier,
+      confidence: input.kind === "onboarding" ? 0.86 : 0.68,
+      validUntil: null,
+      reason: "由当前用户的明确表达形成。",
+      evidenceMessageIds: [input.messageId],
+      sourceType: explicit || input.kind === "onboarding" ? "explicit" as const : "inferred" as const,
+      scope: tier === "short" ? "conversation" as const : "user" as const,
+      sensitivity: "normal" as const,
+      importance: explicit ? 0.8 : 0.5,
+      evidenceQuote: content.slice(0, 200),
+      kind,
+    }] : [];
     return this.result("reflection", ReflectionDecisionSchema.parse({ memories, mood: /压力|焦虑|难过/.test(content) ? { score: -2, summary: "近期感到有些压力。", meaningful: true } : null, refreshProfile: memories.length > 0, refreshSummary: true, returnTopic: /明天|之后|下次/.test(content) ? content.slice(0, 100) : null, shouldEvolveSkill: category === "expression", evolutionReason: category === "expression" ? "用户明确表达了交流偏好。" : null, needsDeepReview: false, decisionReason: memories.length ? "出现了可被证据支持的用户信息。" : "没有形成新认识。" }));
   }
 

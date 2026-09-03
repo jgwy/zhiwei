@@ -23,7 +23,7 @@ import { getModelGateway } from "@zhiwei/model-gateway";
 import { composeFoundationInstructions } from "@zhiwei/skills";
 import { z } from "zod";
 import { getSessionUserId } from "@/lib/session";
-import { addNoDbMessage, commitNoDbMemories, isNoDbMode, listNoDbConversations } from "@/lib/no-db-store";
+import { addNoDbMessage, commitNoDbMemories, isNoDbMode, listNoDbConversations, recallNoDbMemories } from "@/lib/no-db-store";
 
 const InputSchema = z.object({ content: z.string().trim().min(1).max(8_000) });
 const encoder = new TextEncoder();
@@ -71,7 +71,18 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
   const [messages, profileResult, memoryResult, summary, skillResult] = await Promise.all([
     listMessages(userId, conversationId, 24),
     callMemoryMcp<{ profile: ProfileSnapshot | null }>({ tool: "profile_get_current", userId, traceId }),
-    callMemoryMcp<{ memories: MemoryRecord[] }>({ tool: "memory_search", userId, traceId, arguments: { query: input.content, limit: 8, ...(queryEmbedding ? { queryEmbedding } : {}) } }),
+    callMemoryMcp<{ memories: MemoryRecord[] }>({
+      tool: "memory_search",
+      userId,
+      traceId,
+      arguments: {
+        query: input.content,
+        limit: 8,
+        conversationId,
+        recordUsage: true,
+        ...(queryEmbedding ? { queryEmbedding } : {}),
+      },
+    }),
     getConversationSummary(userId, conversationId),
     callMemoryMcp<any>({ tool: "personal_skill_get_active", userId, traceId }),
   ]);
@@ -215,11 +226,12 @@ async function handleNoDbPost(request: Request, context: { params: Promise<{ id:
   const userMessage = addNoDbMessage(conversationId, "user", input.content, { traceId });
   const riskAssessment = assessRisk(input.content);
   const gateway = getModelGateway();
+  const recalledMemories = recallNoDbMemories(conversationId, input.content);
   const compiled = compileContext({
     foundationInstructions: composeFoundationInstructions(["zhiwei-persona", "dialogue-orchestrator", "risk-and-boundary", "privacy-and-withdrawal"]),
     personalSkill: undefined as never,
     profile: null,
-    memories: [],
+    memories: recalledMemories,
     sessionSummary: null,
     messages: conversation.messages,
     maxInputTokens: Math.min(18_000, gateway.capabilities.maxContextTokens - 2_000),
@@ -255,7 +267,11 @@ async function handleNoDbPost(request: Request, context: { params: Promise<{ id:
             riskAssessment,
             kind: "chat",
           });
-          commitNoDbMemories(reflection.data.memories, input.content);
+          commitNoDbMemories({
+            mutations: reflection.data.memories,
+            sourceText: input.content,
+            conversationId,
+          });
         } catch {
           // 对话回复不依赖记忆反思；无数据库演示模式下反思失败时保留当前对话即可。
         }

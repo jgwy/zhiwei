@@ -6,7 +6,8 @@ import {
   commitReflection,
   ensureUser,
   getActiveSkill,
-  getLatestProfile,
+  getProfileForContext,
+  listMemoriesForUser,
   publishPersonalSkill,
   recordMcpCall,
   searchMemories,
@@ -24,12 +25,18 @@ const toolSchemas = {
     query: z.string().max(1_000),
     limit: z.number().int().min(1).max(20).default(8),
     queryEmbedding: z.array(z.number()).length(1024).optional(),
+    conversationId: z.string().uuid().optional(),
+    projectId: z.string().max(120).optional(),
+    includePending: z.boolean().default(false),
+    recordUsage: z.boolean().default(false),
   }),
+  memory_list: z.object({}),
   memory_commit_reflection: z.object({
     conversationId: z.string().uuid(),
     sourceMessageId: z.string().uuid(),
     reflection: ReflectionOutputSchema,
     embeddings: z.array(z.array(z.number()).length(1024).nullable()).max(12).optional(),
+    projectId: z.string().max(120).optional(),
   }),
   memory_withdraw: z.object({
     memoryId: z.string().uuid(),
@@ -148,7 +155,16 @@ server.listen(port, "0.0.0.0", () => {
 async function invokeTool(tool: keyof typeof toolSchemas, userId: string, args: any) {
   switch (tool) {
     case "memory_search":
-      return { memories: await searchMemories(userId, args.query, args.limit, args.queryEmbedding) };
+      return {
+        memories: await searchMemories(userId, args.query, args.limit, args.queryEmbedding, {
+          conversationId: args.conversationId,
+          projectId: args.projectId,
+          includePending: args.includePending,
+          recordUsage: args.recordUsage,
+        }),
+      };
+    case "memory_list":
+      return { memories: await listMemoriesForUser(userId) };
     case "memory_commit_reflection":
       return commitReflection({ userId, ...args });
     case "memory_withdraw":
@@ -158,7 +174,7 @@ async function invokeTool(tool: keyof typeof toolSchemas, userId: string, args: 
     case "memory_confirm":
       return confirmMemory({ userId, ...args });
     case "profile_get_current":
-      return { profile: await getLatestProfile(userId) };
+      return { profile: await getProfileForContext(userId) };
     case "profile_commit_snapshot":
       return { profile: await commitProfileSnapshot({ userId, ...args }) };
     case "personal_skill_get_active":
@@ -172,7 +188,8 @@ async function invokeTool(tool: keyof typeof toolSchemas, userId: string, args: 
 
 function toolDescription(name: string): string {
   const descriptions: Record<string, string> = {
-    memory_search: "在当前用户的活动记忆中检索最多八条相关内容。",
+    memory_search: "在当前用户和当前作用域的可用记忆中检索最多八条相关内容。",
+    memory_list: "列出当前用户可管理的活动记忆和待确认候选，不用于回答召回。",
     memory_commit_reflection: "提交由模型生成的记忆、画像、情绪和会话摘要。",
     memory_withdraw: "撤回当前用户的一条活动记忆，使其不再参与检索。",
     memory_update: "由用户直接编辑一条活动记忆，并创建可追溯的确认版本。",

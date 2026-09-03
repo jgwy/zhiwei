@@ -67,6 +67,7 @@ function formatCost(value: number | string | null | undefined) {
 
 function memoryStatus(memory: any) {
   if (memory.status === "withdrawn") return { className: "status-withdrawn", label: "已撤回" };
+  if (memory.status === "pending") return { className: "status-pending", label: "待确认" };
   if (memory.is_active || memory.status === "active") return { className: "status-active", label: "当前" };
   return { className: "status-old", label: "已替代" };
 }

@@ -21,6 +21,12 @@ export type MemoryScope = z.infer<typeof MemoryScopeSchema>;
 export const MemorySensitivitySchema = z.enum(["normal", "sensitive"]);
 export type MemorySensitivity = z.infer<typeof MemorySensitivitySchema>;
 
+export const MemoryKindSchema = z.enum(["profile", "learning", "misconception", "episode"]);
+export type MemoryKind = z.infer<typeof MemoryKindSchema>;
+
+export const MemoryStatusSchema = z.enum(["pending", "active", "superseded", "withdrawn"]);
+export type MemoryStatus = z.infer<typeof MemoryStatusSchema>;
+
 export const MemoryMutationSchema = z.object({
   operation: z.enum(["create", "supersede", "promote"]),
   memoryId: z.string().uuid().optional(),
@@ -36,6 +42,7 @@ export const MemoryMutationSchema = z.object({
   sensitivity: MemorySensitivitySchema.default("normal"),
   importance: z.number().min(0).max(1).default(0.5),
   evidenceQuote: z.string().max(500).optional(),
+  kind: MemoryKindSchema.default("profile"),
 });
 export type MemoryMutation = z.infer<typeof MemoryMutationSchema>;
 
@@ -293,9 +300,11 @@ export type MemoryRecord = {
   confidence: number;
   validUntil: string | null;
   reason: string;
-  status?: "active" | "superseded" | "withdrawn";
+  status?: MemoryStatus;
+  kind?: MemoryKind;
   sourceType?: MemorySourceType;
   scope?: MemoryScope;
+  scopeKey?: string | null;
   sensitivity?: MemorySensitivity;
   importance?: number;
   evidenceQuote?: string | null;

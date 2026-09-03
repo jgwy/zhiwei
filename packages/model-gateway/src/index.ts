@@ -2,6 +2,7 @@ import {
   PersonalSkillSchema,
   ReflectionOutputSchema,
   defaultPersonalSkill,
+  inferMemoryKind,
   normalizeDimensionWeights,
   type CompiledContext,
   type MemoryCategory,
@@ -298,6 +299,7 @@ function extractMemories(input: ReflectionInput): MemoryMutation[] {
         sensitivity: "normal",
         importance: 0.8,
         evidenceQuote: text.slice(0, 200),
+        kind: "profile",
       },
     ];
   }
@@ -330,6 +332,7 @@ function extractMemories(input: ReflectionInput): MemoryMutation[] {
       sensitivity: "normal",
       importance: existing ? 0.8 : 0.5,
       evidenceQuote: text.slice(0, 200),
+      kind: inferMemoryKind(text),
     });
   };
 

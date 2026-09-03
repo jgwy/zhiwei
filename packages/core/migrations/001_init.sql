@@ -3,7 +3,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
 CREATE TABLE IF NOT EXISTS users (
   id uuid PRIMARY KEY,
   onboarding_complete boolean NOT NULL DEFAULT false,
-  settings jsonb NOT NULL DEFAULT '{"memoryEnabled":true,"emotionTrackingEnabled":true,"skillEvolutionEnabled":true,"returnNotesEnabled":true}'::jsonb,
+  settings jsonb NOT NULL DEFAULT '{"memoryEnabled":true,"shortTermMemoryEnabled":true,"longTermMemoryEnabled":true,"emotionTrackingEnabled":true,"skillEvolutionEnabled":true,"returnNotesEnabled":true}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -175,4 +175,3 @@ CREATE TABLE IF NOT EXISTS activity_events (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_activity_user_created ON activity_events(user_id, created_at DESC);
-
