@@ -22,7 +22,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import type { ChatMessage } from "@zhiwei/core/client";
+import type { ChatMessage, ProfileSnapshot } from "@zhiwei/core/client";
 import type { BootstrapData, ConversationView } from "@/lib/client-types";
 import { readSseStream, formatTime } from "@/lib/utils";
 import { isNearChatBottom } from "@/lib/chat-scroll";
@@ -56,6 +56,7 @@ export function ZhiweiApp() {
   const lastScrolledConversationRef = useRef<string | null>(null);
   const dataRef = useRef<BootstrapData | null>(null);
   const activeIdRef = useRef<string | null>(null);
+  const refreshTimerRef = useRef<number | null>(null);
 
   async function load() {
     try {
@@ -71,6 +72,15 @@ export function ZhiweiApp() {
   }
 
   useEffect(() => { void load(); }, []);
+
+  // SSE 事件常连发（记忆更新 + 技能进化），尾沿防抖避免每条事件都全量拉一遍 bootstrap。
+  function scheduleRefresh() {
+    if (refreshTimerRef.current !== null) window.clearTimeout(refreshTimerRef.current);
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null;
+      void load();
+    }, 2_000);
+  }
   useEffect(() => {
     if (data || loadError) return;
     const timer = window.setTimeout(() => setSlowLoad(true), 8_000);
@@ -104,21 +114,28 @@ export function ZhiweiApp() {
     if (!data?.onboarding.complete || process.env.NEXT_PUBLIC_ACTIVITY_STREAM === "false") return;
     const source = new EventSource("/api/activity/stream");
     source.addEventListener("memory.updated", (raw) => {
-      const event = JSON.parse((raw as MessageEvent).data);
+      const event = JSON.parse((raw as MessageEvent).data) as {
+        payload: { memoryCount?: number; profile?: ProfileSnapshot | null };
+      };
       const active = dataRef.current?.conversations.find(
         (item) => item.id === activeIdRef.current,
       );
       const lastAssistant = [...(active?.messages ?? [])].reverse().find((message) => message.role === "assistant");
-      if (lastAssistant && event.payload.memoryCount > 0) {
-        setReceipts((current) => ({ ...current, [lastAssistant.id]: { count: event.payload.memoryCount, open: false } }));
+      const memoryCount = event.payload.memoryCount ?? 0;
+      if (lastAssistant && memoryCount > 0) {
+        setReceipts((current) => ({ ...current, [lastAssistant.id]: { count: memoryCount, open: false } }));
       }
-      void load();
+      if (event.payload.profile) {
+        const profile = event.payload.profile;
+        setData((current) => current ? { ...current, profile } : current);
+      }
+      scheduleRefresh();
     });
     source.addEventListener("skill.evolved", (raw) => {
-      const event = JSON.parse((raw as MessageEvent).data);
+      const event = JSON.parse((raw as MessageEvent).data) as { payload: { message?: string } };
       setToast(event.payload.message ?? "知微又更了解你一点。");
       window.setTimeout(() => setToast(null), 3_500);
-      void load();
+      scheduleRefresh();
     });
     source.addEventListener("conversation.title.updated", (raw) => {
       const event = JSON.parse((raw as MessageEvent).data);
@@ -217,7 +234,7 @@ export function ZhiweiApp() {
           throw new Error(event.message);
         }
       });
-      window.setTimeout(() => void load(), 500);
+      scheduleRefresh();
     } catch (error) {
       const status = abort.signal.aborted ? "stopped" : "interrupted";
       updateConversationMessages(conversationId, (messages) => messages.map((message) => message.metadata?.streaming ? { ...message, metadata: { ...message.metadata, streaming: false, status } } : message));
