@@ -1,4 +1,17 @@
-import type { MemoryCategory, QuestionDefinition } from "./types";
+import type { MemoryCategory, QuestionDefinition, QuestionPlannerOutput } from "./types";
+
+export function selectPlannedQuestions(plan:QuestionPlannerOutput,userId:string,answerCount:number):QuestionDefinition[] {
+  const selected:QuestionDefinition[]=[];
+  for(let offset=0;offset<2;offset++) {
+    const bucket=[...`${userId}:${answerCount}:${offset}`].reduce((sum,c)=>sum+c.codePointAt(0)!,0)%10;
+    const preferred=bucket<2?plan.adjacentCandidates:plan.gapCandidates;
+    const others=bucket<2?plan.gapCandidates:plan.adjacentCandidates;
+    const candidate=[...preferred,...others].find(item=>!selected.some(question=>question.text.trim()===item.text.trim()));
+    if(!candidate)break;
+    selected.push({id:`model-${crypto.randomUUID()}`,category:candidate.category,text:candidate.text,options:candidate.options.filter(option=>option!=="其他").slice(0,4),priority:bucket<2?20:80});
+  }
+  return selected;
+}
 
 export const questionBank: QuestionDefinition[] = [
   {
@@ -119,4 +132,3 @@ function seededRandom(seed: string): number {
   }
   return (hash >>> 0) / 4_294_967_295;
 }
-

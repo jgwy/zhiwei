@@ -27,6 +27,7 @@ import {
   closeNotifications,
   closePool,
   isMemoryControl,
+  selectPlannedQuestions,
   type MemoryRecord,
   type PersonalSkill,
   type ProfileSnapshot,
@@ -206,25 +207,7 @@ async function handleQuestionPlanning(job: any) {
     },
     modelOptions,
   );
-  const questions = Array.from({ length: 2 }, (_, offset) => {
-    const bucket =
-      [...`${job.user_id}:${answers.length}:${offset}`].reduce(
-        (sum, c) => sum + c.codePointAt(0)!,
-        0,
-      ) % 10;
-    const candidates =
-      bucket < 2 ? result.data.adjacentCandidates : result.data.gapCandidates;
-    const selected = candidates[offset % candidates.length]!;
-    return {
-      id: `model-${crypto.randomUUID()}`,
-      category: selected.category,
-      text: selected.text,
-      options: selected.options
-        .filter((option) => option !== "其他")
-        .slice(0, 4),
-      priority: bucket < 2 ? 20 : 80,
-    };
-  });
+  const questions = selectPlannedQuestions(result.data,job.user_id,answers.length);
   await publishQuestionCandidates(
     job.user_id,
     questions,
