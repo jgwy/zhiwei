@@ -3,7 +3,7 @@ import {
   PersonalSkillSchema,
   addActivity,
   attachMemoryReceipt,
-  callMemoryMcp,
+  callMemoryMcp as callMemoryMcpRequest,
   claimJob,
   compileContext,
   completeJob,
@@ -12,11 +12,21 @@ import {
   getConversationSummary,
   getUserSettings,
   isOnboardingComplete,
-  listMessages,
   normalizeDimensionWeights,
   recordModelCallMeta,
   recordTrace,
   updateConversationTitle,
+  getBatchEvidence,
+  listMessagesThrough,
+  getOnboardingAnswers,
+  publishQuestionCandidates,
+  recoverRunningJobs,
+  requeueInterruptedJob,
+  nextJobDelay,
+  subscribeDatabase,
+  closeNotifications,
+  closePool,
+  isMemoryControl,
   type MemoryRecord,
   type PersonalSkill,
   type ProfileSnapshot,
@@ -41,84 +51,200 @@ import {
 
 const gateway = getModelGateway();
 const PROFILE_PROMPT_VERSION = LONG_PROFILE_SCHEMA_VERSION;
-const REFLECTION_PROMPT_VERSION = "direct-memory-v3";
+const REFLECTION_PROMPT_VERSION = "batch-memory-v1";
 const CONSOLIDATION_PROMPT_VERSION = "memory-consolidation-v1";
 let stopping = false;
+const shutdown = new AbortController();
+const modelOptions = { signal: shutdown.signal };
+function callMemoryMcp<T>(input: Parameters<typeof callMemoryMcpRequest>[0]) {
+  return callMemoryMcpRequest<T>({ ...input, signal: shutdown.signal });
+}
 
-process.on("SIGINT", () => (stopping = true));
-process.on("SIGTERM", () => (stopping = true));
+const stop = () => {
+  stopping = true;
+  shutdown.abort();
+};
+process.on("SIGINT", stop);
+process.on("SIGTERM", stop);
 process.stdout.write(`知微后台进程已启动：${gateway.id}\n`);
+await recoverRunningJobs();
+await Promise.all([runLane("planning"), runLane("memory")]);
+await closeNotifications();
+await closePool();
 
-while (!stopping) {
-  const job = await claimJob();
-  if (!job) {
-    await delay(600);
-    continue;
-  }
+async function runLane(lane: "planning" | "memory") {
+  const subscription = subscribeDatabase("zhiwei_jobs");
   try {
-    await dispatchJob(job);
-    await completeJob(job.id);
-  } catch (error) {
-    const terminal = Number(job.attempts ?? 0) + 1 >= 3;
-    if (terminal && job.type === "memory_consolidation") {
-      await enqueueProfileSynthesis(job.user_id, {
-        sourceMessageId: job.payload?.sourceMessageId,
-        conversationId: job.payload?.conversationId,
-        traceId: job.payload?.traceId,
-        trigger: "consolidation-fallback",
-        idempotencySuffix: job.id,
-      });
+    while (!stopping) {
+      const job = await claimJob(lane);
+      if (!job) {
+        await subscription.wait(await nextJobDelay(lane), shutdown.signal);
+        continue;
+      }
+      try {
+        await dispatchJob(job);
+        await completeJob(job.id);
+      } catch (error) {
+        const failedMeta = (error as { modelMeta?: any })?.modelMeta;
+        if (failedMeta)
+          await recordCall(
+            job.user_id,
+            job.payload?.traceId ?? crypto.randomUUID(),
+            job.payload?.conversationId,
+            failedMeta,
+          ).catch(() => undefined);
+        if (stopping) {
+          await requeueInterruptedJob(job.id).catch(() => undefined);
+          continue;
+        }
+        const terminal = Number(job.attempts ?? 0) >= 3;
+        if (terminal && job.type === "memory_consolidation") {
+          await enqueueProfileSynthesis(job.user_id, {
+            sourceMessageId: job.payload?.sourceMessageId,
+            conversationId: job.payload?.conversationId,
+            traceId: job.payload?.traceId,
+            trigger: "consolidation-fallback",
+            idempotencySuffix: job.id,
+          });
+        }
+        await failJob(job, error).catch(() => undefined);
+        await recordTrace({
+          userId: job.user_id,
+          traceId: job.payload?.traceId ?? crypto.randomUUID(),
+          stage: `background.${job.type}.failed`,
+          payload: {
+            jobId: job.id,
+            attempt: Number(job.attempts ?? 0),
+            terminal,
+            code: publicErrorCode(error),
+          },
+        }).catch(() => undefined);
+        if (terminal) {
+          await addActivity({
+            userId: job.user_id,
+            type: "background.error",
+            payload: {
+              jobId: job.id,
+              code: publicErrorCode(error),
+              message: "后台更新暂时没有完成，知微会保留上一份可靠结果。",
+            },
+          }).catch(() => undefined);
+        }
+      }
     }
-    await failJob(job, error).catch(() => undefined);
-    await recordTrace({
-      userId: job.user_id,
-      traceId: job.payload?.traceId ?? crypto.randomUUID(),
-      stage: `background.${job.type}.failed`,
-      payload: {
-        jobId: job.id,
-        attempt: Number(job.attempts ?? 0) + 1,
-        terminal,
-        code: publicErrorCode(error),
-      },
-    }).catch(() => undefined);
-    if (terminal) {
-      await addActivity({
-        userId: job.user_id,
-        type: "background.error",
-        payload: { jobId: job.id, code: publicErrorCode(error), message: "后台更新暂时没有完成，知微会保留上一份可靠结果。" },
-      }).catch(() => undefined);
-    }
+  } finally {
+    subscription.close();
   }
 }
 
 async function dispatchJob(job: any) {
   switch (job.type) {
-    case "reflection": return handleReflection(job);
-    case "profile_synthesis": return handleProfileSynthesis(job);
-    case "session_summary": return handleSessionSummary(job);
-    case "return_note": return handleReturnNote(job);
-    case "evolve_skill": return handleEvolution(job);
-    case "conversation_title": return handleConversationTitle(job);
-    case "memory_embedding": return handleMemoryEmbedding(job);
-    case "memory_consolidation": return handleMemoryConsolidation(job);
-    default: throw new Error(`unknown_background_job:${job.type}`);
+    case "reflection":
+      return handleReflection(job);
+    case "profile_synthesis":
+      return handleProfileSynthesis(job);
+    case "session_summary":
+      return handleSessionSummary(job);
+    case "return_note":
+      return handleReturnNote(job);
+    case "evolve_skill":
+      return handleEvolution(job);
+    case "conversation_title":
+      return handleConversationTitle(job);
+    case "onboarding_plan":
+      return handleQuestionPlanning(job);
+    case "memory_embedding":
+      return handleMemoryEmbedding(job);
+    case "memory_consolidation":
+      return handleMemoryConsolidation(job);
+    default:
+      throw new Error(`unknown_background_job:${job.type}`);
   }
 }
 
 async function handleConversationTitle(job: any) {
-  const payload = job.payload as { conversationId: string; content: string; traceId?: string };
+  const payload = job.payload as {
+    conversationId: string;
+    content: string;
+    traceId?: string;
+  };
   const traceId = payload.traceId ?? crypto.randomUUID();
-  const result = await gateway.generateTitle(payload.content);
-  await updateConversationTitle(job.user_id, payload.conversationId, result.data.title, "model");
+  const result = await gateway.generateTitle(payload.content, modelOptions);
+  await updateConversationTitle(
+    job.user_id,
+    payload.conversationId,
+    result.data.title,
+    "model",
+  );
   await recordCall(job.user_id, traceId, payload.conversationId, result.meta);
-  await recordTrace({ userId: job.user_id, traceId, stage: "conversation.title.generated", payload: { title: result.data.title, meta: result.meta } });
-  await addActivity({ userId: job.user_id, type: "conversation.title.updated", payload: { conversationId: payload.conversationId, title: result.data.title } });
+  await recordTrace({
+    userId: job.user_id,
+    traceId,
+    stage: "conversation.title.generated",
+    payload: { title: result.data.title, meta: result.meta },
+  });
+  await addActivity({
+    userId: job.user_id,
+    type: "conversation.title.updated",
+    payload: {
+      conversationId: payload.conversationId,
+      title: result.data.title,
+    },
+  });
+}
+
+async function handleQuestionPlanning(job: any) {
+  const answers = await getOnboardingAnswers(job.user_id);
+  if (!answers.length || (await isOnboardingComplete(job.user_id))) return;
+  const traceId = crypto.randomUUID();
+  const result = await gateway.planQuestions(
+    {
+      answered: answers.map((answer) => ({
+        questionId: answer.metadata?.questionId,
+        content: answer.content,
+      })),
+    },
+    modelOptions,
+  );
+  const questions = Array.from({ length: 2 }, (_, offset) => {
+    const bucket =
+      [...`${job.user_id}:${answers.length}:${offset}`].reduce(
+        (sum, c) => sum + c.codePointAt(0)!,
+        0,
+      ) % 10;
+    const candidates =
+      bucket < 2 ? result.data.adjacentCandidates : result.data.gapCandidates;
+    const selected = candidates[offset % candidates.length]!;
+    return {
+      id: `model-${crypto.randomUUID()}`,
+      category: selected.category,
+      text: selected.text,
+      options: selected.options
+        .filter((option) => option !== "其他")
+        .slice(0, 4),
+      priority: bucket < 2 ? 20 : 80,
+    };
+  });
+  await publishQuestionCandidates(
+    job.user_id,
+    questions,
+    result.meta.model,
+    answers.length,
+  );
+  await recordCall(
+    job.user_id,
+    traceId,
+    undefined,
+    result.meta,
+    "onboarding-prefetch-v1",
+  );
 }
 
 async function handleReflection(job: any) {
   const payload = job.payload as {
     conversationId: string;
     messageId: string;
+    sourceMessageIds?: string[];
     content: string;
     kind: "chat" | "onboarding";
     questionId?: string;
@@ -127,25 +253,98 @@ async function handleReflection(job: any) {
   };
   const traceId = payload.traceId ?? crypto.randomUUID();
   const started = Date.now();
+  const sourceMessages = await getBatchEvidence(
+    job.user_id,
+    payload.conversationId,
+    payload.sourceMessageIds ?? [payload.messageId],
+  );
+  const sourceMessageIds = sourceMessages.map((message) => message.id);
+  payload.messageId = sourceMessageIds.at(-1)!;
+  payload.content = sourceMessages.at(-1)!.content;
   const [messages, summary, settings] = await Promise.all([
-    listMessages(job.user_id, payload.conversationId, 24),
+    listMessagesThrough(
+      job.user_id,
+      payload.conversationId,
+      payload.messageId,
+      24,
+    ),
     getConversationSummary(job.user_id, payload.conversationId),
     getUserSettings(job.user_id),
   ]);
-  const queryVectors = settings.memoryEnabled === false
-    ? null
-    : await tryEmbedding(job.user_id, traceId, payload.conversationId, [payload.content], "retrieval");
-  const [profileResult, skillResult, memoryResult] = await Promise.all([
-    callMemoryMcp<{ profile: ProfileSnapshot | null }>({ tool: "profile_get_current", userId: job.user_id, traceId }),
-    callMemoryMcp<any>({ tool: "personal_skill_get_active", userId: job.user_id, traceId }),
-    callMemoryMcp<{ memories: MemoryRecord[] }>({
-      tool: "memory_search",
+  const queryVectors =
+    settings.memoryEnabled === false
+      ? null
+      : await tryEmbedding(
+          job.user_id,
+          traceId,
+          payload.conversationId,
+          sourceMessages.map((message) => message.content),
+          "retrieval",
+        );
+  const [profileResult, skillResult, memoryResults] = await Promise.all([
+    callMemoryMcp<{ profile: ProfileSnapshot | null }>({
+      tool: "profile_get_current",
       userId: job.user_id,
       traceId,
-      arguments: { query: payload.content, limit: 8, ...(queryVectors?.[0] ? { queryEmbedding: queryVectors[0] } : {}) },
     }),
+    callMemoryMcp<any>({
+      tool: "personal_skill_get_active",
+      userId: job.user_id,
+      traceId,
+    }),
+    Promise.all(
+      sourceMessages.map((message, index) =>
+        callMemoryMcp<{
+          memories: MemoryRecord[];
+          mutationCursor?: number;
+          withdrawals?: Array<{
+            memoryId: string;
+            versionId: string;
+            content: string;
+            withdrawnAt: string;
+          }>;
+        }>({
+          tool: "memory_search",
+          userId: job.user_id,
+          traceId,
+          signal: shutdown.signal,
+          arguments: {
+            query: message.content.slice(0, 1000),
+            limit: 12,
+            purpose: "reflection",
+            afterEvidenceAt: sourceMessages[0]!.createdAt,
+            ...(queryVectors?.[index]
+              ? { queryEmbedding: queryVectors[index] }
+              : {}),
+          },
+        }),
+      ),
+    ),
   ]);
-  const personalSkill = PersonalSkillSchema.parse(skillResult.skill.content) as PersonalSkill;
+  const candidates = Array.from({ length: 12 }, (_, index) =>
+    memoryResults.flatMap((result) =>
+      result.memories[index] ? [result.memories[index]!] : [],
+    ),
+  ).flat();
+  const memories = [
+    ...new Map(candidates.map((memory) => [memory.versionId, memory])).values(),
+  ].slice(0, 12);
+  const cursors = memoryResults.flatMap((result) =>
+    typeof result.mutationCursor === "number" ? [result.mutationCursor] : [],
+  );
+  const expectedMutationCursor = cursors.length
+    ? Math.min(...cursors)
+    : undefined;
+  const withdrawals = [
+    ...new Map(
+      memoryResults
+        .flatMap((result) => result.withdrawals ?? [])
+        .map((withdrawal) => [withdrawal.versionId, withdrawal]),
+    ).values(),
+  ].slice(0, 12);
+  const personalSkill = PersonalSkillSchema.parse(
+    skillResult.skill.content,
+  ) as PersonalSkill;
   const context = compileContext({
     foundationInstructions: composeFoundationInstructions([
       "zhiwei-persona",
@@ -158,10 +357,14 @@ async function handleReflection(job: any) {
     ]),
     personalSkill,
     profile: profileResult.profile,
-    memories: memoryResult.memories,
+    memories,
+    memoryLimit: 12,
     sessionSummary: summary,
     messages,
-    maxInputTokens: Math.min(18_000, gateway.capabilities.maxContextTokens - 2_000),
+    maxInputTokens: Math.min(
+      18_000,
+      gateway.capabilities.maxContextTokens - 2_000,
+    ),
   });
   await recordTrace({
     userId: job.user_id,
@@ -177,32 +380,34 @@ async function handleReflection(job: any) {
     },
   });
 
-  let reflectionResult = await gateway.reflect({
-    userId: job.user_id,
-    conversationId: payload.conversationId,
-    messageId: payload.messageId,
-    content: payload.content,
-    context,
-    kind: payload.kind,
-    questionId: payload.questionId,
-    questionCategory: payload.questionCategory,
-  });
-  await recordCall(job.user_id, traceId, payload.conversationId, reflectionResult.meta, REFLECTION_PROMPT_VERSION);
-  if (reflectionResult.data.needsDeepReview) {
-    reflectionResult = await gateway.reflect({
+  const reflectionResult = await gateway.reflect(
+    {
       userId: job.user_id,
       conversationId: payload.conversationId,
       messageId: payload.messageId,
+      sourceMessages,
+      batchId: job.id,
+      withdrawals,
       content: payload.content,
       context,
       kind: payload.kind,
       questionId: payload.questionId,
       questionCategory: payload.questionCategory,
-    }, { deep: true });
-    await recordCall(job.user_id, traceId, payload.conversationId, reflectionResult.meta, `${REFLECTION_PROMPT_VERSION}-deep`);
-  }
-
-  const prepared = prepareReflectionActions(reflectionResult.data, payload.messageId, settings);
+    },
+    modelOptions,
+  );
+  await recordCall(
+    job.user_id,
+    traceId,
+    payload.conversationId,
+    reflectionResult.meta,
+    REFLECTION_PROMPT_VERSION,
+  );
+  const prepared = prepareReflectionActions(
+    reflectionResult.data,
+    sourceMessageIds,
+    settings,
+  );
   await recordTrace({
     userId: job.user_id,
     traceId,
@@ -218,12 +423,21 @@ async function handleReflection(job: any) {
   });
   const inputs = embeddingInputs(prepared.actions);
   const vectors = inputs.length
-    ? await tryEmbedding(job.user_id, traceId, payload.conversationId, inputs.map((item) => item.content), "memory-write")
+    ? await tryEmbedding(
+        job.user_id,
+        traceId,
+        payload.conversationId,
+        inputs.map((item) => item.content),
+        "memory-write",
+      )
     : [];
   const embeddings = alignEmbeddings(prepared.actions.length, inputs, vectors);
   const reflection = backgroundReflection({
     memories: prepared.actions,
-    mood: settings.emotionTrackingEnabled === false ? null : reflectionResult.data.mood,
+    mood:
+      settings.emotionTrackingEnabled === false
+        ? null
+        : reflectionResult.data.mood,
   });
   const committed = await callMemoryMcp<any>({
     tool: "memory_commit_reflection",
@@ -232,14 +446,36 @@ async function handleReflection(job: any) {
     arguments: {
       conversationId: payload.conversationId,
       sourceMessageId: payload.messageId,
+      sourceMessageIds,
+      summaryEvidenceMessageIds:
+        reflectionResult.data.summaryEvidenceMessageIds ?? [],
+      expectedMutationCursor,
       reflection,
       embeddings,
-      idempotencyKey: `reflection:${payload.messageId}:${REFLECTION_PROMPT_VERSION}`,
+      idempotencyKey: `reflection:${job.id}:${REFLECTION_PROMPT_VERSION}`,
     },
   });
-  await enqueueMissingEmbeddings(job.user_id, traceId, payload.conversationId, committed.mutations ?? []);
+  await enqueueMissingEmbeddings(
+    job.user_id,
+    traceId,
+    payload.conversationId,
+    committed.mutations ?? [],
+  );
+  if (
+    isMemoryControl(payload.content) &&
+    prepared.actions.length === 3 &&
+    prepared.actions.every((action) => action.operation === "withdraw")
+  ) {
+    await enqueueJob({
+      userId: job.user_id,
+      type: "reflection",
+      idempotencyKey: `withdrawal-continuation:${job.id}`,
+      payload: { ...payload, sourceMessageIds, sealed: true, immediate: true },
+    });
+  }
 
-  const canRefreshOnboardingProfile = payload.kind !== "onboarding" || await isOnboardingComplete(job.user_id);
+  const canRefreshOnboardingProfile =
+    payload.kind !== "onboarding" || (await isOnboardingComplete(job.user_id));
   if (committed.longTermChanged && canRefreshOnboardingProfile) {
     const longMemories = await listLongMemories(job.user_id, traceId);
     if (shouldConsolidateMemories(consolidationMemories(longMemories))) {
@@ -247,7 +483,11 @@ async function handleReflection(job: any) {
         userId: job.user_id,
         type: "memory_consolidation",
         idempotencyKey: `memory_consolidation:${payload.messageId}:${CONSOLIDATION_PROMPT_VERSION}`,
-        payload: { sourceMessageId: payload.messageId, conversationId: payload.conversationId, traceId },
+        payload: {
+          sourceMessageId: payload.messageId,
+          conversationId: payload.conversationId,
+          traceId,
+        },
       });
     } else {
       await enqueueProfileSynthesis(job.user_id, {
@@ -259,15 +499,25 @@ async function handleReflection(job: any) {
       });
     }
   }
-  if (shouldRefreshSessionSummary(reflectionResult.data, summary, messages.length)) {
+  if (
+    reflectionResult.data.summaryEvidenceMessageIds?.length &&
+    shouldRefreshSessionSummary(reflectionResult.data, summary, messages.length)
+  ) {
     await enqueueJob({
       userId: job.user_id,
       type: "session_summary",
       idempotencyKey: `session_summary:${payload.messageId}:v2`,
-      payload: { conversationId: payload.conversationId, sourceMessageId: payload.messageId, traceId },
+      payload: {
+        conversationId: payload.conversationId,
+        sourceMessageId: payload.messageId,
+        traceId,
+      },
     });
   }
-  if (reflectionResult.data.returnTopic && settings.returnNotesEnabled !== false) {
+  if (
+    reflectionResult.data.returnTopic &&
+    settings.returnNotesEnabled !== false
+  ) {
     await enqueueJob({
       userId: job.user_id,
       type: "return_note",
@@ -281,7 +531,10 @@ async function handleReflection(job: any) {
       },
     });
   }
-  if (reflectionResult.data.shouldEvolveSkill && settings.skillEvolutionEnabled !== false) {
+  if (
+    reflectionResult.data.shouldEvolveSkill &&
+    settings.skillEvolutionEnabled !== false
+  ) {
     await enqueueJob({
       userId: job.user_id,
       type: "evolve_skill",
@@ -301,7 +554,12 @@ async function handleReflection(job: any) {
     traceId,
     stage: "reflection.completed",
     durationMs: Date.now() - started,
-    payload: { gateway: gateway.id, decision: reflectionResult.data, prepared, committed },
+    payload: {
+      gateway: gateway.id,
+      decision: reflectionResult.data,
+      prepared,
+      committed,
+    },
   });
   await addActivity({
     userId: job.user_id,
@@ -316,21 +574,51 @@ async function handleReflection(job: any) {
 }
 
 async function handleProfileSynthesis(job: any) {
-  const payload = job.payload as { sourceMessageId?: string; conversationId?: string; traceId?: string; trigger?: string };
+  const payload = job.payload as {
+    sourceMessageId?: string;
+    conversationId?: string;
+    traceId?: string;
+    trigger?: string;
+  };
   const traceId = payload.traceId ?? crypto.randomUUID();
   const settings = await getUserSettings(job.user_id);
-  if (settings.memoryEnabled === false || settings.longTermMemoryEnabled === false) {
-    await recordTrace({ userId: job.user_id, traceId, stage: "profile.synthesis.paused", payload: { trigger: payload.trigger } });
+  if (
+    settings.memoryEnabled === false ||
+    settings.longTermMemoryEnabled === false
+  ) {
+    await recordTrace({
+      userId: job.user_id,
+      traceId,
+      stage: "profile.synthesis.paused",
+      payload: { trigger: payload.trigger },
+    });
     return;
   }
   const listed = await listLongMemories(job.user_id, traceId);
+  if (!listed.length) return;
   const memories = profileMemories(listed);
   const profileSourceVersionIds = listed
-    .filter((memory) => (memory.status ?? "active") === "active" && memory.tier === "long")
+    .filter(
+      (memory) =>
+        (memory.status ?? "active") === "active" && memory.tier === "long",
+    )
     .map((memory) => memory.versionId);
-  const current = await callMemoryMcp<{ profile: ProfileSnapshot | null }>({ tool: "profile_get_current", userId: job.user_id, traceId });
-  const result = await gateway.synthesizeProfile({ memories, currentSummary: current.profile?.summary });
-  await recordCall(job.user_id, traceId, payload.conversationId, result.meta, PROFILE_PROMPT_VERSION);
+  const current = await callMemoryMcp<{ profile: ProfileSnapshot | null }>({
+    tool: "profile_get_current",
+    userId: job.user_id,
+    traceId,
+  });
+  const result = await gateway.synthesizeProfile(
+    { memories, currentSummary: current.profile?.summary },
+    modelOptions,
+  );
+  await recordCall(
+    job.user_id,
+    traceId,
+    payload.conversationId,
+    result.meta,
+    PROFILE_PROMPT_VERSION,
+  );
   const committed = await callMemoryMcp<any>({
     tool: "profile_commit_snapshot",
     userId: job.user_id,
@@ -357,14 +645,15 @@ async function handleProfileSynthesis(job: any) {
     },
   });
   const receipt = "知微重新整理了对你的长期认识。";
-  const assistantMessageId = payload.sourceMessageId && payload.conversationId
-    ? await attachMemoryReceipt({
-        userId: job.user_id,
-        conversationId: payload.conversationId,
-        sourceMessageId: payload.sourceMessageId,
-        receipt,
-      }).catch(() => null)
-    : null;
+  const assistantMessageId =
+    payload.sourceMessageId && payload.conversationId
+      ? await attachMemoryReceipt({
+          userId: job.user_id,
+          conversationId: payload.conversationId,
+          sourceMessageId: payload.sourceMessageId,
+          receipt,
+        }).catch(() => null)
+      : null;
   await addActivity({
     userId: job.user_id,
     type: "profile.updated",
@@ -380,14 +669,35 @@ async function handleProfileSynthesis(job: any) {
 }
 
 async function handleSessionSummary(job: any) {
-  const payload = job.payload as { conversationId: string; sourceMessageId: string; traceId?: string };
+  const payload = job.payload as {
+    conversationId: string;
+    sourceMessageId: string;
+    throughMessageId?: string;
+    traceId?: string;
+  };
   const traceId = payload.traceId ?? crypto.randomUUID();
   const [messages, previousSummary] = await Promise.all([
-    listMessages(job.user_id, payload.conversationId, 36),
+    listMessagesThrough(
+      job.user_id,
+      payload.conversationId,
+      payload.throughMessageId ?? payload.sourceMessageId,
+      36,
+      true,
+    ),
     getConversationSummary(job.user_id, payload.conversationId),
   ]);
-  const result = await gateway.summarizeSession({ messages, previousSummary: previousSummary ?? undefined });
-  await recordCall(job.user_id, traceId, payload.conversationId, result.meta, "session-summary-v2");
+  if (!messages.length) return;
+  const result = await gateway.summarizeSession(
+    { messages, previousSummary: previousSummary ?? undefined },
+    modelOptions,
+  );
+  await recordCall(
+    job.user_id,
+    traceId,
+    payload.conversationId,
+    result.meta,
+    "session-summary-v2",
+  );
   await callMemoryMcp({
     tool: "memory_commit_reflection",
     userId: job.user_id,
@@ -395,18 +705,40 @@ async function handleSessionSummary(job: any) {
     arguments: {
       conversationId: payload.conversationId,
       sourceMessageId: payload.sourceMessageId,
-      reflection: backgroundReflection({ nextSessionSummary: result.data.summary }),
-      idempotencyKey: `session_summary:${payload.sourceMessageId}:v2`,
+      reflection: backgroundReflection({
+        nextSessionSummary: result.data.summary,
+      }),
+      idempotencyKey: `session_summary:${job.id}:v3`,
     },
   });
-  await recordTrace({ userId: job.user_id, traceId, stage: "session.summary.completed", payload: { conversationId: payload.conversationId } });
+  await recordTrace({
+    userId: job.user_id,
+    traceId,
+    stage: "session.summary.completed",
+    payload: { conversationId: payload.conversationId },
+  });
 }
 
 async function handleReturnNote(job: any) {
-  const payload = job.payload as { conversationId: string; sourceMessageId: string; topic: string; profileSummary?: string; traceId?: string };
+  const payload = job.payload as {
+    conversationId: string;
+    sourceMessageId: string;
+    topic: string;
+    profileSummary?: string;
+    traceId?: string;
+  };
   const traceId = payload.traceId ?? crypto.randomUUID();
-  const result = await gateway.generateReturnNote({ topic: payload.topic, profileSummary: payload.profileSummary });
-  await recordCall(job.user_id, traceId, payload.conversationId, result.meta, "return-note-v2");
+  const result = await gateway.generateReturnNote(
+    { topic: payload.topic, profileSummary: payload.profileSummary },
+    modelOptions,
+  );
+  await recordCall(
+    job.user_id,
+    traceId,
+    payload.conversationId,
+    result.meta,
+    "return-note-v2",
+  );
   const now = Date.now();
   const returnNote = {
     content: result.data.content,
@@ -424,7 +756,15 @@ async function handleReturnNote(job: any) {
       idempotencyKey: `return_note:${payload.sourceMessageId}:v2`,
     },
   });
-  await recordTrace({ userId: job.user_id, traceId, stage: "return-note.completed", payload: { conversationId: payload.conversationId, validAfter: returnNote.validAfter } });
+  await recordTrace({
+    userId: job.user_id,
+    traceId,
+    stage: "return-note.completed",
+    payload: {
+      conversationId: payload.conversationId,
+      validAfter: returnNote.validAfter,
+    },
+  });
 }
 
 async function handleEvolution(job: any) {
@@ -437,26 +777,69 @@ async function handleEvolution(job: any) {
     traceId?: string;
   };
   const traceId = payload.traceId ?? crypto.randomUUID();
-  const currentResult = await callMemoryMcp<any>({ tool: "personal_skill_get_active", userId: job.user_id, traceId });
+  const currentResult = await callMemoryMcp<any>({
+    tool: "personal_skill_get_active",
+    userId: job.user_id,
+    traceId,
+  });
   const currentSkill = PersonalSkillSchema.parse(currentResult.skill.content);
-  const result = await gateway.evolvePersonalSkill({ currentSkill, ...payload }, { deep: payload.feedback === "not-me" });
+  const result = await gateway.evolvePersonalSkill(
+    { currentSkill, ...payload },
+    { ...modelOptions, deep: payload.feedback === "not-me" },
+  );
   const nextSkill = PersonalSkillSchema.parse(result.data);
   const published = await callMemoryMcp<any>({
     tool: "personal_skill_publish_rewrite",
     userId: job.user_id,
     traceId,
-    arguments: { skill: nextSkill },
+    arguments: { skill: nextSkill, idempotencyKey: `skill:${job.id}:v3` },
   });
-  await recordCall(job.user_id, traceId, undefined, result.meta, "personal-skill-v2");
-  await recordTrace({ userId: job.user_id, traceId, stage: "personal_skill.evolved", payload: { previousVersion: currentResult.skill.version, nextVersion: published.version.version, fullRewrite: nextSkill, reason: nextSkill.evolution.reason } });
-  await addActivity({ userId: job.user_id, type: "skill.evolved", payload: { version: published.version.version, message: "知微又更了解你一点。", reason: nextSkill.evolution.reason } });
+  await recordCall(
+    job.user_id,
+    traceId,
+    undefined,
+    result.meta,
+    "personal-skill-v2",
+  );
+  await recordTrace({
+    userId: job.user_id,
+    traceId,
+    stage: "personal_skill.evolved",
+    payload: {
+      previousVersion: currentResult.skill.version,
+      nextVersion: published.version.version,
+      fullRewrite: nextSkill,
+      reason: nextSkill.evolution.reason,
+    },
+  });
+  await addActivity({
+    userId: job.user_id,
+    type: "skill.evolved",
+    payload: {
+      version: published.version.version,
+      message: "知微又更了解你一点。",
+      reason: nextSkill.evolution.reason,
+    },
+  });
 }
 
 async function handleMemoryEmbedding(job: any) {
-  const payload = job.payload as { memoryId: string; versionId: string; content: string; conversationId?: string; traceId?: string };
+  const payload = job.payload as {
+    memoryId: string;
+    versionId: string;
+    content: string;
+    conversationId?: string;
+    traceId?: string;
+  };
   const traceId = payload.traceId ?? crypto.randomUUID();
-  const result = await gateway.embed([payload.content]);
-  await recordCall(job.user_id, traceId, payload.conversationId, result.meta, "memory-embedding-v1");
+  const result = await gateway.embed([payload.content], modelOptions);
+  await recordCall(
+    job.user_id,
+    traceId,
+    payload.conversationId,
+    result.meta,
+    "memory-embedding-v1",
+  );
   await callMemoryMcp({
     tool: "memory_set_embedding",
     userId: job.user_id,
@@ -468,16 +851,30 @@ async function handleMemoryEmbedding(job: any) {
       idempotencyKey: `memory_embedding:${payload.versionId}:v1`,
     },
   });
-  await recordTrace({ userId: job.user_id, traceId, stage: "memory.embedding.completed", payload: { memoryId: payload.memoryId, versionId: payload.versionId } });
+  await recordTrace({
+    userId: job.user_id,
+    traceId,
+    stage: "memory.embedding.completed",
+    payload: { memoryId: payload.memoryId, versionId: payload.versionId },
+  });
 }
 
 async function handleMemoryConsolidation(job: any) {
-  const payload = job.payload as { sourceMessageId?: string; conversationId?: string; traceId?: string };
+  const payload = job.payload as {
+    sourceMessageId?: string;
+    conversationId?: string;
+    traceId?: string;
+  };
   const traceId = payload.traceId ?? crypto.randomUUID();
   const listed = await listLongMemories(job.user_id, traceId);
   const memories = consolidationMemories(listed);
   if (!shouldConsolidateMemories(memories)) {
-    await recordTrace({ userId: job.user_id, traceId, stage: "memory.consolidation.skipped", payload: { count: memories.length } });
+    await recordTrace({
+      userId: job.user_id,
+      traceId,
+      stage: "memory.consolidation.skipped",
+      payload: { count: memories.length },
+    });
     await enqueueProfileSynthesis(job.user_id, {
       sourceMessageId: payload.sourceMessageId,
       conversationId: payload.conversationId,
@@ -493,12 +890,40 @@ async function handleMemoryConsolidation(job: any) {
     targetCount: CONSOLIDATION_TARGET_COUNT,
     targetTokens: CONSOLIDATION_TARGET_TOKENS,
   };
-  const plan = await gateway.planMemoryConsolidation(consolidationInput);
-  await recordCall(job.user_id, traceId, payload.conversationId, plan.meta, `${CONSOLIDATION_PROMPT_VERSION}-plan`);
-  await recordTrace({ userId: job.user_id, traceId, stage: "memory.consolidation.planned", payload: { plan: plan.data, sourceCount: memories.length } });
-  const review = await gateway.reviewMemoryConsolidation({ ...consolidationInput, plan: plan.data });
-  await recordCall(job.user_id, traceId, payload.conversationId, review.meta, `${CONSOLIDATION_PROMPT_VERSION}-review`);
-  await recordTrace({ userId: job.user_id, traceId, stage: "memory.consolidation.reviewed", payload: { review: review.data } });
+  const plan = await gateway.planMemoryConsolidation(
+    consolidationInput,
+    modelOptions,
+  );
+  await recordCall(
+    job.user_id,
+    traceId,
+    payload.conversationId,
+    plan.meta,
+    `${CONSOLIDATION_PROMPT_VERSION}-plan`,
+  );
+  await recordTrace({
+    userId: job.user_id,
+    traceId,
+    stage: "memory.consolidation.planned",
+    payload: { plan: plan.data, sourceCount: memories.length },
+  });
+  const review = await gateway.reviewMemoryConsolidation(
+    { ...consolidationInput, plan: plan.data },
+    modelOptions,
+  );
+  await recordCall(
+    job.user_id,
+    traceId,
+    payload.conversationId,
+    review.meta,
+    `${CONSOLIDATION_PROMPT_VERSION}-review`,
+  );
+  await recordTrace({
+    userId: job.user_id,
+    traceId,
+    stage: "memory.consolidation.reviewed",
+    payload: { review: review.data },
+  });
   if (!review.data.approved) throw new Error("memory_consolidation_rejected");
 
   const committed = await callMemoryMcp<any>({
@@ -506,7 +931,9 @@ async function handleMemoryConsolidation(job: any) {
     userId: job.user_id,
     traceId,
     arguments: {
-      rewrites: plan.data.rewrites.map(({ topic: _topic, ...rewrite }) => rewrite),
+      rewrites: plan.data.rewrites.map(
+        ({ topic: _topic, ...rewrite }) => rewrite,
+      ),
       verification: {
         approved: review.data.approved,
         checkedSourceVersionIds: review.data.checkedSourceVersionIds,
@@ -517,7 +944,12 @@ async function handleMemoryConsolidation(job: any) {
       idempotencyKey: `memory_consolidation:${job.id}:${CONSOLIDATION_PROMPT_VERSION}`,
     },
   });
-  await enqueueMissingEmbeddings(job.user_id, traceId, payload.conversationId, committed.mutations ?? []);
+  await enqueueMissingEmbeddings(
+    job.user_id,
+    traceId,
+    payload.conversationId,
+    committed.mutations ?? [],
+  );
   await enqueueProfileSynthesis(job.user_id, {
     sourceMessageId: payload.sourceMessageId,
     conversationId: payload.conversationId,
@@ -525,10 +957,18 @@ async function handleMemoryConsolidation(job: any) {
     trigger: "memory-consolidated",
     idempotencySuffix: job.id,
   });
-  await recordTrace({ userId: job.user_id, traceId, stage: "memory.consolidation.completed", payload: { committed } });
+  await recordTrace({
+    userId: job.user_id,
+    traceId,
+    stage: "memory.consolidation.completed",
+    payload: { committed },
+  });
 }
 
-async function listLongMemories(userId: string, traceId: string): Promise<MemoryRecord[]> {
+async function listLongMemories(
+  userId: string,
+  traceId: string,
+): Promise<MemoryRecord[]> {
   const result = await callMemoryMcp<{ memories: MemoryRecord[] }>({
     tool: "memory_list",
     userId,
@@ -538,18 +978,27 @@ async function listLongMemories(userId: string, traceId: string): Promise<Memory
   return result.memories;
 }
 
-async function enqueueProfileSynthesis(userId: string, input: {
-  sourceMessageId?: string;
-  conversationId?: string;
-  traceId?: string;
-  trigger: string;
-  idempotencySuffix: string;
-}) {
-  const sourceMemories = await listLongMemories(userId, input.traceId ?? crypto.randomUUID());
+async function enqueueProfileSynthesis(
+  userId: string,
+  input: {
+    sourceMessageId?: string;
+    conversationId?: string;
+    traceId?: string;
+    trigger: string;
+    idempotencySuffix: string;
+  },
+) {
+  const sourceMemories = await listLongMemories(
+    userId,
+    input.traceId ?? crypto.randomUUID(),
+  );
   const settings = await getUserSettings(userId);
   const sourceSignature = profileSourceSignature(
     sourceMemories
-      .filter((memory) => (memory.status ?? "active") === "active" && memory.tier === "long")
+      .filter(
+        (memory) =>
+          (memory.status ?? "active") === "active" && memory.tier === "long",
+      )
       .map((memory) => memory.versionId),
     settings.emotionTrackingEnabled !== false,
   );
@@ -561,9 +1010,17 @@ async function enqueueProfileSynthesis(userId: string, input: {
   });
 }
 
-function profileSourceSignature(versionIds: string[], emotionTrackingEnabled: boolean): string {
+function profileSourceSignature(
+  versionIds: string[],
+  emotionTrackingEnabled: boolean,
+): string {
   return createHash("sha256")
-    .update(JSON.stringify({ versionIds: [...new Set(versionIds)].sort(), emotionTrackingEnabled }))
+    .update(
+      JSON.stringify({
+        versionIds: [...new Set(versionIds)].sort(),
+        emotionTrackingEnabled,
+      }),
+    )
     .digest("hex")
     .slice(0, 20);
 }
@@ -572,7 +1029,13 @@ async function enqueueMissingEmbeddings(
   userId: string,
   traceId: string,
   conversationId: string | undefined,
-  mutations: Array<{ memoryId: string; versionId: string; content: string; embeddingMissing: boolean; status: string }>,
+  mutations: Array<{
+    memoryId: string;
+    versionId: string;
+    content: string;
+    embeddingMissing: boolean;
+    status: string;
+  }>,
 ) {
   for (const mutation of mutations) {
     if (!mutation.embeddingMissing || mutation.status !== "active") continue;
@@ -594,19 +1057,36 @@ async function tryEmbedding(
 ) {
   if (!texts.length) return [];
   try {
-    const result = await gateway.embed(texts);
-    await recordCall(userId, traceId, conversationId, result.meta, purpose === "retrieval" ? "retrieval-embedding-v1" : "memory-embedding-v1");
+    const result = await gateway.embed(texts, modelOptions);
+    await recordCall(
+      userId,
+      traceId,
+      conversationId,
+      result.meta,
+      purpose === "retrieval"
+        ? "retrieval-embedding-v1"
+        : "memory-embedding-v1",
+    );
     return result.data;
   } catch (error) {
+    const failedMeta = (error as { modelMeta?: any })?.modelMeta;
+    if (failedMeta)
+      await recordCall(userId, traceId, conversationId, failedMeta).catch(
+        () => undefined,
+      );
     await recordTrace({
       userId,
       traceId,
-      stage: purpose === "retrieval" ? "retrieval.degraded" : "memory.embedding.deferred",
+      stage:
+        purpose === "retrieval"
+          ? "retrieval.degraded"
+          : "memory.embedding.deferred",
       payload: {
         code: publicErrorCode(error),
-        message: purpose === "retrieval"
-          ? "向量服务暂时不可用，本次已改用关键词检索。"
-          : "向量服务暂时不可用，记忆已先以关键词检索生效并安排后台补齐。",
+        message:
+          purpose === "retrieval"
+            ? "向量服务暂时不可用，本次已改用关键词检索。"
+            : "向量服务暂时不可用，记忆已先以关键词检索生效并安排后台补齐。",
       },
     });
     return null;
@@ -620,15 +1100,26 @@ async function recordCall(
   meta: any,
   promptVersion?: string,
 ) {
-  await recordModelCallMeta({ userId, traceId, conversationId, adapterId: gateway.id, meta, promptVersion });
+  await recordModelCallMeta({
+    userId,
+    traceId,
+    conversationId,
+    adapterId: gateway.id,
+    meta,
+    promptVersion,
+  });
 }
 
 function publicErrorCode(error: unknown) {
   const code = error instanceof Error ? error.message : String(error);
-  return ["rate_limited", "provider_unavailable", "invalid_response", "request_cancelled", "memory_version_conflict", "memory_consolidation_rejected"]
-    .includes(code) ? code : "background_failed";
-}
-
-function delay(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return [
+    "rate_limited",
+    "provider_unavailable",
+    "invalid_response",
+    "request_cancelled",
+    "memory_version_conflict",
+    "memory_consolidation_rejected",
+  ].includes(code)
+    ? code
+    : "background_failed";
 }
