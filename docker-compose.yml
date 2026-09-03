@@ -28,12 +28,14 @@ services:
       INTERNAL_MCP_TOKEN: ${INTERNAL_MCP_TOKEN:-local-development-mcp-token}
       MEMORY_MCP_URL: http://memory-mcp:4100/mcp
       SCIENCE_MCP_URL: http://science-mcp:4200/mcp
+      CHECK_MCP_URL: http://check-mcp:4300/mcp
       MODEL_PROVIDER: ${MODEL_PROVIDER:-scripted}
       MODEL_DIALOGUE_NAME: ${MODEL_DIALOGUE_NAME:-qwen-plus-character}
       MODEL_BACKGROUND_NAME: ${MODEL_BACKGROUND_NAME:-qwen3.8-flash}
       MODEL_EMBEDDING_NAME: ${MODEL_EMBEDDING_NAME:-qwen3.7-text-embedding}
       MODEL_API_KEY: ${MODEL_API_KEY:-}
       MODEL_BASE_URL: ${MODEL_BASE_URL:-}
+      MODEL_SEARCH_TIMEOUT_MS: ${MODEL_SEARCH_TIMEOUT_MS:-30000}
       MODEL_PRICING_REFRESH_HOURS: ${MODEL_PRICING_REFRESH_HOURS:-24}
       DEV_MODE: ${DEV_MODE:-true}
     depends_on:
@@ -70,6 +72,21 @@ services:
       timeout: 3s
       retries: 20
 
+  check-mcp:
+    build:
+      context: .
+      target: runner
+    command: ["npm", "run", "start", "--workspace", "@zhiwei/check-mcp"]
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4300/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   worker:
     build:
       context: .
@@ -80,6 +97,8 @@ services:
       memory-mcp:
         condition: service_healthy
       science-mcp:
+        condition: service_healthy
+      check-mcp:
         condition: service_healthy
 
   web:
@@ -95,6 +114,8 @@ services:
       memory-mcp:
         condition: service_healthy
       science-mcp:
+        condition: service_healthy
+      check-mcp:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]

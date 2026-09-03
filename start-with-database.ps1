@@ -44,6 +44,7 @@ $env:MODEL_EMBEDDING_NAME = "qwen3.7-text-embedding"
 $env:DATABASE_URL = "postgres://zhiwei:zhiwei@127.0.0.1:54329/zhiwei"
 $env:MEMORY_MCP_URL = "http://127.0.0.1:4100/mcp"
 $env:SCIENCE_MCP_URL = "http://127.0.0.1:4200/mcp"
+$env:CHECK_MCP_URL = "http://127.0.0.1:4300/mcp"
 $env:ANON_COOKIE_SECRET = "local-development-cookie-secret-change-before-deploy"
 $env:INTERNAL_MCP_TOKEN = "local-development-mcp-token"
 $env:NEXT_PUBLIC_ACTIVITY_STREAM = "true"
@@ -92,7 +93,7 @@ function Wait-ZhiweiHealth {
     [string]$Url
   )
 
-  for ($attempt = 0; $attempt -lt 30; $attempt++) {
+  for ($attempt = 0; $attempt -lt 60; $attempt++) {
     try {
       $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 2
       if ($response.StatusCode -eq 200) {
@@ -112,6 +113,19 @@ try {
     throw "Docker Compose failed to start PostgreSQL."
   }
 
+  $postgresReady = $false
+  for ($attempt = 0; $attempt -lt 60; $attempt++) {
+    docker compose exec -T postgres pg_isready -U zhiwei -d zhiwei *> $null
+    if ($LASTEXITCODE -eq 0) {
+      $postgresReady = $true
+      break
+    }
+    Start-Sleep -Seconds 1
+  }
+  if (-not $postgresReady) {
+    throw "PostgreSQL did not become healthy before migration."
+  }
+
   npm run db:migrate
   if ($LASTEXITCODE -ne 0) {
     throw "Database migration failed."
@@ -120,9 +134,11 @@ try {
   $processes = @(
     [pscustomobject]@{ name = "memory-mcp"; process = Start-ZhiweiProcess "memory-mcp" @("run", "start", "--workspace", "@zhiwei/memory-mcp") }
     [pscustomobject]@{ name = "science-mcp"; process = Start-ZhiweiProcess "science-mcp" @("run", "start", "--workspace", "@zhiwei/science-mcp") }
+    [pscustomobject]@{ name = "check-mcp"; process = Start-ZhiweiProcess "check-mcp" @("run", "start", "--workspace", "@zhiwei/check-mcp") }
   )
   Wait-ZhiweiHealth "Memory MCP" "http://127.0.0.1:4100/health"
   Wait-ZhiweiHealth "Science MCP" "http://127.0.0.1:4200/health"
+  Wait-ZhiweiHealth "Check MCP" "http://127.0.0.1:4300/health"
 
   $processes += [pscustomobject]@{ name = "worker"; process = Start-ZhiweiProcess "worker" @("run", "start", "--workspace", "@zhiwei/worker") }
   $processes += [pscustomobject]@{ name = "web"; process = Start-ZhiweiProcess "web" @("run", "dev", "--workspace", "@zhiwei/web") }
