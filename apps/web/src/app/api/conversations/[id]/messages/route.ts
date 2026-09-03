@@ -127,7 +127,7 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
         reason: route.data.reason,
       };
       await recordModelCallMeta({ userId, traceId, conversationId, adapterId: gateway.id, meta: route.meta });
-      if (route.data.needsSearch || route.data.scientific) {
+      if (route.data.needsSearch) {
         const brief = await gateway.buildFactBrief({ content: input.content, route: route.data }, { signal: request.signal });
         factBrief = brief.data;
         verifiedSources = brief.meta.sources;

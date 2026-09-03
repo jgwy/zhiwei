@@ -91,17 +91,25 @@ export class AliyunBailianGateway implements ModelGateway {
     options: { signal?: AbortSignal } = {},
   ): AsyncIterable<ModelStreamEvent> {
     const system = buildDialogueSystem(input.context, input.factBrief);
+    const verifiedScience = Boolean(input.scienceMode && input.factBrief);
     if (!requiresDeepEmotionalReply(input.responsePlan) && (input.scienceMode || isWritingTask(input.content))) {
       const supportedIndices = new Set((input.factBrief?.claims ?? []).map((claim, index) => claim.status === "supported" ? index + 1 : null).filter(Boolean));
       const outputSchema = input.scienceMode
-        ? ScienceExplanationOutputSchema.refine(
+        ? verifiedScience
+          ? ScienceExplanationOutputSchema.refine(
             (value) => value.claimIndicesUsed.every((index) => supportedIndices.has(index))
               && (supportedIndices.size > 0 || /无法|未能核实|暂时不能|不确定/u.test(value.content)),
             "科学回答引用了未通过审计的主张",
-          )
+            )
+          : ScienceExplanationOutputSchema
         : z.object({ content: z.string().min(1).max(8_000) });
+      const taskInstruction = input.scienceMode
+        ? verifiedScience
+          ? "只使用审计事实包中受支持的原子主张。若使用类比，说明类比适用到哪里、从哪里开始不成立；区分相关但不同的现象。"
+          : "当前没有可用的实时事实包。请使用已有知识解释，不声称已经联网核验，不编造来源；若有不确定处，直接说明。"
+        : "只生成用户要求的写作内容。";
       const result = await this.structured("dialogue", outputSchema,
-        `${system}\n这是${input.scienceMode ? "科学解释" : "写作"}任务。先明确受众和用户要的片段，只使用审计事实包中受支持的原子主张。若使用类比，说明类比适用到哪里、从哪里开始不成立；区分相关但不同的现象。`,
+        `${system}\n这是${input.scienceMode ? "科学解释" : "写作"}任务。先明确受众和用户要的片段。${taskInstruction}`,
         input.content,
         { signal: options.signal, temperature: 0.32 });
       for (const delta of result.data.content.match(/[\s\S]{1,8}/gu) ?? []) yield { type: "text.delta", delta };
@@ -141,39 +149,44 @@ export class AliyunBailianGateway implements ModelGateway {
       let usage = zeroUsage();
       const sources = new Map<string, ModelSource>();
       try {
-        const stream = await this.client.responses.create({
+        const stream = await this.client.chat.completions.create({
           model,
-          input: messages,
+          messages,
           stream: true,
-          reasoning: { effort: "none" },
+          stream_options: { include_usage: true },
           temperature: 0.58,
-          max_output_tokens: 4_000,
-          store: false,
+          max_tokens: 4_000,
+          enable_thinking: false,
+          clear_thinking: true,
         } as any, { signal: options.signal });
         let finishReason = "completed";
         let requestId: string | undefined;
         let incomplete = false;
         for await (const event of stream as any) {
-          if (event.type === "response.completed") {
-            const response = event.response;
-            requestId = response?.id ?? requestId;
-            finishReason = response?.status ?? finishReason;
-            incomplete = response?.status === "incomplete" || Boolean(response?.incomplete_details?.reason);
-            usage = parseUsage(response?.usage, usage);
+          requestId = event.id ?? requestId;
+          const choice = event.choices?.[0];
+          if (choice?.finish_reason) {
+            finishReason = choice.finish_reason;
+            incomplete = choice.finish_reason === "length";
           }
-          if (event.type === "response.failed") throw new Error("provider_unavailable");
-          const delta = event.type === "response.output_text.delta" ? event.delta ?? "" : "";
+          usage = parseUsage(event.usage, usage);
+          const content = choice?.delta?.content;
+          const delta = typeof content === "string"
+            ? content
+            : Array.isArray(content)
+              ? content.map((part: any) => typeof part === "string" ? part : part?.text ?? "").join("")
+              : "";
           if (delta) {
             emitted = true;
             firstTokenMs ??= Date.now() - started;
             yield { type: "text.delta", delta };
           }
         }
-        if (incomplete) throw new Error("invalid_response");
+        if (incomplete || !emitted) throw new Error("invalid_response");
         const meta = createMeta({
           task: "dialogue",
           model,
-          transport: "openai-responses",
+          transport: "openai-chat-completions",
           usage,
           durationMs: Date.now() - started,
           firstTokenMs,

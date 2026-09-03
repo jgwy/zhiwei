@@ -145,17 +145,10 @@ describe("Aliyun structured-output quality retry contract", () => {
   });
 
   it("gives emotional dialogue enough output budget and a concrete listening protocol", async () => {
-    openAiMock.responseCreate.mockResolvedValue({
+    openAiMock.completionCreate.mockResolvedValue({
       async *[Symbol.asyncIterator]() {
-        yield { type: "response.output_text.delta", delta: "我听见了。" };
-        yield {
-          type: "response.completed",
-          response: {
-            id: "response-unit-test",
-            status: "completed",
-            usage: { input_tokens: 120, output_tokens: 12 },
-          },
-        };
+        yield { id: "chat-stream-emotional", choices: [{ delta: { content: "我听见了。" }, finish_reason: null }] };
+        yield { id: "chat-stream-emotional", choices: [{ delta: {}, finish_reason: "stop" }], usage: { input_tokens: 120, output_tokens: 12 } };
       },
     });
     const context: CompiledContext = {
@@ -178,17 +171,19 @@ describe("Aliyun structured-output quality retry contract", () => {
       context,
     })) events.push(event);
 
-    expect(openAiMock.responseCreate).toHaveBeenCalledTimes(1);
-    const request = openAiMock.responseCreate.mock.calls[0]?.[0];
+    expect(openAiMock.responseCreate).not.toHaveBeenCalled();
+    expect(openAiMock.completionCreate).toHaveBeenCalledTimes(1);
+    const request = openAiMock.completionCreate.mock.calls[0]?.[0];
     expect(request).toMatchObject({
       model: "qwen-plus-character",
+      messages: expect.any(Array),
       stream: true,
-      store: false,
+      stream_options: { include_usage: true },
       temperature: 0.58,
-      max_output_tokens: 4_000,
-      reasoning: { effort: "none" },
+      max_tokens: 4_000,
+      enable_thinking: false,
     });
-    const system = request.input[0].content as string;
+    const system = request.messages[0].content as string;
     expect(system).toContain("4至8个完整句子");
     expect(system).toContain("最刺痛或最为难的部分");
     expect(system).toContain("不能只换一种说法重复原文");
@@ -200,18 +195,91 @@ describe("Aliyun structured-output quality retry contract", () => {
     });
   });
 
-  it("surfaces a provider-incomplete long reply instead of marking it completed", async () => {
-    openAiMock.responseCreate.mockResolvedValue({
+  it("streams ordinary dialogue through Chat Completions", async () => {
+    openAiMock.completionCreate.mockResolvedValue({
       async *[Symbol.asyncIterator]() {
-        yield { type: "response.output_text.delta", delta: "回答还没写完" };
+        yield { id: "chat-stream-1", choices: [{ delta: { content: "AIDD" }, finish_reason: null }] };
         yield {
-          type: "response.completed",
-          response: {
-            id: "response-incomplete",
-            status: "incomplete",
-            incomplete_details: { reason: "max_output_tokens" },
-          },
+          id: "chat-stream-1",
+          choices: [{ delta: {}, finish_reason: "stop" }],
+          usage: { prompt_tokens: 120, completion_tokens: 18 },
         };
+      },
+    });
+    const context: CompiledContext = {
+      foundationInstructions: "知微基底技能",
+      personalSkill: defaultPersonalSkill,
+      profileSummary: "",
+      memories: [],
+      sessionSummary: "",
+      recentMessages: [],
+      estimatedTokens: 0,
+      truncated: false,
+    };
+
+    const events = [];
+    for await (const event of new AliyunBailianGateway().streamDialogue({
+      userId: crypto.randomUUID(),
+      conversationId: crypto.randomUUID(),
+      messageId: crypto.randomUUID(),
+      content: "你能给我介绍一下AIDD吗",
+      context,
+    })) events.push(event);
+
+    expect(openAiMock.responseCreate).not.toHaveBeenCalled();
+    expect(openAiMock.completionCreate).toHaveBeenCalledTimes(1);
+    expect(openAiMock.completionCreate.mock.calls[0]?.[0]).toMatchObject({
+      model: "qwen-plus-character",
+      stream: true,
+      stream_options: { include_usage: true },
+      max_tokens: 4_000,
+      enable_thinking: false,
+    });
+    expect(events).toEqual([
+      { type: "text.delta", delta: "AIDD" },
+      expect.objectContaining({ type: "completed", meta: expect.objectContaining({ transport: "openai-chat-completions" }) }),
+    ]);
+  });
+
+  it("keeps a scientific response shape when verification is unavailable", async () => {
+    openAiMock.completionCreate.mockResolvedValueOnce(completion({
+      content: "先给你一个不依赖实时核验的概念说明。",
+      claimIndicesUsed: [],
+      analogy: null,
+      distinctions: [],
+    }));
+    const context: CompiledContext = {
+      foundationInstructions: "知微基底技能",
+      personalSkill: defaultPersonalSkill,
+      profileSummary: "",
+      memories: [],
+      sessionSummary: "",
+      recentMessages: [],
+      estimatedTokens: 0,
+      truncated: false,
+    };
+
+    const events = [];
+    for await (const event of new AliyunBailianGateway().streamDialogue({
+      userId: crypto.randomUUID(),
+      conversationId: crypto.randomUUID(),
+      messageId: crypto.randomUUID(),
+      content: "你能给我介绍一下AIDD吗",
+      context,
+      scienceMode: true,
+    })) events.push(event);
+
+    expect(openAiMock.completionCreate).toHaveBeenCalledTimes(1);
+    expect(events.filter((event) => event.type === "text.delta").map((event) => event.delta).join(""))
+      .toBe("先给你一个不依赖实时核验的概念说明。");
+    expect(events.at(-1)).toMatchObject({ type: "completed" });
+  });
+
+  it("surfaces a provider-incomplete long reply instead of marking it completed", async () => {
+    openAiMock.completionCreate.mockResolvedValue({
+      async *[Symbol.asyncIterator]() {
+        yield { id: "chat-stream-incomplete", choices: [{ delta: { content: "回答还没写完" }, finish_reason: null }] };
+        yield { id: "chat-stream-incomplete", choices: [{ delta: {}, finish_reason: "length" }] };
       },
     });
     const context: CompiledContext = {
