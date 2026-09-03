@@ -223,6 +223,9 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #222; outline-
 @media (max-width: 900px) {
   .app-shell, .app-shell.insight-closed { display: block; height: 100dvh; }
   .chat-column { height: 100%; grid-template-rows: 58px minmax(0,1fr) auto; }
+  .message time, .message-actions, .conversation-more { opacity: 1; }
+  .message footer { min-height: 32px; margin-top: 6px; }
+  .message-actions button { width: 32px; height: 32px; }
   .conversation-sidebar { position: fixed; inset: 0 auto 0 0; width: min(86vw, 320px); transform: translateX(-102%); box-shadow: var(--shadow); transition: .22s ease; }
   .conversation-sidebar.mobile-open { transform: translateX(0); }
   .mobile-close, .mobile-insight-close { display: flex; border: 0; background: transparent; cursor: pointer; }
