@@ -26,3 +26,18 @@ describe("temporal memory and message migration", () => {
     expect(backfill).not.toMatch(/event_time_end\s*=/i);
   });
 });
+
+describe("message editing migration", () => {
+  const sql = readFileSync(new URL("../migrations/008_message_editing.sql", import.meta.url), "utf8");
+
+  it("adds revision, edit metadata and indexed derivation lineage", () => {
+    expect(sql).toMatch(/history_revision bigint NOT NULL DEFAULT 0/i);
+    expect(sql).toMatch(/edited_at timestamptz/i);
+    expect(sql).toMatch(/source_message_sequence bigint/i);
+    expect(sql).toMatch(/idx_memory_versions_source_sequence/i);
+  });
+
+  it("allows obsolete background jobs to be cancelled", () => {
+    expect(sql).toMatch(/status IN \('pending', 'running', 'completed', 'failed', 'cancelled'\)/i);
+  });
+});

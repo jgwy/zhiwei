@@ -69,7 +69,7 @@ export async function listConversations(userId: string) {
   const result = await getPool().query(
     `SELECT c.*,
       COALESCE((SELECT json_agg(m ORDER BY m.sequence_no)
-        FROM (SELECT id, role, content, created_at, sequence_no, metadata
+        FROM (SELECT id, role, content, created_at, sequence_no, edited_at, edit_count, metadata
               FROM messages WHERE conversation_id = c.id ORDER BY sequence_no DESC LIMIT 80) m), '[]') AS messages
      FROM conversations c
      WHERE c.user_id = $1 AND c.kind = 'chat'
@@ -83,6 +83,7 @@ export async function listConversations(userId: string) {
     titleLocked: row.title_locked ?? false,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    historyRevision: Number(row.history_revision ?? 0),
     messages: (row.messages ?? []).map(mapMessage),
   }));
 }
@@ -161,6 +162,43 @@ export async function addMessage(input: {
   });
 }
 
+export async function addUserMessage(input: {
+  conversationId: string;
+  userId: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+}): Promise<{ message: ChatMessage; historyRevision: number }> {
+  return withTransaction(async (client) => {
+    const sequence = await client.query(
+      `UPDATE conversations
+       SET next_message_sequence = next_message_sequence + 1,
+           history_revision = history_revision + 1,
+           updated_at = now()
+       WHERE id = $1 AND user_id = $2
+       RETURNING next_message_sequence - 1 AS sequence_no, history_revision`,
+      [input.conversationId, input.userId],
+    );
+    if (!sequence.rowCount) throw new Error("只能向当前用户自己的对话添加消息");
+    const result = await client.query(
+      `INSERT INTO messages
+        (id, conversation_id, user_id, role, content, metadata, sequence_no)
+       VALUES ($1, $2, $3, 'user', $4, $5::jsonb, $6) RETURNING *`,
+      [
+        randomUUID(),
+        input.conversationId,
+        input.userId,
+        input.content,
+        JSON.stringify(input.metadata ?? {}),
+        sequence.rows[0].sequence_no,
+      ],
+    );
+    return {
+      message: mapMessage(result.rows[0]),
+      historyRevision: Number(sequence.rows[0].history_revision),
+    };
+  });
+}
+
 export async function updateMessage(input: {
   id: string;
   userId: string;
@@ -178,13 +216,345 @@ export async function updateMessage(input: {
   return mapMessage(result.rows[0]);
 }
 
+export class ConversationRevisionConflictError extends Error {
+  readonly code = "conversation_revision_conflict";
+
+  constructor() {
+    super("对话已经发生变化，请刷新后重试");
+  }
+}
+
+export type EditMessageResult = {
+  message: ChatMessage;
+  deletedMessageIds: string[];
+  historyRevision: number;
+  profileStale: boolean;
+  skillStale: boolean;
+  shouldRegenerateTitle: boolean;
+};
+
+export async function editMessageAndRollback(input: {
+  userId: string;
+  conversationId: string;
+  messageId: string;
+  content: string;
+  expectedRevision: number;
+}): Promise<EditMessageResult> {
+  return withTransaction(async (client) => {
+    const conversationResult = await client.query(
+      `SELECT id, history_revision, title_source, title_locked
+       FROM conversations
+       WHERE id = $1 AND user_id = $2
+       FOR UPDATE`,
+      [input.conversationId, input.userId],
+    );
+    if (!conversationResult.rowCount) throw new Error("这段对话已经不可用，请新建一段对话。");
+    const conversation = conversationResult.rows[0];
+    if (Number(conversation.history_revision) !== input.expectedRevision) {
+      throw new ConversationRevisionConflictError();
+    }
+
+    const messageResult = await client.query(
+      `SELECT * FROM messages
+       WHERE id = $1 AND conversation_id = $2 AND user_id = $3
+       FOR UPDATE`,
+      [input.messageId, input.conversationId, input.userId],
+    );
+    if (!messageResult.rowCount) throw new Error("找不到要编辑的消息");
+    const target = messageResult.rows[0];
+    if (target.role !== "user") throw new Error("只能编辑自己发送的消息");
+
+    const rollbackMessages = await client.query(
+      `SELECT id FROM messages
+       WHERE conversation_id = $1 AND user_id = $2 AND sequence_no >= $3
+       ORDER BY sequence_no`,
+      [input.conversationId, input.userId, target.sequence_no],
+    );
+    const rollbackMessageIds = rollbackMessages.rows.map((row) => row.id as string);
+    const deletedMessageIds = rollbackMessageIds.filter((id) => id !== input.messageId);
+
+    const affectedMemories = await client.query(
+      `SELECT DISTINCT memory_id, id AS version_id
+       FROM memory_versions
+       WHERE user_id = $1 AND source_conversation_id = $2
+         AND source_message_sequence >= $3`,
+      [input.userId, input.conversationId, target.sequence_no],
+    );
+    const affectedMemoryIds = [...new Set(affectedMemories.rows.map((row) => row.memory_id as string))];
+    const affectedVersionIds = affectedMemories.rows.map((row) => row.version_id as string);
+    const evidenceAffected = await client.query(
+      `SELECT DISTINCT version.memory_id, version.id AS version_id
+       FROM memory_evidence evidence
+       JOIN memory_versions version ON version.id = evidence.memory_version_id
+       WHERE evidence.user_id = $1 AND evidence.message_id = ANY($2::uuid[])`,
+      [input.userId, rollbackMessageIds],
+    );
+    for (const row of evidenceAffected.rows) affectedMemoryIds.push(row.memory_id as string);
+    const uniqueAffectedMemoryIds = [...new Set(affectedMemoryIds)];
+    const evidenceAffectedVersionIds = evidenceAffected.rows.map((row) => row.version_id as string);
+
+    const skillResult = await client.query(
+      `SELECT id FROM personal_skill_versions
+       WHERE user_id = $1 AND is_active = true
+         AND (
+           (source_conversation_id = $2 AND source_message_sequence >= $3)
+           OR evidence_message_ids && $4::uuid[]
+         )
+       LIMIT 1`,
+      [input.userId, input.conversationId, target.sequence_no, rollbackMessageIds],
+    );
+    const skillStale = Boolean(skillResult.rowCount);
+    if (skillStale) {
+      await client.query(
+        `UPDATE personal_skill_versions SET is_active = false
+         WHERE user_id = $1 AND is_active = true`,
+        [input.userId],
+      );
+      await client.query(
+        `UPDATE personal_skill_versions SET is_active = true
+         WHERE id = (
+           SELECT id FROM personal_skill_versions
+           WHERE user_id = $1 AND id <> $2
+           ORDER BY version DESC LIMIT 1
+         )`,
+        [input.userId, skillResult.rows[0]?.id ?? null],
+      );
+    }
+
+    await client.query(
+      `UPDATE jobs SET status = 'cancelled', completed_at = now()
+       WHERE user_id = $1 AND status = 'pending'
+         AND (
+           (payload->>'conversationId' = $2
+             AND COALESCE((payload->>'historyRevision')::bigint, 0) <= $3)
+           OR payload->>'messageId' = ANY($4::text[])
+           OR EXISTS (
+             SELECT 1 FROM jsonb_array_elements_text(COALESCE(payload->'evidenceIds', '[]'::jsonb)) evidence
+             WHERE evidence = ANY($4::text[])
+           )
+         )`,
+      [input.userId, input.conversationId, input.expectedRevision, rollbackMessageIds],
+    );
+
+    await client.query(
+      `DELETE FROM memory_evidence
+       WHERE user_id = $1
+         AND (message_id = ANY($2::uuid[]) OR memory_version_id = ANY($3::uuid[]))`,
+      [input.userId, rollbackMessageIds, affectedVersionIds],
+    );
+    await client.query(
+      `DELETE FROM memory_versions
+       WHERE user_id = $1 AND id = ANY($2::uuid[])`,
+      [input.userId, affectedVersionIds],
+    );
+
+    if (uniqueAffectedMemoryIds.length) {
+      await client.query(
+        `WITH candidates AS (
+           SELECT DISTINCT ON (memory_id) id
+           FROM memory_versions
+           WHERE user_id = $1 AND memory_id = ANY($2::uuid[])
+             AND status <> 'withdrawn'
+           ORDER BY memory_id, created_at DESC
+         )
+         UPDATE memory_versions version
+         SET is_active = true, status = 'active'
+         FROM candidates
+         WHERE version.id = candidates.id
+           AND NOT EXISTS (
+             SELECT 1 FROM memory_versions active
+             WHERE active.memory_id = version.memory_id AND active.is_active = true
+           )`,
+        [input.userId, uniqueAffectedMemoryIds],
+      );
+      await client.query(
+        `UPDATE memory_versions
+         SET first_observed_at = NULL, last_confirmed_at = NULL
+         WHERE user_id = $1 AND id = ANY($2::uuid[])`,
+        [input.userId, evidenceAffectedVersionIds],
+      );
+      await client.query(
+        `UPDATE memory_versions version
+         SET first_observed_at = evidence.first_observed_at,
+             last_confirmed_at = evidence.last_confirmed_at
+         FROM (
+           SELECT link.memory_version_id,
+                  min(message.created_at) AS first_observed_at,
+                  max(message.created_at) AS last_confirmed_at
+           FROM memory_evidence link
+           JOIN messages message ON message.id = link.message_id
+           WHERE link.user_id = $1
+           GROUP BY link.memory_version_id
+         ) evidence
+         WHERE version.id = evidence.memory_version_id
+           AND version.memory_id = ANY($2::uuid[])`,
+        [input.userId, uniqueAffectedMemoryIds],
+      );
+      await client.query(
+        `DELETE FROM memories memory
+         WHERE memory.user_id = $1 AND memory.id = ANY($2::uuid[])
+           AND NOT EXISTS (SELECT 1 FROM memory_versions version WHERE version.memory_id = memory.id)`,
+        [input.userId, uniqueAffectedMemoryIds],
+      );
+    }
+
+    await client.query(
+      `DELETE FROM conversation_summaries summary
+       USING messages source
+       WHERE summary.user_id = $1 AND summary.conversation_id = $2
+         AND summary.source_message_id = source.id AND source.sequence_no >= $3`,
+      [input.userId, input.conversationId, target.sequence_no],
+    );
+    await client.query(
+      `DELETE FROM mood_samples mood
+       USING messages source
+       WHERE mood.user_id = $1 AND mood.conversation_id = $2
+         AND mood.message_id = source.id AND source.sequence_no >= $3`,
+      [input.userId, input.conversationId, target.sequence_no],
+    );
+    await client.query(
+      `DELETE FROM return_notes
+       WHERE user_id = $1 AND conversation_id = $2
+         AND COALESCE(source_message_sequence, $3) >= $3`,
+      [input.userId, input.conversationId, target.sequence_no],
+    );
+    await client.query(`DELETE FROM message_sources WHERE user_id = $1 AND message_id = ANY($2::uuid[])`, [input.userId, deletedMessageIds]);
+    await client.query(`DELETE FROM feedback WHERE user_id = $1 AND message_id = ANY($2::uuid[])`, [input.userId, rollbackMessageIds]);
+    await client.query(`DELETE FROM risk_events WHERE user_id = $1 AND message_id = ANY($2::uuid[])`, [input.userId, rollbackMessageIds]);
+    await client.query(
+      `DELETE FROM messages
+       WHERE user_id = $1 AND conversation_id = $2 AND sequence_no > $3`,
+      [input.userId, input.conversationId, target.sequence_no],
+    );
+
+    const updatedMessage = await client.query(
+      `UPDATE messages
+       SET content = $4, edited_at = now(), edit_count = edit_count + 1,
+           metadata = metadata - 'traceId'
+       WHERE id = $1 AND conversation_id = $2 AND user_id = $3
+       RETURNING *`,
+      [input.messageId, input.conversationId, input.userId, input.content],
+    );
+    const nextRevision = input.expectedRevision + 1;
+    const shouldRegenerateTitle = Number(target.sequence_no) === 1 && conversation.title_locked !== true;
+    await client.query(
+      `UPDATE conversations
+       SET history_revision = $3, next_message_sequence = $4, updated_at = now(),
+           title = CASE WHEN $5 THEN '新的对话' ELSE title END,
+           title_source = CASE WHEN $5 THEN 'default' ELSE title_source END
+       WHERE id = $1 AND user_id = $2`,
+      [input.conversationId, input.userId, nextRevision, Number(target.sequence_no) + 1, shouldRegenerateTitle],
+    );
+    await client.query(
+      `UPDATE users
+       SET profile_stale = profile_stale OR $2,
+           skill_stale = skill_stale OR $3,
+           updated_at = now()
+       WHERE id = $1`,
+      [input.userId, affectedVersionIds.length > 0, skillStale],
+    );
+
+    return {
+      message: mapMessage(updatedMessage.rows[0]),
+      deletedMessageIds,
+      historyRevision: nextRevision,
+      profileStale: affectedVersionIds.length > 0,
+      skillStale,
+      shouldRegenerateTitle,
+    };
+  });
+}
+
+export async function isConversationRevisionCurrent(input: {
+  userId: string;
+  conversationId: string;
+  messageId?: string;
+  historyRevision: number;
+}): Promise<boolean> {
+  const result = await getPool().query(
+    `SELECT 1 FROM conversations conversation
+     WHERE conversation.id = $1 AND conversation.user_id = $2
+       AND conversation.history_revision = $3
+       AND ($4::uuid IS NULL OR EXISTS (
+         SELECT 1 FROM messages message
+         WHERE message.id = $4 AND message.conversation_id = conversation.id
+       ))`,
+    [input.conversationId, input.userId, input.historyRevision, input.messageId ?? null],
+  );
+  return Boolean(result.rowCount);
+}
+
+export async function getMessageRevisionContext(
+  userId: string,
+  messageId: string,
+): Promise<{ conversationId: string; sequence: number; editCount: number; historyRevision: number } | null> {
+  const result = await getPool().query(
+    `SELECT message.conversation_id, message.sequence_no, message.edit_count,
+            conversation.history_revision
+     FROM messages message
+     JOIN conversations conversation ON conversation.id = message.conversation_id
+     WHERE message.id = $1 AND message.user_id = $2`,
+    [messageId, userId],
+  );
+  if (!result.rowCount) return null;
+  return {
+    conversationId: result.rows[0].conversation_id,
+    sequence: Number(result.rows[0].sequence_no),
+    editCount: Number(result.rows[0].edit_count ?? 0),
+    historyRevision: Number(result.rows[0].history_revision ?? 0),
+  };
+}
+
+export async function isConversationTitleSourceCurrent(
+  userId: string,
+  conversationId: string,
+  content: string,
+): Promise<boolean> {
+  const result = await getPool().query(
+    `SELECT 1 FROM (
+       SELECT content FROM messages
+       WHERE user_id = $1 AND conversation_id = $2 AND role = 'user'
+       ORDER BY sequence_no LIMIT 1
+     ) first_message
+     WHERE first_message.content = $3`,
+    [userId, conversationId, content],
+  );
+  return Boolean(result.rowCount);
+}
+
+export async function getSkillRebuildBase(userId: string) {
+  const result = await getPool().query(
+    `SELECT * FROM personal_skill_versions
+     WHERE user_id = $1 AND is_active = true
+     ORDER BY version DESC LIMIT 1`,
+    [userId],
+  );
+  return result.rows[0]
+    ? {
+        id: result.rows[0].id,
+        version: result.rows[0].version,
+        content: result.rows[0].content as PersonalSkill,
+        triggerReason: result.rows[0].trigger_reason,
+        expectedEffect: result.rows[0].expected_effect,
+        createdAt: result.rows[0].created_at,
+      }
+    : null;
+}
+
+export async function markSkillFresh(userId: string): Promise<void> {
+  await getPool().query(
+    `UPDATE users SET skill_stale = false, updated_at = now() WHERE id = $1`,
+    [userId],
+  );
+}
+
 export async function listMessages(
   userId: string,
   conversationId: string,
   limit = 80,
 ): Promise<ChatMessage[]> {
   const result = await getPool().query(
-    `SELECT id, role, content, created_at, sequence_no, metadata FROM messages
+    `SELECT id, role, content, created_at, sequence_no, edited_at, edit_count, metadata FROM messages
      WHERE user_id = $1 AND conversation_id = $2
      ORDER BY sequence_no DESC LIMIT $3`,
     [userId, conversationId, limit],
@@ -445,7 +815,10 @@ export async function getLatestProfile(
   userId: string,
 ): Promise<ProfileSnapshot | null> {
   const result = await getPool().query(
-    `SELECT * FROM profile_snapshots WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
+    `SELECT profile.* FROM profile_snapshots profile
+     JOIN users ON users.id = profile.user_id
+     WHERE profile.user_id = $1 AND users.profile_stale = false
+     ORDER BY profile.created_at DESC LIMIT 1`,
     [userId],
   );
   if (!result.rowCount) return null;
@@ -474,6 +847,9 @@ export async function commitProfileSnapshot(input: {
   userId: string;
   summary: string;
   dimensionWeights: Record<string, number>;
+  sourceConversationId?: string;
+  sourceMessageSequence?: number;
+  expectedHistoryRevision?: number;
 }) {
   const memories = await getActiveMemories(input.userId);
   const feedback = await getPool().query(
@@ -498,8 +874,14 @@ export async function commitProfileSnapshot(input: {
   const score = calculateUnderstandingScore(components);
   const result = await getPool().query(
     `INSERT INTO profile_snapshots
-      (id, user_id, summary, dimension_weights, understanding_components, understanding_score)
-     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6) RETURNING *`,
+      (id, user_id, summary, dimension_weights, understanding_components, understanding_score,
+       source_conversation_id, source_message_sequence)
+     SELECT $1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8
+     WHERE $9::bigint IS NULL OR EXISTS (
+       SELECT 1 FROM conversations
+       WHERE id = $7 AND user_id = $2 AND history_revision = $9
+     )
+     RETURNING *`,
     [
       randomUUID(),
       input.userId,
@@ -507,8 +889,13 @@ export async function commitProfileSnapshot(input: {
       JSON.stringify(input.dimensionWeights),
       JSON.stringify(components),
       score,
+      input.sourceConversationId ?? null,
+      input.sourceMessageSequence ?? null,
+      input.expectedHistoryRevision ?? null,
     ],
   );
+  if (!result.rowCount) throw new Error("stale_job");
+  await getPool().query(`UPDATE users SET profile_stale = false, updated_at = now() WHERE id = $1`, [input.userId]);
   return result.rows[0];
 }
 
@@ -555,8 +942,10 @@ export async function getMoodSeries(userId: string) {
 
 export async function getActiveSkill(userId: string) {
   const result = await getPool().query(
-    `SELECT * FROM personal_skill_versions
-     WHERE user_id = $1 AND is_active = true LIMIT 1`,
+    `SELECT skill.* FROM personal_skill_versions skill
+     JOIN users ON users.id = skill.user_id
+     WHERE skill.user_id = $1 AND skill.is_active = true
+       AND users.skill_stale = false LIMIT 1`,
     [userId],
   );
   return result.rows[0]
@@ -575,10 +964,24 @@ export async function commitReflection(input: {
   userId: string;
   conversationId: string;
   sourceMessageId: string;
+  historyRevision?: number;
   reflection: ReflectionOutput;
   embeddings?: Array<number[] | null>;
 }): Promise<{ memoryCount: number; profile: ProfileSnapshot | null }> {
   return withTransaction(async (client) => {
+    const sourceResult = await client.query(
+      `SELECT message.sequence_no, conversation.history_revision
+       FROM messages message
+       JOIN conversations conversation ON conversation.id = message.conversation_id
+       WHERE message.id = $1 AND message.user_id = $2 AND message.conversation_id = $3
+       FOR UPDATE OF conversation`,
+      [input.sourceMessageId, input.userId, input.conversationId],
+    );
+    if (!sourceResult.rowCount) throw new Error("stale_job");
+    const sourceSequence = Number(sourceResult.rows[0].sequence_no);
+    if (input.historyRevision !== undefined && Number(sourceResult.rows[0].history_revision) !== input.historyRevision) {
+      throw new Error("stale_job");
+    }
     const settingsResult = await client.query(`SELECT settings FROM users WHERE id = $1`, [
       input.userId,
     ]);
@@ -643,10 +1046,11 @@ export async function commitReflection(input: {
           (id, memory_id, user_id, category, content, tier, confidence, valid_until,
            event_time_kind, event_time_start, event_time_end, temporal_precision,
            temporal_expression, source_timezone, first_observed_at, last_confirmed_at,
-           reason, embedding_v2, is_active, status)
+           reason, embedding_v2, is_active, status,
+           source_conversation_id, source_message_id, source_message_sequence)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
                  $9, $10, $11, $12, $13, $14, $15, $16,
-                 $17, $18::vector, true, 'active')`,
+                 $17, $18::vector, true, 'active', $19, $20, $21)`,
         [
           versionId,
           memoryId,
@@ -668,6 +1072,9 @@ export async function commitReflection(input: {
           input.embeddings?.[mutationIndex]?.length === 1024
             ? `[${input.embeddings[mutationIndex]!.join(",")}]`
             : null,
+          input.conversationId,
+          input.sourceMessageId,
+          sourceSequence,
         ],
       );
       for (const evidenceId of evidenceIds) {
@@ -746,8 +1153,9 @@ export async function commitReflection(input: {
       const profileId = randomUUID();
       const profileResult = await client.query(
       `INSERT INTO profile_snapshots
-        (id, user_id, summary, dimension_weights, understanding_components, understanding_score)
-       VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6) RETURNING *`,
+        (id, user_id, summary, dimension_weights, understanding_components, understanding_score,
+         source_conversation_id, source_message_sequence)
+       VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8) RETURNING *`,
       [
         profileId,
         input.userId,
@@ -755,8 +1163,11 @@ export async function commitReflection(input: {
         JSON.stringify(input.reflection.dimensionWeights),
         JSON.stringify(components),
         score,
+        input.conversationId,
+        sourceSequence,
       ],
       );
+      await client.query(`UPDATE users SET profile_stale = false WHERE id = $1`, [input.userId]);
       const row = profileResult.rows[0];
       profile = {
         id: row.id,
@@ -771,8 +1182,9 @@ export async function commitReflection(input: {
     if (input.reflection.returnNote && settings.returnNotesEnabled !== false) {
       await client.query(
         `INSERT INTO return_notes
-          (id, user_id, conversation_id, content, valid_after, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
+          (id, user_id, conversation_id, content, valid_after, expires_at,
+           source_message_id, source_message_sequence)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [
           randomUUID(),
           input.userId,
@@ -780,6 +1192,8 @@ export async function commitReflection(input: {
           input.reflection.returnNote.content,
           input.reflection.returnNote.validAfter,
           input.reflection.returnNote.expiresAt,
+          input.sourceMessageId,
+          sourceSequence,
         ],
       );
     }
@@ -794,14 +1208,32 @@ export async function publishPersonalSkill(input: {
   userId: string;
   skill: PersonalSkill;
   source: "model" | "developer_restore";
+  sourceConversationId?: string;
+  sourceMessageSequence?: number;
+  evidenceMessageIds?: string[];
+  expectedHistoryRevision?: number;
 }) {
   return withTransaction(async (client) => {
+    if (input.sourceConversationId && input.expectedHistoryRevision !== undefined) {
+      const revision = await client.query(
+        `SELECT 1 FROM conversations
+         WHERE id = $1 AND user_id = $2 AND history_revision = $3
+         FOR UPDATE`,
+        [input.sourceConversationId, input.userId, input.expectedHistoryRevision],
+      );
+      if (!revision.rowCount) throw new Error("stale_job");
+    }
     const current = await client.query(
       `SELECT * FROM personal_skill_versions
        WHERE user_id = $1 AND is_active = true FOR UPDATE`,
       [input.userId],
     );
-    const nextVersion = Number(current.rows[0]?.version ?? 0) + 1;
+    const latestVersion = await client.query(
+      `SELECT COALESCE(max(version), 0)::int AS version
+       FROM personal_skill_versions WHERE user_id = $1`,
+      [input.userId],
+    );
+    const nextVersion = Number(latestVersion.rows[0]?.version ?? 0) + 1;
     await client.query(
       `UPDATE personal_skill_versions SET is_active = false
        WHERE user_id = $1 AND is_active = true`,
@@ -810,8 +1242,9 @@ export async function publishPersonalSkill(input: {
     const id = randomUUID();
     const result = await client.query(
       `INSERT INTO personal_skill_versions
-        (id, user_id, version, content, trigger_reason, expected_effect, source, parent_id, is_active)
-       VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, true) RETURNING *`,
+        (id, user_id, version, content, trigger_reason, expected_effect, source, parent_id, is_active,
+         source_conversation_id, source_message_sequence, evidence_message_ids)
+       VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, true, $9, $10, $11::uuid[]) RETURNING *`,
       [
         id,
         input.userId,
@@ -821,8 +1254,12 @@ export async function publishPersonalSkill(input: {
         input.skill.evolution.expectedEffect,
         input.source,
         current.rows[0]?.id ?? null,
+        input.sourceConversationId ?? null,
+        input.sourceMessageSequence ?? null,
+        input.evidenceMessageIds ?? [],
       ],
     );
+    await client.query(`UPDATE users SET skill_stale = false, updated_at = now() WHERE id = $1`, [input.userId]);
     const changes = diffJson(current.rows[0]?.content ?? {}, input.skill);
     return { ...result.rows[0], diff: changes };
   });
@@ -1332,6 +1769,8 @@ function mapMessage(row: any): ChatMessage {
     content: row.content,
     createdAt: row.created_at,
     sequence: Number(row.sequence_no),
+    editedAt: row.edited_at ?? null,
+    editCount: Number(row.edit_count ?? 0),
     metadata: row.metadata ?? {},
   };
 }

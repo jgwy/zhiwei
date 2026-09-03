@@ -14,6 +14,7 @@ import {
   MoreHorizontal,
   PanelRightClose,
   PanelRightOpen,
+  Pencil,
   Plus,
   RotateCcw,
   Square,
@@ -44,6 +45,8 @@ export function ZhiweiApp() {
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [receipts, setReceipts] = useState<Record<string, { count: number; open: boolean }>>({});
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
   const abortRef = useRef<AbortController | null>(null);
   const messageEndRef = useRef<HTMLDivElement | null>(null);
   const messageScrollRef = useRef<HTMLDivElement | null>(null);
@@ -202,6 +205,12 @@ export function ZhiweiApp() {
             if (message.id === assistantTemp.id) return { ...message, id: event.messageId, createdAt: event.createdAt, sequence: event.sequence, metadata: { traceId: event.traceId, streaming: true } };
             return message;
           }));
+          setData((current) => current ? {
+            ...current,
+            conversations: current.conversations.map((item) => item.id === conversationId
+              ? { ...item, historyRevision: event.historyRevision }
+              : item),
+          } : current);
           assistantTemp.id = event.messageId;
         }
         if (event.type === "text.delta") {
@@ -218,6 +227,95 @@ export function ZhiweiApp() {
       window.setTimeout(() => void load(), 500);
     } catch (error) {
       if (!abort.signal.aborted) setToast(error instanceof Error ? error.message : "回复中断了，可以重试。");
+    } finally {
+      setStreaming(false);
+      abortRef.current = null;
+    }
+  }
+
+  async function saveEditedMessage(message: ChatMessage) {
+    const text = editDraft.trim();
+    const conversation = data?.conversations.find((item) => item.id === activeId);
+    if (!text || !conversation || streaming) return;
+    if (text === message.content) {
+      setEditingMessageId(null);
+      return;
+    }
+
+    const conversationId = conversation.id;
+    setStreaming(true);
+    const abort = new AbortController();
+    abortRef.current = abort;
+    try {
+      const response = await fetch(`/api/conversations/${conversationId}/messages/${message.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: text, expectedRevision: conversation.historyRevision }),
+        signal: abort.signal,
+      });
+      if (!response.ok) {
+        await load();
+        throw new Error(await responseMessage(response, "消息没有编辑成功，请重试。"));
+      }
+      let assistantMessageId: string | null = null;
+      await readSseStream(response, (event) => {
+        if (event.type === "conversation.rewritten") {
+          const deleted = new Set<string>(event.deletedMessageIds);
+          updateConversationMessages(conversationId, (messages) => messages
+            .filter((item) => !deleted.has(item.id))
+            .map((item) => item.id === event.message.id ? event.message : item));
+          setData((current) => current ? {
+            ...current,
+            conversations: current.conversations.map((item) => item.id === conversationId
+              ? { ...item, historyRevision: event.historyRevision }
+              : item),
+          } : current);
+          setReceipts((current) => Object.fromEntries(Object.entries(current).filter(([id]) => !deleted.has(id))));
+          setEditingMessageId(null);
+        }
+        if (event.type === "message.started") {
+          assistantMessageId = event.messageId;
+          setData((current) => current ? {
+            ...current,
+            conversations: current.conversations.map((item) => item.id === conversationId
+              ? { ...item, historyRevision: event.historyRevision }
+              : item),
+          } : current);
+          updateConversationMessages(conversationId, (messages) => [
+            ...messages.filter((item) => item.id !== event.messageId),
+            {
+              id: event.messageId,
+              role: "assistant",
+              content: "",
+              createdAt: event.createdAt,
+              sequence: event.sequence,
+              metadata: { traceId: event.traceId, streaming: true },
+            },
+          ]);
+        }
+        if (event.type === "text.delta" && assistantMessageId) {
+          updateConversationMessages(conversationId, (messages) => messages.map((item) => item.id === assistantMessageId
+            ? { ...item, content: item.content + event.delta }
+            : item));
+        }
+        if (event.type === "message.completed") {
+          updateConversationMessages(conversationId, (messages) => messages.map((item) => item.id === event.messageId
+            ? { ...item, metadata: { ...item.metadata, streaming: false, status: "completed", sources: event.sources ?? [] } }
+            : item));
+        }
+        if (event.type === "error") {
+          if (assistantMessageId) {
+            updateConversationMessages(conversationId, (messages) => messages.map((item) => item.id === assistantMessageId
+              ? { ...item, metadata: { ...item.metadata, streaming: false, status: abort.signal.aborted ? "stopped" : "interrupted" } }
+              : item));
+          }
+          throw new Error(event.message);
+        }
+      });
+      window.setTimeout(() => void load(), 500);
+    } catch (error) {
+      await load();
+      if (!abort.signal.aborted) setToast(error instanceof Error ? error.message : "消息没有编辑成功，请重试。");
     } finally {
       setStreaming(false);
       abortRef.current = null;
@@ -343,6 +441,13 @@ export function ZhiweiApp() {
                   })}
                   onFeedback={feedback}
                   onRetry={message.role === "assistant" ? () => { const previous = [...active.messages.slice(0, index)].reverse().find((item) => item.role === "user"); if (previous) void sendMessage(previous.content); } : undefined}
+                  editing={editingMessageId === message.id}
+                  editDraft={editingMessageId === message.id ? editDraft : undefined}
+                  editDisabled={streaming}
+                  onEditStart={message.role === "user" ? () => { setEditingMessageId(message.id); setEditDraft(message.content); } : undefined}
+                  onEditDraft={setEditDraft}
+                  onEditCancel={() => setEditingMessageId(null)}
+                  onEditSave={() => void saveEditedMessage(message)}
                   />
                 </Fragment>
               );})}
@@ -473,16 +578,33 @@ function AboutDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-function Message({ message, timeZone, receipt, onToggleReceipt, onFeedback, onRetry }: { message: ChatMessage; timeZone: string; receipt?: { count: number; open: boolean }; onToggleReceipt: () => void; onFeedback: (id: string, value: "understood" | "not-me", reason?: string) => Promise<void>; onRetry?: () => void }) {
+function Message({ message, timeZone, receipt, onToggleReceipt, onFeedback, onRetry, editing, editDraft, editDisabled, onEditStart, onEditDraft, onEditCancel, onEditSave }: { message: ChatMessage; timeZone: string; receipt?: { count: number; open: boolean }; onToggleReceipt: () => void; onFeedback: (id: string, value: "understood" | "not-me", reason?: string) => Promise<void>; onRetry?: () => void; editing: boolean; editDraft?: string; editDisabled: boolean; onEditStart?: () => void; onEditDraft: (value: string) => void; onEditCancel: () => void; onEditSave: () => void }) {
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const assistant = message.role === "assistant";
   return (
     <article className={assistant ? "message assistant" : "message user"}>
-      <div className="message-content">{message.content || (message.metadata?.streaming ? <span className="typing"><i /><i /><i /></span> : null)}</div>
+      {editing ? (
+        <div className="message-editor">
+          <textarea
+            aria-label="编辑消息内容"
+            autoFocus
+            value={editDraft ?? ""}
+            onChange={(event) => onEditDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") onEditCancel();
+              if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); onEditSave(); }
+            }}
+            rows={3}
+          />
+          <small>保存后会删除这条消息之后的聊天及相关记忆</small>
+          <div><button onClick={onEditCancel} disabled={editDisabled}>取消</button><button onClick={onEditSave} disabled={editDisabled || !(editDraft ?? "").trim()}>保存并重新发送</button></div>
+        </div>
+      ) : <div className="message-content">{message.content || (message.metadata?.streaming ? <span className="typing"><i /><i /><i /></span> : null)}</div>}
       {message.metadata?.status === "interrupted" ? <div className="message-status">回复中断了，可以重试。</div> : null}
       {Array.isArray(message.metadata?.sources) && message.metadata.sources.length ? <details className="message-sources"><summary>查看事实来源（{message.metadata.sources.length}）</summary>{message.metadata.sources.map((source: any) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer"><span>{source.title}</span>{source.siteName ? <small>{source.siteName}</small> : null}</a>)}</details> : null}
       <footer>
-        <time title={formatFullTime(message.createdAt, timeZone)} dateTime={message.createdAt}>{formatRelativeDateTime(message.createdAt)}</time>
+        <time title={formatFullTime(message.createdAt, timeZone)} dateTime={message.createdAt}>{formatRelativeDateTime(message.createdAt)}{message.editedAt ? " · 已编辑" : ""}</time>
+        {!assistant && !editing && onEditStart ? <div className="message-actions user-message-actions"><button onClick={onEditStart} disabled={editDisabled} aria-label="编辑消息"><Pencil size={14} /></button></div> : null}
         {assistant && message.content ? <div className="message-actions"><button onClick={() => navigator.clipboard.writeText(message.content)} aria-label="复制"><Clipboard size={14} /></button><button onClick={() => void onFeedback(message.id, "understood")} aria-label="有被懂到"><ThumbsUp size={14} /></button><button onClick={() => setFeedbackOpen(!feedbackOpen)} aria-label="不太像我"><ThumbsDown size={14} /></button>{onRetry ? <button onClick={onRetry} aria-label="重试"><RotateCcw size={14} /></button> : null}</div> : null}
       </footer>
       {feedbackOpen ? <div className="feedback-reasons"><span>哪里不太像你？</span>{["语气不对", "记错了", "建议不贴合", "太像模板"].map((reason) => <button key={reason} onClick={() => { void onFeedback(message.id, "not-me", reason); setFeedbackOpen(false); }}>{reason}</button>)}</div> : null}

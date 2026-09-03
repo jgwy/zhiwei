@@ -26,6 +26,7 @@ const toolSchemas = {
   memory_commit_reflection: z.object({
     conversationId: z.string().uuid(),
     sourceMessageId: z.string().uuid(),
+    historyRevision: z.number().int().positive().optional(),
     reflection: ReflectionOutputSchema,
     embeddings: z.array(z.array(z.number()).length(1024).nullable()).max(12).optional(),
   }),
@@ -39,7 +40,13 @@ const toolSchemas = {
     dimensionWeights: z.record(z.string(), z.number()),
   }),
   personal_skill_get_active: z.object({}),
-  personal_skill_publish_rewrite: z.object({ skill: PersonalSkillSchema }),
+  personal_skill_publish_rewrite: z.object({
+    skill: PersonalSkillSchema,
+    sourceConversationId: z.string().uuid().optional(),
+    sourceMessageSequence: z.number().int().positive().optional(),
+    evidenceMessageIds: z.array(z.string().uuid()).max(50).optional(),
+    expectedHistoryRevision: z.number().int().positive().optional(),
+  }),
 } as const;
 
 const server = createServer(async (request, response) => {
@@ -150,7 +157,7 @@ async function invokeTool(tool: keyof typeof toolSchemas, userId: string, args: 
       return { skill: await getActiveSkill(userId) };
     case "personal_skill_publish_rewrite":
       return {
-        version: await publishPersonalSkill({ userId, skill: args.skill, source: "model" }),
+        version: await publishPersonalSkill({ userId, ...args, source: "model" }),
       };
   }
 }

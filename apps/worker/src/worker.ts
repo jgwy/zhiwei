@@ -4,14 +4,23 @@ import {
   addActivity,
   callMemoryMcp,
   claimJob,
+  commitProfileSnapshot,
   compileContext,
   completeJob,
+  defaultPersonalSkill,
   enqueueJob,
   failJob,
   getConversationSummary,
+  getActiveMemories,
+  getLatestProfile,
+  getMessageRevisionContext,
+  getSkillRebuildBase,
   getUserTimeZone,
   getUserSettings,
+  isConversationRevisionCurrent,
+  isConversationTitleSourceCurrent,
   listMessages,
+  markSkillFresh,
   normalizeDimensionWeights,
   recordModelCallMeta,
   recordTrace,
@@ -40,9 +49,17 @@ while (!stopping) {
     if (job.type === "reflection") await handleReflection(job);
     if (job.type === "evolve_skill") await handleEvolution(job);
     if (job.type === "conversation_title") await handleConversationTitle(job);
+    if (job.type === "profile_synthesis") await handleProfileSynthesis(job);
     await completeJob(job.id);
   } catch (error) {
+    if (error instanceof Error && error.message === "stale_job") {
+      await completeJob(job.id);
+      continue;
+    }
     await failJob(job, error);
+    if (job.type === "evolve_skill" && job.payload?.rebuild && Number(job.attempts ?? 0) + 1 >= 3) {
+      await markSkillFresh(job.user_id);
+    }
     await addActivity({
       userId: job.user_id,
       type: "background.error",
@@ -52,9 +69,12 @@ while (!stopping) {
 }
 
 async function handleConversationTitle(job: any) {
-  const payload = job.payload as { conversationId: string; content: string; traceId?: string };
+  const payload = job.payload as { conversationId: string; content: string; historyRevision?: number; traceId?: string };
+  if (!(await isPayloadCurrent(job.user_id, payload))) return;
   const traceId = payload.traceId ?? crypto.randomUUID();
   const result = await gateway.generateTitle(payload.content);
+  if (!(await isPayloadCurrent(job.user_id, payload))) return;
+  if (!(await isConversationTitleSourceCurrent(job.user_id, payload.conversationId, payload.content))) return;
   await updateConversationTitle(job.user_id, payload.conversationId, result.data.title, "model");
   await recordModelCallMeta({ userId: job.user_id, traceId, conversationId: payload.conversationId, adapterId: gateway.id, meta: result.meta });
   await recordTrace({ userId: job.user_id, traceId, stage: "conversation.title.generated", payload: { title: result.data.title, meta: result.meta } });
@@ -69,8 +89,11 @@ async function handleReflection(job: any) {
     kind: "chat" | "onboarding";
     questionId?: string;
     questionCategory?: any;
+    historyRevision?: number;
+    editCount?: number;
     traceId?: string;
   };
+  if (!(await isPayloadCurrent(job.user_id, payload))) return;
   const traceId = payload.traceId ?? crypto.randomUUID();
   const started = Date.now();
   const [messages, summary, settings, timeZone] = await Promise.all([
@@ -90,7 +113,9 @@ async function handleReflection(job: any) {
       arguments: { query: payload.content, limit: 8, ...(queryEmbedding?.[0] ? { queryEmbedding: queryEmbedding[0] } : {}) },
     }),
   ]);
-  const personalSkill = PersonalSkillSchema.parse(skillResult.skill.content) as PersonalSkill;
+  const personalSkill = skillResult.skill
+    ? PersonalSkillSchema.parse(skillResult.skill.content) as PersonalSkill
+    : defaultPersonalSkill;
   const profile = profileResult.profile;
   const memories = memoryResult.memories;
   const context = compileContext({
@@ -114,7 +139,7 @@ async function handleReflection(job: any) {
     userId: job.user_id,
     traceId,
     stage: "reflection.context_compiled",
-    payload: { estimatedTokens: context.estimatedTokens, truncated: context.truncated, memoryIds: context.memories.map((memory) => memory.id), skillVersion: skillResult.skill.version, context },
+    payload: { estimatedTokens: context.estimatedTokens, truncated: context.truncated, memoryIds: context.memories.map((memory) => memory.id), skillVersion: skillResult.skill?.version, context },
   });
 
   let reflectionResult = await gateway.reflect({
@@ -218,11 +243,12 @@ async function handleReflection(job: any) {
     profileChanged: shouldRefreshProfile,
     summaryChanged: shouldRefreshSummary,
   });
+  if (!(await isPayloadCurrent(job.user_id, payload))) return;
   const committed = await callMemoryMcp<any>({
     tool: "memory_commit_reflection",
     userId: job.user_id,
     traceId,
-    arguments: { conversationId: payload.conversationId, sourceMessageId: payload.messageId, reflection, embeddings: embeddings?.map((vector) => vector ?? null) },
+    arguments: { conversationId: payload.conversationId, sourceMessageId: payload.messageId, historyRevision: payload.historyRevision, reflection, embeddings: embeddings?.map((vector) => vector ?? null) },
   });
   await recordTrace({ userId: job.user_id, traceId, stage: "reflection.completed", durationMs: Date.now() - started, payload: { gateway: gateway.id, decision, reflection, committed } });
   await addActivity({ userId: job.user_id, type: "memory.updated", payload: { sourceMessageId: payload.messageId, memoryCount: committed.memoryCount, score: committed.profile?.score, profile: committed.profile, mood: reflection.mood } });
@@ -230,8 +256,8 @@ async function handleReflection(job: any) {
     await enqueueJob({
       userId: job.user_id,
       type: "evolve_skill",
-      idempotencyKey: `evolve_skill:${payload.messageId}:v1`,
-      payload: { evidenceIds: [payload.messageId], latestUserMessage: payload.content, profileSummary, feedbackReason: decision.evolutionReason, traceId },
+      idempotencyKey: `evolve_skill:${payload.messageId}:r${payload.historyRevision ?? 1}:e${payload.editCount ?? 0}`,
+      payload: { conversationId: payload.conversationId, messageId: payload.messageId, historyRevision: payload.historyRevision, evidenceIds: [payload.messageId], latestUserMessage: payload.content, profileSummary, feedbackReason: decision.evolutionReason, traceId },
     });
   }
 }
@@ -243,17 +269,93 @@ async function handleEvolution(job: any) {
     feedbackReason?: string;
     latestUserMessage?: string;
     profileSummary?: string;
+    conversationId?: string;
+    messageId?: string;
+    historyRevision?: number;
+    rebuild?: boolean;
     traceId?: string;
   };
+  if (!(await isPayloadCurrent(job.user_id, payload))) return;
   const traceId = payload.traceId ?? crypto.randomUUID();
-  const currentResult = await callMemoryMcp<any>({ tool: "personal_skill_get_active", userId: job.user_id, traceId });
-  const currentSkill = PersonalSkillSchema.parse(currentResult.skill.content);
+  const activeResult = payload.rebuild
+    ? await getSkillRebuildBase(job.user_id)
+    : (await callMemoryMcp<any>({ tool: "personal_skill_get_active", userId: job.user_id, traceId })).skill;
+  const currentResult = activeResult ?? { version: 0, content: defaultPersonalSkill };
+  const currentSkill = PersonalSkillSchema.parse(currentResult.content);
   const result = await gateway.evolvePersonalSkill({ currentSkill, ...payload }, { deep: payload.feedback === "not-me" });
   const nextSkill = PersonalSkillSchema.parse(result.data);
-  const published = await callMemoryMcp<any>({ tool: "personal_skill_publish_rewrite", userId: job.user_id, traceId, arguments: { skill: nextSkill } });
+  if (!(await isPayloadCurrent(job.user_id, payload))) return;
+  if (payload.rebuild && JSON.stringify(nextSkill) === JSON.stringify(currentSkill)) {
+    await markSkillFresh(job.user_id);
+    return;
+  }
+  const source = payload.evidenceIds[0]
+    ? await getMessageRevisionContext(job.user_id, payload.evidenceIds[0])
+    : null;
+  if (payload.evidenceIds.length && !source) return;
+  const published = await callMemoryMcp<any>({
+    tool: "personal_skill_publish_rewrite",
+    userId: job.user_id,
+    traceId,
+    arguments: {
+      skill: nextSkill,
+      sourceConversationId: source?.conversationId,
+      sourceMessageSequence: source?.sequence,
+      evidenceMessageIds: payload.evidenceIds,
+      expectedHistoryRevision: payload.historyRevision,
+    },
+  });
   await recordModelCallMeta({ userId: job.user_id, traceId, adapterId: gateway.id, meta: result.meta });
   await recordTrace({ userId: job.user_id, traceId, stage: "personal_skill.evolved", payload: { previousVersion: currentResult.skill.version, nextVersion: published.version.version, fullRewrite: nextSkill, reason: nextSkill.evolution.reason } });
   await addActivity({ userId: job.user_id, type: "skill.evolved", payload: { version: published.version.version, message: "知微又更了解你一点。", reason: nextSkill.evolution.reason } });
+}
+
+async function handleProfileSynthesis(job: any) {
+  const payload = job.payload as {
+    conversationId: string;
+    messageId: string;
+    sourceMessageSequence: number;
+    historyRevision: number;
+    traceId?: string;
+  };
+  if (!(await isPayloadCurrent(job.user_id, payload))) return;
+  const traceId = payload.traceId ?? crypto.randomUUID();
+  const [memories, previous, timeZone] = await Promise.all([
+    getActiveMemories(job.user_id),
+    getLatestProfile(job.user_id),
+    getUserTimeZone(job.user_id),
+  ]);
+  const result = await gateway.synthesizeProfile({
+    memories,
+    currentSummary: previous?.summary,
+    latestMessage: "用户编辑了较早的消息，请仅依据仍然有效的记忆重建画像。",
+    temporalContext: {
+      currentTimeUtc: new Date().toISOString(),
+      currentLocalTime: new Intl.DateTimeFormat("sv-SE", { dateStyle: "short", timeStyle: "medium", timeZone }).format(new Date()),
+      timeZone,
+    },
+  });
+  if (!(await isPayloadCurrent(job.user_id, payload))) return;
+  await commitProfileSnapshot({
+    userId: job.user_id,
+    summary: result.data.summary,
+    dimensionWeights: normalizeDimensionWeights(result.data.dimensionWeights),
+    sourceConversationId: payload.conversationId,
+    sourceMessageSequence: payload.sourceMessageSequence,
+    expectedHistoryRevision: payload.historyRevision,
+  });
+  await recordModelCallMeta({ userId: job.user_id, traceId, conversationId: payload.conversationId, adapterId: gateway.id, meta: result.meta });
+  await addActivity({ userId: job.user_id, type: "profile.rebuilt", payload: { conversationId: payload.conversationId } });
+}
+
+async function isPayloadCurrent(userId: string, payload: { conversationId?: string; messageId?: string; historyRevision?: number }) {
+  if (!payload.conversationId || payload.historyRevision === undefined) return true;
+  return isConversationRevisionCurrent({
+    userId,
+    conversationId: payload.conversationId,
+    messageId: payload.messageId,
+    historyRevision: payload.historyRevision,
+  });
 }
 
 async function tryEmbedding(userId: string, traceId: string, conversationId: string, texts: string[]) {

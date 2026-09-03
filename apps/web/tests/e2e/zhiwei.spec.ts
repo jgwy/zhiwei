@@ -1,14 +1,23 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+async function completeOnboarding(page: Page) {
+  await page.getByRole("button", { name: "开始认识" }).click();
+  for (const remaining of [2, 1, 0]) {
+    const option = page.locator(".option-chips button").first();
+    await expect(option).toBeEnabled();
+    await option.click();
+    await expect(page.locator(".onboarding-footer")).toContainText(
+      remaining ? `再回答 ${remaining} 题即可开始聊天` : "已经可以开始聊天",
+      { timeout: 20_000 },
+    );
+  }
+  await page.getByRole("button", { name: "先聊到这里，开始聊天" }).click();
+}
 
 test("从空白问卷进入聊天并生成画像、memory 与 Skill 证据", async ({ page }, testInfo) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "先让我认识一下此刻的你" })).toBeVisible();
-  await page.getByRole("button", { name: "开始认识" }).click();
-  await page.getByRole("button", { name: "刚进入职场" }).click();
-  await page.getByRole("button", { name: "学习或工作" }).click();
-  await page.getByRole("button", { name: "先听我说" }).click();
-  await expect(page.getByText("已经可以开始聊天")).toBeVisible();
-  await page.getByRole("button", { name: "先聊到这里，开始聊天" }).click();
+  await completeOnboarding(page);
   await expect(page.getByRole("heading", { name: "现在，你想从哪里聊起？" })).toBeVisible();
 
   if (testInfo.project.name.includes("mobile")) {
@@ -65,11 +74,7 @@ test("从空白问卷进入聊天并生成画像、memory 与 Skill 证据", asy
 test("记忆可撤回且当前匿名档案可全量删除", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-desktop", "破坏性数据控制只需在独立桌面测试档案验证一次");
   await page.goto("/");
-  await page.getByRole("button", { name: "开始认识" }).click();
-  await page.getByRole("button", { name: "刚进入职场" }).click();
-  await page.getByRole("button", { name: "学习或工作" }).click();
-  await page.getByRole("button", { name: "先听我说" }).click();
-  await page.getByRole("button", { name: "先聊到这里，开始聊天" }).click();
+  await completeOnboarding(page);
   const withdraw = page.getByRole("button", { name: /撤回记忆/ }).first();
   await expect(withdraw).toBeVisible({ timeout: 10_000 });
   await withdraw.click();
@@ -82,11 +87,7 @@ test("记忆可撤回且当前匿名档案可全量删除", async ({ page }, tes
 test("消息和记忆展示服务端时间与完整时间链", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-desktop", "时间链完整验收只需在桌面 Chromium 执行一次");
   await page.goto("/");
-  await page.getByRole("button", { name: "开始认识" }).click();
-  await page.getByRole("button", { name: "刚进入职场" }).click();
-  await page.getByRole("button", { name: "学习或工作" }).click();
-  await page.getByRole("button", { name: "先听我说" }).click();
-  await page.getByRole("button", { name: "先聊到这里，开始聊天" }).click();
+  await completeOnboarding(page);
 
   const composer = page.getByLabel("消息内容");
   await composer.fill("昨天工作压力很大，我一直不知道怎么办。");
@@ -115,4 +116,34 @@ test("消息和记忆展示服务端时间与完整时间链", async ({ page }, 
   await expect(timedMemory.getByText("首次获知", { exact: false })).toBeVisible();
   await expect(timedMemory.getByText("最近确认", { exact: false })).toBeVisible();
   await expect(timedMemory.getByText("版本写入", { exact: false })).toBeVisible();
+});
+
+test("编辑历史用户消息会截断后续聊天并重新回复", async ({ page }, testInfo) => {
+  test.setTimeout(120_000);
+  test.skip(!testInfo.project.name.startsWith("chromium"), "历史改写流程在桌面和移动 Chromium 验证");
+  await page.goto("/");
+  await completeOnboarding(page);
+
+  const composer = page.getByLabel("消息内容");
+  await composer.fill("第一条原始消息");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await expect(page.getByRole("button", { name: "发送消息" })).toBeVisible({ timeout: 30_000 });
+  await composer.fill("这条后续消息应被删除");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await expect(page.getByRole("button", { name: "发送消息" })).toBeVisible({ timeout: 30_000 });
+
+  const original = page.locator(".message.user", { hasText: "第一条原始消息" });
+  await original.hover();
+  await original.getByRole("button", { name: "编辑消息" }).click();
+  await page.getByLabel("编辑消息内容").fill("第一条编辑后的消息");
+  await page.getByRole("button", { name: "保存并重新发送" }).click();
+
+  await expect(page.getByText("第一条编辑后的消息", { exact: true })).toBeVisible();
+  await expect(page.getByText("这条后续消息应被删除", { exact: true })).not.toBeVisible();
+  await expect(page.locator(".message.user time", { hasText: "已编辑" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "发送消息" })).toBeVisible({ timeout: 30_000 });
+  await expect.poll(async () => {
+    const state = await page.evaluate(async () => fetch("/api/bootstrap", { cache: "no-store" }).then((response) => response.json()));
+    return state.conversations[0]?.historyRevision;
+  }).toBe(3);
 });

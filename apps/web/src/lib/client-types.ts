@@ -13,6 +13,7 @@ export type ConversationView = {
   titleLocked: boolean;
   createdAt: string;
   updatedAt: string;
+  historyRevision: number;
   messages: ChatMessage[];
 };
 

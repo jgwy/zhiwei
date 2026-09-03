@@ -143,6 +143,15 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #222; outline-
 .message:hover time { opacity: 1; }
 .message-actions { display: flex; opacity: 0; transition: .15s; }
 .message:hover .message-actions { opacity: 1; }
+.user-message-actions { margin-left: auto; }
+.message-actions button:disabled { opacity: .35; cursor: default; }
+.message-editor { width: min(560px, 78vw); display: grid; gap: 8px; padding: 12px; border: 1px solid #dedede; border-radius: 15px 15px 5px 15px; background: #f7f7f7; }
+.message-editor textarea { width: 100%; min-height: 76px; resize: vertical; border: 1px solid #d4d4d4; border-radius: 10px; padding: 10px 11px; background: white; color: #242424; font: inherit; font-size: 14px; line-height: 1.55; }
+.message-editor small { color: #888; font-size: 9px; line-height: 1.5; }
+.message-editor > div { display: flex; justify-content: flex-end; gap: 7px; }
+.message-editor > div button { border: 1px solid #d8d8d8; border-radius: 8px; padding: 6px 10px; background: white; color: #555; font-size: 10px; cursor: pointer; }
+.message-editor > div button:last-child { border-color: #222; background: #222; color: white; }
+.message-editor > div button:disabled { opacity: .4; cursor: default; }
 .message-actions button { border: 0; background: transparent; width: 28px; height: 25px; display: grid; place-items: center; cursor: pointer; color: #999; border-radius: 7px; }
 .message-actions button:hover { background: #f2f2f2; color: #333; }
 .typing { display: flex; gap: 4px; padding: 10px 0; }
@@ -242,6 +251,7 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #222; outline-
   .mobile-scrim { display: block; position: fixed; inset: 0; background: rgba(0,0,0,.16); border: 0; z-index: 20; backdrop-filter: blur(2px); }
   .messages, .empty-conversation, .return-note, .composer-wrap { width: min(720px, calc(100% - 28px)); }
   .message { max-width: 94%; }
+  .message-actions { opacity: 1; }
   .developer-header { grid-template-columns: 100px 1fr 80px; padding: 0 12px; }.developer-header > div span { display: none; }.developer-header .button { font-size: 0; width: 35px; padding: 0; }
   .developer-tabs { justify-content: flex-start; }.developer-tabs button { flex: 0 0 auto; justify-content: center; padding: 9px 10px; }
   .dev-grid, .foundation-grid { grid-template-columns: 1fr; }

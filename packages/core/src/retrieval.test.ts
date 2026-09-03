@@ -7,7 +7,7 @@ vi.mock("./db", () => ({
   withTransaction: vi.fn((operation) => operation(database)),
 }));
 
-import { addMessage, commitReflection, rankMemories, recordModelRun, searchMemories, updateConversationTitle } from "./repository";
+import { ConversationRevisionConflictError, addMessage, commitReflection, editMessageAndRollback, rankMemories, recordModelRun, searchMemories, updateConversationTitle } from "./repository";
 import type { MemoryRecord } from "./types";
 
 function memory(overrides: Partial<MemoryRecord> & Pick<MemoryRecord, "id" | "content">): MemoryRecord {
@@ -140,6 +140,7 @@ describe("memory retrieval", () => {
     const versionId = crypto.randomUUID();
     const observedAt = new Date().toISOString();
     database.query
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ sequence_no: 3, history_revision: 1 }] })
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ settings: { memoryEnabled: true } }] })
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: messageId, created_at: observedAt }] })
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: versionId }] })
@@ -179,6 +180,59 @@ describe("memory retrieval", () => {
     expect(sql).toContain("INSERT INTO memory_evidence");
     expect(sql).toContain("last_confirmed_at = GREATEST");
     expect(sql).not.toContain("INSERT INTO memory_versions");
+  });
+
+  it("edits a user message, truncates its tail and advances the conversation revision", async () => {
+    const userId = crypto.randomUUID();
+    const conversationId = crypto.randomUUID();
+    const messageId = crypto.randomUUID();
+    const assistantId = crypto.randomUUID();
+    const memoryId = crypto.randomUUID();
+    const versionId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    database.query.mockImplementation(async (query: unknown) => {
+      const sql = String(query ?? "");
+      if (sql.includes("FROM conversations") && sql.includes("FOR UPDATE")) {
+        return { rowCount: 1, rows: [{ history_revision: 2, title_locked: false }] };
+      }
+      if (sql.includes("FROM messages") && sql.includes("id = $1") && sql.includes("FOR UPDATE")) {
+        return { rowCount: 1, rows: [{ id: messageId, role: "user", sequence_no: 3 }] };
+      }
+      if (sql.includes("sequence_no >= $3") && sql.includes("SELECT id FROM messages")) {
+        return { rowCount: 2, rows: [{ id: messageId }, { id: assistantId }] };
+      }
+      if (sql.includes("FROM memory_versions") && sql.includes("source_message_sequence")) {
+        return { rowCount: 1, rows: [{ memory_id: memoryId, version_id: versionId }] };
+      }
+      if (sql.includes("FROM memory_evidence evidence")) return { rowCount: 0, rows: [] };
+      if (sql.includes("FROM personal_skill_versions") && sql.includes("evidence_message_ids")) return { rowCount: 0, rows: [] };
+      if (sql.includes("UPDATE messages") && sql.includes("edit_count = edit_count + 1")) {
+        return { rowCount: 1, rows: [{ id: messageId, role: "user", content: "编辑后的内容", created_at: now, sequence_no: 3, edited_at: now, edit_count: 1, metadata: {} }] };
+      }
+      return { rowCount: 1, rows: [] };
+    });
+
+    const result = await editMessageAndRollback({ userId, conversationId, messageId, content: "编辑后的内容", expectedRevision: 2 });
+
+    expect(result).toMatchObject({ deletedMessageIds: [assistantId], historyRevision: 3, profileStale: true, skillStale: false });
+    expect(result.message).toMatchObject({ id: messageId, content: "编辑后的内容", editCount: 1 });
+    const sql = database.query.mock.calls.map((call) => String(call[0])).join("\n");
+    expect(sql).toContain("DELETE FROM memory_versions");
+    expect(sql).toContain("sequence_no > $3");
+    expect(sql).toContain("history_revision = $3");
+  });
+
+  it("rejects an edit made against a stale conversation revision", async () => {
+    database.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ history_revision: 4, title_locked: false }] });
+
+    await expect(editMessageAndRollback({
+      userId: crypto.randomUUID(),
+      conversationId: crypto.randomUUID(),
+      messageId: crypto.randomUUID(),
+      content: "不会写入",
+      expectedRevision: 3,
+    })).rejects.toBeInstanceOf(ConversationRevisionConflictError);
+    expect(database.query).toHaveBeenCalledTimes(1);
   });
 
   it("writes every model-run column with exactly 27 positional parameters", async () => {

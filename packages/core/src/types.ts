@@ -301,6 +301,8 @@ export type ChatMessage = {
   content: string;
   createdAt: string;
   sequence: number;
+  editedAt?: string | null;
+  editCount?: number;
   metadata?: Record<string, unknown>;
 };
 
@@ -388,7 +390,8 @@ export type QuestionDefinition = {
 };
 
 export type StreamEvent =
-  | { type: "message.started"; messageId: string; traceId: string; createdAt: string; sequence: number; userMessage: ChatMessage }
+  | { type: "conversation.rewritten"; message: ChatMessage; deletedMessageIds: string[]; historyRevision: number }
+  | { type: "message.started"; messageId: string; traceId: string; createdAt: string; sequence: number; historyRevision: number; userMessage: ChatMessage }
   | { type: "text.delta"; delta: string }
   | { type: "tool.started"; name: string }
   | { type: "tool.completed"; name: string }

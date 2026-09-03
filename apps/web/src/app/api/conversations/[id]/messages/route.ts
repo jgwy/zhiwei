@@ -1,5 +1,6 @@
 import {
   addMessage,
+  addUserMessage,
   assessRisk,
   callMemoryMcp,
   callScienceMcp,
@@ -14,6 +15,7 @@ import {
   recordTrace,
   saveMessageSources,
   updateMessage,
+  type ChatMessage,
   type MemoryRecord,
   type FactBriefOutput,
   type FactRoutingOutput,
@@ -26,7 +28,12 @@ import { composeFoundationInstructions } from "@zhiwei/skills";
 import { z } from "zod";
 import { getSessionUserId } from "@/lib/session";
 
-const InputSchema = z.object({ content: z.string().trim().min(1).max(8_000) });
+const InputSchema = z.object({
+  content: z.string().trim().min(1).max(8_000),
+  existingMessageId: z.string().uuid().optional(),
+  expectedRevision: z.number().int().positive().optional(),
+  rewriteDeletedMessageIds: z.array(z.string().uuid()).max(200).optional(),
+});
 const encoder = new TextEncoder();
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
@@ -46,15 +53,29 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
   if (!conversation) return new Response("这段对话已经不可用，请新建一段对话。", { status: 404 });
 
   const traceId = crypto.randomUUID();
-  const userMessage = await addMessage({ conversationId, userId, role: "user", content: input.content, metadata: { traceId } });
+  let userMessage: ChatMessage;
+  let historyRevision: number;
+  if (input.existingMessageId) {
+    if (conversation.historyRevision !== input.expectedRevision) throw new Error("对话已经发生变化，请刷新后重试");
+    const latest = conversation.messages.at(-1);
+    if (!latest || latest.id !== input.existingMessageId || latest.role !== "user" || latest.content !== input.content) {
+      throw new Error("编辑后的消息状态已经变化，请刷新后重试");
+    }
+    userMessage = latest;
+    historyRevision = conversation.historyRevision;
+  } else {
+    const added = await addUserMessage({ conversationId, userId, content: input.content, metadata: { traceId } });
+    userMessage = added.message;
+    historyRevision = added.historyRevision;
+  }
   const riskAssessment = assessRisk(input.content);
   const riskEventId = await recordRiskEvent({ userId, conversationId, messageId: userMessage.id, assessment: riskAssessment });
-  if (conversation.messages.length === 0) {
+  if (conversation.messages.length === 0 || (input.existingMessageId && userMessage.sequence === 1 && !conversation.titleLocked)) {
     await enqueueJob({
       userId,
       type: "conversation_title",
-      idempotencyKey: `conversation_title:${conversationId}:v1`,
-      payload: { conversationId, content: input.content, traceId },
+      idempotencyKey: `conversation_title:${conversationId}:r${historyRevision}`,
+      payload: { conversationId, content: input.content, traceId, historyRevision },
     });
   }
 
@@ -164,12 +185,21 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
       let sources: Array<{ title: string; url: string; siteName?: string }> = [...verifiedSources];
       let completedMeta: any = null;
       try {
+        if (input.existingMessageId) {
+          send({
+            type: "conversation.rewritten",
+            message: userMessage,
+            deletedMessageIds: input.rewriteDeletedMessageIds ?? [],
+            historyRevision,
+          });
+        }
         send({
           type: "message.started",
           messageId: assistantMessageId,
           traceId,
           createdAt: assistantMessage.createdAt,
           sequence: assistantMessage.sequence,
+          historyRevision,
           userMessage,
         });
         if (memories.length) {
@@ -202,7 +232,20 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
         if (sources.length) await saveMessageSources({ userId, messageId: assistantMessageId, sources });
         if (completedMeta) await recordModelCallMeta({ userId, traceId, conversationId, adapterId: gateway.id, meta: completedMeta });
         const jobId = riskAssessment.level === "ordinary"
-          ? await enqueueJob({ userId, type: "reflection", idempotencyKey: `reflection:${userMessage.id}:v1`, payload: { conversationId, messageId: userMessage.id, content: input.content, kind: "chat", traceId } })
+          ? await enqueueJob({
+              userId,
+              type: "reflection",
+              idempotencyKey: `reflection:${userMessage.id}:r${historyRevision}:e${userMessage.editCount ?? 0}`,
+              payload: {
+                conversationId,
+                messageId: userMessage.id,
+                content: input.content,
+                kind: "chat",
+                traceId,
+                historyRevision,
+                editCount: userMessage.editCount ?? 0,
+              },
+            })
           : riskEventId;
         await recordTrace({ userId, traceId, stage: "dialogue.completed", durationMs: completedMeta?.durationMs, payload: { messageId: assistantMessageId, output, jobId, sources, meta: completedMeta, status } });
         send({ type: "message.completed", messageId: assistantMessageId, jobId, sources });

@@ -1,4 +1,4 @@
-import { addFeedback, enqueueJob } from "@zhiwei/core";
+import { addFeedback, enqueueJob, getMessageRevisionContext } from "@zhiwei/core";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { jsonError } from "@/lib/http";
@@ -15,12 +15,16 @@ export async function POST(request: Request) {
     const userId = await getSessionUserId();
     const input = InputSchema.parse(await request.json());
     const feedbackId = await addFeedback({ userId, ...input });
+    const source = await getMessageRevisionContext(userId, input.messageId);
     const jobId = await enqueueJob({
       userId,
       type: "evolve_skill",
       idempotencyKey: `evolve_skill:feedback:${feedbackId}:v1`,
       payload: {
         evidenceIds: [input.messageId],
+        conversationId: source?.conversationId,
+        messageId: input.messageId,
+        historyRevision: source?.historyRevision,
         feedback: input.value,
         feedbackReason: input.reason,
         traceId: crypto.randomUUID(),
