@@ -1,4 +1,9 @@
-import { PersonalSkillSchema, type PersonalSkill } from "./types";
+import {
+  MemoryCategorySchema,
+  PersonalSkillSchema,
+  type MemoryCategory,
+  type PersonalSkill,
+} from "./types";
 
 export const defaultPersonalSkill: PersonalSkill = PersonalSkillSchema.parse({
   expression: {
@@ -29,23 +34,33 @@ export const defaultPersonalSkill: PersonalSkill = PersonalSkillSchema.parse({
   },
 });
 
+const MIN_WEIGHT = 0.04;
+const MAX_WEIGHT = 0.35;
+
+// DimensionWeightsSchema 是枚举键的穷举 record，缺任何一个维度都会让
+// ReflectionOutputSchema.parse 失败，因此兜底必须覆盖全部八个类别。
+const fallbackDimensionWeights: Record<MemoryCategory, number> = {
+  basic: 0.11,
+  goal: 0.16,
+  interest: 0.11,
+  expression: 0.14,
+  emotion: 0.11,
+  experience: 0.11,
+  challenge: 0.15,
+  boundary: 0.11,
+};
+
 export function normalizeDimensionWeights(
   weights: Record<string, number>,
 ): Record<string, number> {
-  const entries = Object.entries(weights)
-    .filter(([, value]) => Number.isFinite(value) && value > 0)
-    .map(([key, value]) => [key, Math.min(0.35, Math.max(0.04, value))] as const);
-  const total = entries.reduce((sum, [, value]) => sum + value, 0);
-  if (!total) {
-    return {
-      basic: 0.12,
-      goal: 0.18,
-      interest: 0.12,
-      expression: 0.16,
-      emotion: 0.12,
-      experience: 0.12,
-      challenge: 0.18,
-    };
+  const merged: Record<MemoryCategory, number> = { ...fallbackDimensionWeights };
+  for (const [category, value] of Object.entries(weights)) {
+    const parsed = MemoryCategorySchema.safeParse(category);
+    if (!parsed.success || !Number.isFinite(value) || value <= 0) continue;
+    merged[parsed.data] = Math.min(MAX_WEIGHT, Math.max(MIN_WEIGHT, value));
   }
-  return Object.fromEntries(entries.map(([key, value]) => [key, value / total]));
+  const total = Object.values(merged).reduce((sum, value) => sum + value, 0);
+  return Object.fromEntries(
+    Object.entries(merged).map(([category, value]) => [category, value / total]),
+  );
 }
