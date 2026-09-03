@@ -232,12 +232,24 @@ export function ZhiweiApp() {
         if (event.type === "text.delta") {
           updateConversationMessages(conversationId!, (messages) => messages.map((message) => message.id === assistantTemp.id ? { ...message, content: message.content + event.delta } : message));
         }
+        if (event.type === "tool.started") {
+          updateConversationMessages(conversationId!, (messages) => messages.map((message) => message.id === assistantTemp.id ? {
+            ...message,
+            metadata: { ...message.metadata, activeTool: event.name, toolStartedAt: Date.now() },
+          } : message));
+        }
+        if (event.type === "tool.completed") {
+          updateConversationMessages(conversationId!, (messages) => messages.map((message) => message.id === assistantTemp.id && message.metadata?.activeTool === event.name ? {
+            ...message,
+            metadata: { ...message.metadata, activeTool: null, toolStartedAt: null },
+          } : message));
+        }
         if (event.type === "message.completed") {
-          updateConversationMessages(conversationId!, (messages) => messages.map((message) => message.id === event.messageId ? { ...message, metadata: { ...message.metadata, streaming: false, status: "completed", sources: event.sources ?? [] } } : message));
+          updateConversationMessages(conversationId!, (messages) => messages.map((message) => message.id === event.messageId ? { ...message, metadata: { ...message.metadata, streaming: false, status: "completed", activeTool: null, toolStartedAt: null, sources: event.sources ?? [] } } : message));
           pendingAssistantRef.current = null;
         }
         if (event.type === "error") {
-          updateConversationMessages(conversationId!, (messages) => messages.map((message) => message.id === assistantTemp.id ? { ...message, metadata: { ...message.metadata, streaming: false, status: abort.signal.aborted ? "stopped" : "interrupted" } } : message));
+          updateConversationMessages(conversationId!, (messages) => messages.map((message) => message.id === assistantTemp.id ? { ...message, metadata: { ...message.metadata, streaming: false, status: abort.signal.aborted ? "stopped" : "interrupted", activeTool: null, toolStartedAt: null } } : message));
           throw new Error(event.message);
         }
       });
@@ -259,7 +271,7 @@ export function ZhiweiApp() {
     updateConversationMessages(pending.conversationId, (messages) => messages.flatMap((message) => {
       if (message.id !== pending.messageId) return [message];
       if (!message.content) return [];
-      return [{ ...message, metadata: { ...message.metadata, streaming: false, status } }];
+      return [{ ...message, metadata: { ...message.metadata, streaming: false, status, activeTool: null, toolStartedAt: null } }];
     }));
     pendingAssistantRef.current = null;
   }
@@ -536,9 +548,15 @@ function AboutDialog({ onClose }: { onClose: () => void }) {
 function Message({ message, receipt, onToggleReceipt, onFeedback, onRetry }: { message: ChatMessage; receipt?: { count: number; open: boolean }; onToggleReceipt: () => void; onFeedback: (id: string, value: "understood" | "not-me", reason?: string) => Promise<void>; onRetry?: () => void }) {
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const assistant = message.role === "assistant";
+  const activeTool = typeof message.metadata?.activeTool === "string" ? message.metadata.activeTool : null;
+  const toolStartedAt = typeof message.metadata?.toolStartedAt === "number" ? message.metadata.toolStartedAt : null;
+  const elapsedSeconds = useElapsedSeconds(activeTool === "web_search" ? toolStartedAt : null);
+  const waitingLabel = activeTool === "web_search"
+    ? `联网搜索中 ${elapsedSeconds}秒`
+    : activeTool === "check_claims" ? "来源核验中" : "正在思考";
   return (
     <article className={assistant ? "message assistant" : "message user"}>
-      <div className="message-content">{message.content || (message.metadata?.streaming ? <span className="thinking-logo" role="status" aria-label="正在思考"><img src="/about/aliyun-cloud.png" alt="" /></span> : null)}</div>
+      <div className="message-content">{message.content || (message.metadata?.streaming ? <span className="thinking-status" role="status" aria-label={waitingLabel}><img src="/about/aliyun-cloud.png" alt="" />{activeTool === "web_search" ? <span>联网搜索中 {elapsedSeconds}秒</span> : activeTool === "check_claims" ? <span>来源核验中</span> : null}</span> : null)}</div>
       {message.metadata?.status === "interrupted" ? <div className="message-status">回复中断了，可以重试。</div> : null}
       {Array.isArray(message.metadata?.sources) && message.metadata.sources.length ? <details className="message-sources"><summary>查看事实来源（{message.metadata.sources.length}）</summary>{message.metadata.sources.map((source: any) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer"><span>{source.title}</span>{source.siteName ? <small>{source.siteName}</small> : null}</a>)}</details> : null}
       <footer>
@@ -550,6 +568,17 @@ function Message({ message, receipt, onToggleReceipt, onFeedback, onRetry }: { m
       {assistant && receipt?.open ? <div className="receipt-detail">这些认识已经进入“关于你”，会在以后相关的对话中使用。若有不对，点开画像里的对应内容告诉我新的说法。</div> : null}
     </article>
   );
+}
+
+function useElapsedSeconds(startedAt: number | null) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (startedAt === null) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [startedAt]);
+  return startedAt === null ? 0 : Math.max(0, Math.floor((now - startedAt) / 1_000));
 }
 
 function SparkleDot() { return <span className="sparkle-dot" />; }
