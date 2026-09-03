@@ -7,6 +7,7 @@ const conversation = {
   title: "测试",
   titleSource: "default",
   titleLocked: false,
+  messageCount: 5,
   createdAt: "2026-09-03T00:00:00.000Z",
   updatedAt: "2026-09-03T00:00:00.000Z",
   messages: [
