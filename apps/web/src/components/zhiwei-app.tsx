@@ -45,6 +45,7 @@ export function ZhiweiApp() {
   const [renameTarget, setRenameTarget] = useState<ConversationView | null>(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [slowLoad, setSlowLoad] = useState(false);
   const [receipts, setReceipts] = useState<Record<string, { count: number; open: boolean }>>({});
   const abortRef = useRef<AbortController | null>(null);
   const messageEndRef = useRef<HTMLDivElement | null>(null);
@@ -71,6 +72,11 @@ export function ZhiweiApp() {
   }
 
   useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    if (data || loadError) return;
+    const timer = window.setTimeout(() => setSlowLoad(true), 8_000);
+    return () => window.clearTimeout(timer);
+  }, [data, loadError]);
   useEffect(() => { dataRef.current = data; }, [data]);
   useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
   const active = useMemo(
@@ -127,7 +133,14 @@ export function ZhiweiApp() {
     return () => source.close();
   }, [data?.onboarding.complete]);
 
-  if (!data) return <div className="app-loading"><div className="loading-mark">知微</div><span>{loadError ?? "正在准备一段安静的对话…"}</span>{loadError ? <button onClick={() => void load()}>重新加载</button> : null}</div>;
+  if (!data) return (
+    <div className="app-loading">
+      <div className="loading-mark">知微</div>
+      <span>{loadError ?? "正在准备一段安静的对话…"}</span>
+      {slowLoad && !loadError ? <p className="loading-slow-hint">加载比预期慢，可能是网络代理或后台服务未就绪。</p> : null}
+      {loadError || slowLoad ? <button type="button" className="loading-retry" onClick={() => void load()}>重新加载</button> : null}
+    </div>
+  );
   if (!data.onboarding.complete) return <Onboarding onboarding={data.onboarding} onComplete={async () => { await fetch("/api/onboarding/complete", { method: "POST" }); await load(); }} />;
   if (developerMode) return <DeveloperPanel onClose={() => setDeveloperMode(false)} />;
 

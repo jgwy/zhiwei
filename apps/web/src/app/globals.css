@@ -35,6 +35,9 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #222; outline-
 .app-loading { gap: 14px; align-content: center; color: var(--muted); font-size: 13px; }
 .loading-mark, .brand-word { font-family: Georgia, "Songti SC", serif; color: var(--ink); letter-spacing: .16em; }
 .loading-mark { font-size: 28px; }
+.loading-slow-hint { margin: 0; color: var(--faint); font-size: 12px; text-align: center; }
+.loading-retry { padding: 7px 16px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--muted); font-size: 13px; cursor: pointer; transition: .18s ease; }
+.loading-retry:hover { color: var(--ink); border-color: var(--ink); }
 
 .onboarding-shell { padding: 24px; }
 .onboarding-card { width: min(620px, 100%); min-height: 520px; display: flex; flex-direction: column; justify-content: center; padding: 52px 56px; border: 1px solid var(--line); border-radius: 28px; background: rgba(255,255,255,.94); box-shadow: var(--shadow); }
