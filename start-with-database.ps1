@@ -56,16 +56,16 @@ $pidPath = Join-Path $runtimePath "processes.json"
 $npmCommand = (Get-Command npm.cmd -ErrorAction Stop).Source
 
 if (Test-Path -LiteralPath $pidPath) {
-  Get-Content -LiteralPath $pidPath |
-    ConvertFrom-Json |
-    ForEach-Object {
-      $processId = [int]$_.pid
-      try {
-        taskkill.exe /PID $processId /T /F *> $null
-      } catch {
-        # A stale PID is already stopped and needs no further cleanup.
-      }
+  $storedProcessJson = Get-Content -Raw -LiteralPath $pidPath
+  $storedProcesses = ConvertFrom-Json -InputObject $storedProcessJson
+  foreach ($storedProcess in $storedProcesses) {
+    $processId = [int]$storedProcess.pid
+    try {
+      taskkill.exe /PID $processId /T /F *> $null
+    } catch {
+      # A stale PID is already stopped and needs no further cleanup.
     }
+  }
 }
 
 function Start-ZhiweiProcess {
