@@ -1009,7 +1009,7 @@ export async function updateMemory(input: {
         current.sensitivity ?? "normal",
         Number(current.importance ?? 0.5),
         kind,
-        "用户编辑后的确认内容",
+        input.content.trim(),
       ],
     );
     const row = result.rows[0];
