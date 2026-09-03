@@ -1,0 +1,258 @@
+{
+  "schemaVersion": "zhiwei.memory-lifecycle-replays/v1",
+  "datasetVersion": "1.0.0-scripted",
+  "releasedAt": "2026-09-03T00:00:00.000Z",
+  "provenance": {
+    "kind": "scripted-free-fixture",
+    "gateway": "zhiwei-static-replay-fixture-v1",
+    "provider": "scripted",
+    "synthetic": true,
+    "liveModel": false,
+    "billable": false,
+    "description": "用于确定性脚本回归的免费合成夹具，不代表真实千问输出。"
+  },
+  "fixtures": [
+    {
+      "id": "mlr-v1-01-onboarding-long-memory",
+      "scenario": "初识信息形成长期认识",
+      "focus": ["create", "long", "onboarding"],
+      "turns": [
+        {
+          "turn": 1,
+          "user": "我叫小满，现在最想把毕业设计稳稳做完。",
+          "assistant": "好，我记住你希望被叫作小满。毕业设计是你眼下最在意的事，我们可以慢慢把它说清楚。",
+          "memoryActions": [
+            { "operation": "create", "tier": "long", "category": "basic", "content": "希望被称作小满" },
+            { "operation": "create", "tier": "long", "category": "goal", "content": "当前希望稳妥完成毕业设计" }
+          ]
+        },
+        {
+          "turn": 2,
+          "user": "我更希望你先听我说，再一起想办法。",
+          "assistant": "明白。以后遇到难处时，我会先陪你把感受和处境说完整，再看要不要一起找办法。",
+          "memoryActions": [
+            { "operation": "create", "tier": "long", "category": "expression", "content": "遇到难处时偏好先被倾听，再共同梳理" }
+          ]
+        }
+      ],
+      "checkpoints": ["三条认识直接生效", "初识后分数保持在低位", "长期综述异步生成"]
+    },
+    {
+      "id": "mlr-v1-02-short-memory-expiry",
+      "scenario": "近期安排带有有效期",
+      "focus": ["create", "short", "expiry"],
+      "turns": [
+        {
+          "turn": 1,
+          "user": "这周五之前我都在赶课程项目，回复别给我太多额外任务。",
+          "assistant": "这几天已经够满了，我不会再往你的清单里塞东西。先把周五前最紧的部分守住就好。",
+          "memoryActions": [
+            { "operation": "create", "tier": "short", "category": "challenge", "content": "本周五前正在赶课程项目，不希望增加额外任务", "validDays": 4 }
+          ]
+        },
+        {
+          "turn": 2,
+          "user": "今天只想把实验报告的结论写完。",
+          "assistant": "那就只守住这一件事。你可以先告诉我，结论部分最卡的是数据解释还是措辞？",
+          "memoryActions": []
+        }
+      ],
+      "checkpoints": ["近期认识对用户级生效", "有效期在一至三十天内", "过期后不再召回"]
+    },
+    {
+      "id": "mlr-v1-03-cross-conversation-recall",
+      "scenario": "近期认识跨会话召回",
+      "focus": ["retrieval", "short", "cross-conversation"],
+      "turns": [
+        {
+          "turn": 1,
+          "conversation": "A",
+          "user": "我下周要第一次做组会汇报，最担心被突然追问。",
+          "assistant": "第一次站到那个位置上，担心被追问很正常。我们可以先把你最没底的那一块找出来。",
+          "memoryActions": [
+            { "operation": "create", "tier": "short", "category": "challenge", "content": "下周将首次做组会汇报，担心临场追问", "validDays": 10 }
+          ]
+        },
+        {
+          "turn": 2,
+          "conversation": "B",
+          "user": "我想练一下怎么回答老师的问题。",
+          "assistant": "可以。想到你下周是第一次组会汇报，我们先从最可能让你慌的追问开始练，不追求一次答得完美。",
+          "recalledMemoryIds": ["mlr-v1-03-short-1"],
+          "memoryActions": []
+        }
+      ],
+      "checkpoints": ["新会话可召回用户级近期认识", "会话摘要不跨会话", "召回上限遵守五长三短"]
+    },
+    {
+      "id": "mlr-v1-04-direct-supersede",
+      "scenario": "明确纠正直接替代旧版本",
+      "focus": ["supersede", "cas", "correction"],
+      "turns": [
+        {
+          "turn": 1,
+          "user": "我喜欢一个人先想清楚，再跟别人讨论。",
+          "assistant": "你似乎需要先有一段自己的思考空间，讨论对你来说更像第二步。",
+          "memoryActions": [
+            { "operation": "create", "tier": "long", "category": "expression", "content": "通常偏好先独立思考，再与他人讨论" }
+          ]
+        },
+        {
+          "turn": 2,
+          "user": "我刚才说得不准确。遇到重要决定时，我其实更想先找人碰一碰想法。",
+          "assistant": "这不是简单的反过来，而是重要决定对你是个例外：你会更愿意先借讨论看清盲点。",
+          "memoryActions": [
+            { "operation": "supersede", "tier": "long", "category": "expression", "content": "遇到重要决定时偏好先与可信任的人讨论，再独立收拢想法", "expectedVersion": "v1" }
+          ]
+        }
+      ],
+      "checkpoints": ["旧版本变为已替代", "新版本立即活动", "替代本身不作为负向扣分"]
+    },
+    {
+      "id": "mlr-v1-05-ambiguous-conflict",
+      "scenario": "含糊冲突先追问不写入",
+      "focus": ["conflict", "clarification", "no-write"],
+      "turns": [
+        {
+          "turn": 1,
+          "user": "我通常不喜欢临时改变计划。",
+          "assistant": "提前知道安排会让你更踏实，我记下这一点。",
+          "memoryActions": [
+            { "operation": "create", "tier": "long", "category": "expression", "content": "通常不喜欢临时改变计划" }
+          ]
+        },
+        {
+          "turn": 2,
+          "user": "不过昨天临时决定出门，感觉还挺好的。",
+          "assistant": "这听起来像一次舒服的例外，但我还不确定你的偏好是不是正在变化。昨天让你觉得好的，是临时起意本身，还是那件事和同行的人很特别？",
+          "memoryActions": []
+        }
+      ],
+      "checkpoints": ["本轮不覆盖原认识", "只提出一个聚焦问题", "后续证据足够时再判断变化或例外"]
+    },
+    {
+      "id": "mlr-v1-06-withdraw-and-stale-job",
+      "scenario": "聊天撤回阻止旧任务复活",
+      "focus": ["withdraw", "stale-job", "idempotency"],
+      "turns": [
+        {
+          "turn": 1,
+          "user": "我最近在考虑去上海工作。",
+          "assistant": "上海是你正在认真考虑的方向。你还不用急着把想法定死。",
+          "memoryActions": [
+            { "operation": "create", "tier": "short", "category": "goal", "content": "近期在考虑去上海工作", "validDays": 14 }
+          ]
+        },
+        {
+          "turn": 2,
+          "user": "忘掉我刚才说的上海，也别再引用它。",
+          "assistant": "好，这条我会停止使用，之后也不会拿它来推断你的选择。",
+          "memoryActions": [
+            { "operation": "withdraw", "targetVersion": "v1" }
+          ]
+        }
+      ],
+      "checkpoints": ["撤回后立即停止召回", "撤回消息不同时重建同一内容", "早于撤回的积压任务不能复活旧版本"]
+    },
+    {
+      "id": "mlr-v1-07-relearn-after-withdrawal",
+      "scenario": "撤回后允许由新证据重新认识",
+      "focus": ["withdraw", "relearn", "new-evidence"],
+      "turns": [
+        {
+          "turn": 1,
+          "user": "不要再记我准备考研这件事。",
+          "assistant": "好，我会撤回这条认识，也不再主动用它回应你。",
+          "memoryActions": [
+            { "operation": "withdraw", "targetVersion": "v1" }
+          ]
+        },
+        {
+          "turn": 2,
+          "user": "隔了一个月我重新想过了，我现在确定要准备考研，也愿意让你记住。",
+          "assistant": "这次是你重新确认后的决定，我会按你现在的意愿记住。之前的撤回仍然保留在版本记录里。",
+          "memoryActions": [
+            { "operation": "create", "tier": "long", "category": "goal", "content": "重新考虑后已确定准备考研" }
+          ]
+        }
+      ],
+      "checkpoints": ["没有永久防重学墓碑", "只使用撤回之后的新证据", "历史撤回版本仍可审计"]
+    },
+    {
+      "id": "mlr-v1-08-emotion-authorization",
+      "scenario": "情绪授权控制样本与召回",
+      "focus": ["emotion", "authorization", "score"],
+      "turns": [
+        {
+          "turn": 1,
+          "user": "这两天我一想到答辩就心慌，睡得也不好。",
+          "assistant": "答辩还没开始，身体已经先进入了警戒状态，这确实会很消耗。我们先不要求你立刻平静下来。",
+          "memoryActions": [
+            { "operation": "create", "tier": "short", "category": "emotion", "content": "近期想到答辩时容易心慌且睡眠受影响", "validDays": 7 }
+          ],
+          "moodSample": { "score": -3, "summary": "答辩压力引发明显紧张并影响睡眠" }
+        },
+        {
+          "turn": 2,
+          "settingChange": { "emotionEnabled": false },
+          "user": "先不要记录我的情绪变化。",
+          "assistant": "好，情绪趋势已经暂停。已有内容仍可查看，但不会用于之后的召回，也不会产生新的情绪记录。",
+          "memoryActions": []
+        }
+      ],
+      "checkpoints": ["关闭后不新增心情样本", "情绪类认识不再召回", "了解度分母移除情绪维度"]
+    },
+    {
+      "id": "mlr-v1-09-promote-short-to-long",
+      "scenario": "稳定偏好从近期升级为长期",
+      "focus": ["promote", "short-to-long", "versioning"],
+      "turns": [
+        {
+          "turn": 1,
+          "user": "这次你先给结论再解释，我会更容易跟上。",
+          "assistant": "可以，这次我先把结论放在前面，再补必要的理由。",
+          "memoryActions": [
+            { "operation": "create", "tier": "short", "category": "expression", "content": "当前更容易接受先结论后解释的回复", "validDays": 14 }
+          ]
+        },
+        {
+          "turn": 2,
+          "user": "这几周我都发现先看结论再看解释更舒服，以后也这样吧。",
+          "assistant": "这已经不只是一次任务里的偏好。我会把“先结论、后解释”作为长期的表达习惯来配合你。",
+          "memoryActions": [
+            { "operation": "promote", "tier": "long", "category": "expression", "content": "长期偏好先给结论，再补充必要解释", "expectedVersion": "v1" }
+          ]
+        }
+      ],
+      "checkpoints": ["升级生成同根新版本", "旧近期版本变为已替代", "长期变化触发综述重写"]
+    },
+    {
+      "id": "mlr-v1-10-consolidation-profile-score",
+      "scenario": "长期认识收拢与综述一致性",
+      "focus": ["consolidation", "profile", "understanding-score"],
+      "turns": [
+        {
+          "turn": 1,
+          "systemState": { "activeLongMemoryCount": 49, "estimatedLongMemoryTokens": 12180 },
+          "user": "我想看看你现在是怎么理解我的。",
+          "assistant": "可以。我会把长期认识里彼此兼容、属于同一主题的内容先收拢，再给你一份可追溯的综述；如果核对发现遗漏或过度推断，这批收拢不会写入。",
+          "memoryActions": [],
+          "backgroundActions": [
+            { "operation": "consolidation-plan", "sourceCount": 18, "targetCount": 8 },
+            { "operation": "consolidation-review", "approved": true },
+            { "operation": "profile-synthesis", "sourceVersionCount": 39 }
+          ]
+        },
+        {
+          "turn": 2,
+          "user": "这里把我说得太坚定了，我其实还在犹豫。",
+          "assistant": "你说得对，“已经决定”把你的状态写死了。我会把它改成仍在权衡，并保留这次修正的版本关系。",
+          "memoryActions": [
+            { "operation": "supersede", "tier": "long", "category": "goal", "content": "仍在权衡相关选择，尚未形成确定决定", "expectedVersion": "v3" }
+          ]
+        }
+      ],
+      "checkpoints": ["收拢只合并同类兼容认识", "核对通过后才以单个事务提交", "综述来源版本与活动长期集合一致", "单次会话了解度不超过百分之二十五"]
+    }
+  ]
+}

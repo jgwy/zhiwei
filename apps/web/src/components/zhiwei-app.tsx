@@ -17,6 +17,7 @@ import {
   PanelRightOpen,
   Plus,
   RotateCcw,
+  Settings2,
   Square,
   ThumbsDown,
   ThumbsUp,
@@ -27,10 +28,12 @@ import type { ChatMessage } from "@zhiwei/core/client";
 import type { BootstrapData, ConversationView } from "@/lib/client-types";
 import { readSseStream, formatTime } from "@/lib/utils";
 import { isNearChatBottom } from "@/lib/chat-scroll";
+import { resolveProfileReceiptMessageId } from "@/lib/profile-receipt";
 import { Button } from "@/components/ui/button";
 import { Onboarding } from "@/components/onboarding";
 import { InsightPanel } from "@/components/insight-panel";
 import { DeveloperPanel } from "@/components/developer-panel";
+import { SettingsPanel } from "@/components/settings-panel";
 
 export function ZhiweiApp() {
   const [data, setData] = useState<BootstrapData | null>(null);
@@ -41,38 +44,42 @@ export function ZhiweiApp() {
   const [insightOpen, setInsightOpen] = useState(true);
   const [mobileMenu, setMobileMenu] = useState<"conversations" | "insights" | null>(null);
   const [developerMode, setDeveloperMode] = useState(false);
+  const [settingsMode, setSettingsMode] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<ConversationView | null>(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
-  const [receipts, setReceipts] = useState<Record<string, { count: number; open: boolean }>>({});
+  const [receipts, setReceipts] = useState<Record<string, string>>({});
   const abortRef = useRef<AbortController | null>(null);
   const messageEndRef = useRef<HTMLDivElement | null>(null);
   const messageScrollRef = useRef<HTMLDivElement | null>(null);
   const aboutTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const settingsTriggerRef = useRef<HTMLButtonElement | null>(null);
   const mobileNavRef = useRef<HTMLButtonElement | null>(null);
   const followLatestRef = useRef(true);
   const forceScrollRef = useRef(false);
   const lastScrolledConversationRef = useRef<string | null>(null);
   const dataRef = useRef<BootstrapData | null>(null);
-  const activeIdRef = useRef<string | null>(null);
+  const loadSequenceRef = useRef(0);
 
   async function load() {
+    const sequence = ++loadSequenceRef.current;
     try {
       const response = await fetch("/api/bootstrap", { cache: "no-store" });
       if (!response.ok) throw new Error(await responseMessage(response, "知微没有成功启动，请稍后重试。"));
       const next = (await response.json()) as BootstrapData;
+      if (sequence !== loadSequenceRef.current) return;
       setData(next);
       setLoadError(null);
       setActiveId((current) => current ?? next.conversations[0]?.id ?? null);
     } catch (error) {
+      if (sequence !== loadSequenceRef.current) return;
       setLoadError(error instanceof Error ? error.message : "知微没有成功启动，请稍后重试。");
     }
   }
 
   useEffect(() => { void load(); }, []);
   useEffect(() => { dataRef.current = data; }, [data]);
-  useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
   const active = useMemo(
     () => data?.conversations.find((conversation) => conversation.id === activeId) ?? null,
     [data, activeId],
@@ -98,14 +105,16 @@ export function ZhiweiApp() {
   useEffect(() => {
     if (!data?.onboarding.complete || process.env.NEXT_PUBLIC_ACTIVITY_STREAM === "false") return;
     const source = new EventSource("/api/activity/stream");
-    source.addEventListener("memory.updated", (raw) => {
+    source.addEventListener("memory.updated", () => {
+      void load();
+    });
+    source.addEventListener("profile.updated", (raw) => {
       const event = JSON.parse((raw as MessageEvent).data);
-      const active = dataRef.current?.conversations.find(
-        (item) => item.id === activeIdRef.current,
-      );
-      const lastAssistant = [...(active?.messages ?? [])].reverse().find((message) => message.role === "assistant");
-      if (lastAssistant && event.payload.memoryCount > 0) {
-        setReceipts((current) => ({ ...current, [lastAssistant.id]: { count: event.payload.memoryCount, open: false } }));
+      const payload = event.payload ?? {};
+      const messageId = resolveProfileReceiptMessageId(dataRef.current?.conversations ?? [], payload);
+      if (messageId) {
+        const receipt = typeof payload.receipt === "string" ? payload.receipt : "知微重新整理了对你的长期认识。";
+        setReceipts((current) => ({ ...current, [messageId]: receipt }));
       }
       void load();
     });
@@ -128,7 +137,12 @@ export function ZhiweiApp() {
   }, [data?.onboarding.complete]);
 
   if (!data) return <div className="app-loading"><div className="loading-mark">知微</div><span>{loadError ?? "正在准备一段安静的对话…"}</span>{loadError ? <button onClick={() => void load()}>重新加载</button> : null}</div>;
-  if (!data.onboarding.complete) return <Onboarding onboarding={data.onboarding} onComplete={async () => { await fetch("/api/onboarding/complete", { method: "POST" }); await load(); }} />;
+  if (!data.onboarding.complete) return <Onboarding onboarding={data.onboarding} onComplete={async () => {
+    const response = await fetch("/api/onboarding/complete", { method: "POST" });
+    if (!response.ok) throw new Error(await responseMessage(response, "暂时无法开始聊天，请稍后再试。"));
+    await load();
+  }} />;
+  if (settingsMode) return <SettingsPanel settings={data.user.settings} onClose={closeSettings} onSettings={updateSettings} onDeleteAll={deleteAllData} />;
   if (developerMode) return <DeveloperPanel onClose={() => setDeveloperMode(false)} />;
 
   async function createConversation() {
@@ -181,6 +195,17 @@ export function ZhiweiApp() {
     setStreaming(true);
     const abort = new AbortController();
     abortRef.current = abort;
+    let completed = false;
+    const finishStreaming = () => {
+      if (abortRef.current !== abort) return;
+      abortRef.current = null;
+      setStreaming(false);
+    };
+    const refreshWhenIdle = () => {
+      window.setTimeout(() => {
+        if (!abortRef.current) void load();
+      }, 500);
+    };
     try {
       const response = await fetch(`/api/conversations/${conversationId}/messages`, {
         method: "POST",
@@ -198,19 +223,21 @@ export function ZhiweiApp() {
           updateConversationMessages(conversationId!, (messages) => messages.map((message) => message.id === assistantTemp.id ? { ...message, content: message.content + event.delta } : message));
         }
         if (event.type === "message.completed") {
+          completed = true;
           updateConversationMessages(conversationId!, (messages) => messages.map((message) => message.id === event.messageId ? { ...message, metadata: { ...message.metadata, streaming: false, status: "completed", sources: event.sources ?? [] } } : message));
+          finishStreaming();
+          refreshWhenIdle();
         }
         if (event.type === "error") {
           updateConversationMessages(conversationId!, (messages) => messages.map((message) => message.id === assistantTemp.id ? { ...message, metadata: { ...message.metadata, streaming: false, status: abort.signal.aborted ? "stopped" : "interrupted" } } : message));
           throw new Error(event.message);
         }
       });
-      window.setTimeout(() => void load(), 500);
     } catch (error) {
       if (!abort.signal.aborted) setToast(error instanceof Error ? error.message : "回复中断了，可以重试。");
     } finally {
-      setStreaming(false);
-      abortRef.current = null;
+      finishStreaming();
+      if (!completed) refreshWhenIdle();
     }
   }
 
@@ -228,17 +255,28 @@ export function ZhiweiApp() {
   async function updateSettings(settings: Record<string, boolean>) {
     const response = await fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(settings) });
     if (!response.ok) throw new Error(await responseMessage(response, "设置没有保存成功，请重试。"));
-    setData((current) => current ? { ...current, user: { ...current.user, settings: { ...current.user.settings, ...settings } } } : current);
+    const result = await response.json();
+    setData((current) => current ? { ...current, user: { ...current.user, settings: result.settings ?? { ...current.user.settings, ...settings } } } : current);
+    if (result.warning) {
+      setToast(result.warning);
+      window.setTimeout(() => setToast(null), 3_200);
+    }
   }
 
-  async function withdrawMemory(memoryId: string) {
+  async function withdrawMemory(memoryId: string, versionId: string) {
     const response = await fetch(`/api/memories/${memoryId}/withdraw`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ reason: "用户在画像界面主动撤回" }),
+      body: JSON.stringify({ versionId, reason: "用户在画像界面主动撤回" }),
     });
+    if (response.status === 409) {
+      setToast("这条认识刚刚发生了变化，已为你刷新。");
+      await load();
+      return;
+    }
     if (!response.ok) throw new Error(await responseMessage(response, "这条认识没有撤回成功，请重试。"));
     setToast("这条认识已撤回，之后不会再用于回答。");
+    window.setTimeout(() => setToast((current) => current === "这条认识已撤回，之后不会再用于回答。" ? null : current), 2_800);
     await load();
   }
 
@@ -249,7 +287,7 @@ export function ZhiweiApp() {
       body: JSON.stringify({ confirmation }),
     });
     if (!response.ok) throw new Error(await responseMessage(response, "数据删除没有完成；你的数据仍然保留。"));
-    window.location.reload();
+    window.location.replace("/");
   }
 
   function startMemoryCorrection(content: string) {
@@ -279,6 +317,19 @@ export function ZhiweiApp() {
     setAboutOpen(true);
   }
 
+  function openSettings() {
+    setMobileMenu(null);
+    setSettingsMode(true);
+  }
+
+  function closeSettings() {
+    setSettingsMode(false);
+    window.requestAnimationFrame(() => {
+      const returnTarget = window.innerWidth < 900 ? mobileNavRef.current : settingsTriggerRef.current;
+      returnTarget?.focus();
+    });
+  }
+
   function closeAbout() {
     setAboutOpen(false);
     window.requestAnimationFrame(() => {
@@ -296,6 +347,7 @@ export function ZhiweiApp() {
           {data.conversations.map((conversation) => <div className={conversation.id === activeId ? "conversation-row active" : "conversation-row"} key={conversation.id}><button className="conversation-open" onClick={() => { setActiveId(conversation.id); setMobileMenu(null); }}><MessageCircleMore size={16} /><span>{conversation.title}</span></button><button className="conversation-more" onClick={() => setRenameTarget(conversation)} aria-label={`管理对话：${conversation.title}`} aria-haspopup="dialog"><MoreHorizontal size={16} /></button></div>)}
         </nav>
         <div className="sidebar-footer">
+          <button ref={settingsTriggerRef} onClick={openSettings}><Settings2 size={16} /><span>设置</span></button>
           <button ref={aboutTriggerRef} onClick={openAbout}><Info size={16} /><span>关于</span></button>
           {data.developerModeAvailable ? <button onClick={() => setDeveloperMode(true)}><Code2 size={16} /><span>开发者模式</span></button> : null}
           <div className="adapter-badge"><i />{data.modelModeLabel}</div>
@@ -319,13 +371,7 @@ export function ZhiweiApp() {
                 <Message
                   key={message.id}
                   message={message}
-                  receipt={receipts[message.id]}
-                  onToggleReceipt={() => setReceipts((current) => {
-                    const existing = current[message.id];
-                    return existing
-                      ? { ...current, [message.id]: { ...existing, open: !existing.open } }
-                      : current;
-                  })}
+                  receipt={receipts[message.id] ?? (typeof message.metadata?.memoryReceipt === "string" ? message.metadata.memoryReceipt : undefined)}
                   onFeedback={feedback}
                   onRetry={message.role === "assistant" ? () => { const previous = [...active.messages.slice(0, index)].reverse().find((item) => item.role === "user"); if (previous) void sendMessage(previous.content); } : undefined}
                 />
@@ -350,10 +396,8 @@ export function ZhiweiApp() {
         <button className="mobile-insight-close" onClick={() => setMobileMenu(null)}><ChevronLeft size={18} /> 返回对话</button>
         <InsightPanel
           data={data}
-          onMemoryClick={startMemoryCorrection}
-          onSettings={(settings) => void updateSettings(settings)}
-          onWithdraw={(memoryId) => void withdrawMemory(memoryId)}
-          onDeleteAll={(confirmation) => void deleteAllData(confirmation)}
+          onMemoryCorrect={startMemoryCorrection}
+          onWithdraw={withdrawMemory}
         />
       </div>
       {mobileMenu ? <button className="mobile-scrim" onClick={() => setMobileMenu(null)} aria-label="关闭面板" /> : null}
@@ -505,7 +549,7 @@ function AboutDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-function Message({ message, receipt, onToggleReceipt, onFeedback, onRetry }: { message: ChatMessage; receipt?: { count: number; open: boolean }; onToggleReceipt: () => void; onFeedback: (id: string, value: "understood" | "not-me", reason?: string) => Promise<void>; onRetry?: () => void }) {
+function Message({ message, receipt, onFeedback, onRetry }: { message: ChatMessage; receipt?: string; onFeedback: (id: string, value: "understood" | "not-me", reason?: string) => Promise<void>; onRetry?: () => void }) {
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const assistant = message.role === "assistant";
   return (
@@ -518,8 +562,7 @@ function Message({ message, receipt, onToggleReceipt, onFeedback, onRetry }: { m
         {assistant && message.content ? <div className="message-actions"><button onClick={() => navigator.clipboard.writeText(message.content)} aria-label="复制"><Clipboard size={14} /></button><button onClick={() => void onFeedback(message.id, "understood")} aria-label="有被懂到"><ThumbsUp size={14} /></button><button onClick={() => setFeedbackOpen(!feedbackOpen)} aria-label="不太像我"><ThumbsDown size={14} /></button>{onRetry ? <button onClick={onRetry} aria-label="重试"><RotateCcw size={14} /></button> : null}</div> : null}
       </footer>
       {feedbackOpen ? <div className="feedback-reasons"><span>哪里不太像你？</span>{["语气不对", "记错了", "建议不贴合", "太像模板"].map((reason) => <button key={reason} onClick={() => { void onFeedback(message.id, "not-me", reason); setFeedbackOpen(false); }}>{reason}</button>)}</div> : null}
-      {assistant && receipt ? <button className="memory-receipt" onClick={onToggleReceipt}><SparkleDot />知微更新了 {receipt.count} 条认识 <ChevronRight size={13} className={receipt.open ? "rotated" : ""} /></button> : null}
-      {assistant && receipt?.open ? <div className="receipt-detail">这些认识已经进入“关于你”，会在以后相关的对话中使用。若有不对，点开画像里的对应内容告诉我新的说法。</div> : null}
+      {assistant && receipt ? <div className="memory-receipt"><SparkleDot />{receipt}</div> : null}
     </article>
   );
 }

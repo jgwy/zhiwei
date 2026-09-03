@@ -1,40 +1,42 @@
 import { addActivity, callMemoryMcp, enqueueJob } from "@zhiwei/core";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { jsonError } from "@/lib/http";
+import { isDeveloperMode, jsonError } from "@/lib/http";
 import { getSessionUserId } from "@/lib/session";
 
 const InputSchema = z.object({
   versionId: z.string().uuid(),
-  reason: z.string().trim().max(300).optional(),
+  expectedActiveVersionId: z.string().uuid().nullable(),
 });
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
+    if (!isDeveloperMode()) return jsonError(new Error("developer_mode_disabled"), 404);
     const userId = await getSessionUserId();
     const { id: memoryId } = await context.params;
     const input = InputSchema.parse(await request.json());
     const traceId = crypto.randomUUID();
     const result = await callMemoryMcp<any>({
-      tool: "memory_withdraw",
+      tool: "memory_restore_version",
       userId,
       traceId,
+      role: "developer",
       arguments: {
         memoryId,
         versionId: input.versionId,
-        reason: input.reason,
-        idempotencyKey: request.headers.get("idempotency-key") ?? `ui-withdraw:${memoryId}:${input.versionId}`,
+        expectedActiveVersionId: input.expectedActiveVersionId,
+        idempotencyKey: request.headers.get("idempotency-key") ?? `dev-restore:${memoryId}:${input.versionId}:${input.expectedActiveVersionId ?? "null"}`,
       },
     });
-    if (result.tier === "long") {
+    if (result.memory?.tier === "long") {
       await enqueueJob({
         userId,
         type: "profile_synthesis",
-        idempotencyKey: `profile_synthesis:ui-withdraw:${memoryId}:${input.versionId}:long-profile-v2`,
-        payload: { trigger: "ui-withdraw", sourceMessageId: null, conversationId: null, traceId },
+        idempotencyKey: `profile_synthesis:developer-restore:${memoryId}:${result.memory.versionId}:long-profile-v2`,
+        payload: { trigger: "developer-restore", sourceMessageId: null, conversationId: null, traceId },
       });
     }
-    await addActivity({ userId, type: "memory.withdrawn", payload: { memoryId, versionId: input.versionId, tier: result.tier } });
+    await addActivity({ userId, type: "memory.restored", payload: { memoryId, versionId: result.memory.versionId, restoredFromVersionId: input.versionId } });
     return NextResponse.json(result);
   } catch (error) {
     const conflict = error instanceof Error && /memory_(version|idempotency)_conflict/.test(error.message);

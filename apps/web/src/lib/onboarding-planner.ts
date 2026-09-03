@@ -26,10 +26,25 @@ export async function getOrPlanOnboardingQuestion(input: {
   }
   const gateway = getModelGateway();
   const traceId = crypto.randomUUID();
-  const planned = await gateway.planQuestions({
-    answered: input.answers.map((answer) => ({ questionId: answer.metadata?.questionId, content: answer.content })),
-    profileSummary: input.profileSummary,
-  });
+  let planned;
+  try {
+    planned = await gateway.planQuestions({
+      answered: input.answers.map((answer) => ({ questionId: answer.metadata?.questionId, content: answer.content })),
+      profileSummary: input.profileSummary,
+    });
+  } catch (error) {
+    await recordTrace({
+      userId: input.userId,
+      traceId,
+      stage: "onboarding.question_plan_failed",
+      payload: { code: error instanceof Error ? error.message : "question_plan_failed", step },
+    }).catch(() => undefined);
+    return pickNextQuestion({
+      answeredQuestionIds: input.answers.map((answer) => answer.metadata?.questionId).filter(Boolean),
+      lastAnswer: input.answers.at(-1)?.content,
+      seed: input.userId,
+    });
+  }
   const exploreAdjacent = stableBucket(`${input.userId}:${step}`) < 2;
   const candidates = exploreAdjacent ? planned.data.adjacentCandidates : planned.data.gapCandidates;
   const selected = candidates[stableBucket(`${step}:${input.userId}`) % candidates.length]!;

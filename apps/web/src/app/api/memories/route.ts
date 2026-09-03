@@ -1,8 +1,18 @@
-import { callMemoryMcp } from "@zhiwei/core";
+import { callMemoryMcp, type MemoryRecord } from "@zhiwei/core";
 import { NextResponse } from "next/server";
+import { jsonError } from "@/lib/http";
 import { getSessionUserId } from "@/lib/session";
 
 export async function GET() {
-  const userId = await getSessionUserId();
-  return NextResponse.json(await callMemoryMcp({ tool: "memory_search", userId, arguments: { query: "当前活动认识", limit: 20 } }));
+  try {
+    const userId = await getSessionUserId();
+    const result = await callMemoryMcp<{ memories: MemoryRecord[] }>({
+      tool: "memory_list",
+      userId,
+      arguments: { statuses: ["active"], limit: 200 },
+    });
+    return NextResponse.json({ memories: result.memories });
+  } catch (error) {
+    return jsonError(error);
+  }
 }

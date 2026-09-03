@@ -22,6 +22,7 @@ import {
 import { getModelGateway } from "@zhiwei/model-gateway";
 import { composeFoundationInstructions } from "@zhiwei/skills";
 import { z } from "zod";
+import { assistantStreamDisposition } from "@/lib/assistant-stream";
 import { getSessionUserId } from "@/lib/session";
 
 const InputSchema = z.object({ content: z.string().trim().min(1).max(8_000) });
@@ -134,6 +135,7 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
         }
       }
     } catch (error) {
+      responsePlan = conservativeResponsePlan(input.content);
       await recordTrace({ userId, traceId, stage: "fact.verification_unavailable", payload: { code: publicErrorCode(error) } });
     }
   }
@@ -152,6 +154,7 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
       let output = "";
       let sources: Array<{ title: string; url: string; siteName?: string }> = [...verifiedSources];
       let completedMeta: any = null;
+      let assistantPersisted = false;
       try {
         send({ type: "message.started", messageId: assistantMessageId, traceId });
         if (memories.length) {
@@ -179,20 +182,50 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
             sources = uniqueSources([...sources, ...event.meta.sources]);
           }
         }
+        if (!completedMeta) throw new Error("invalid_response");
+        await recordModelCallMeta({ userId, traceId, conversationId, adapterId: gateway.id, meta: completedMeta }).catch(() => undefined);
+        const completedDisposition = assistantStreamDisposition(output, "completed");
+        if (!completedDisposition.persistAssistant) throw new Error("invalid_response");
         const status = request.signal.aborted ? "stopped" : "completed";
         await addMessage({ id: assistantMessageId, conversationId, userId, role: "assistant", content: output, metadata: { traceId, gateway: gateway.id, status, sources } });
-        if (sources.length) await saveMessageSources({ userId, messageId: assistantMessageId, sources });
-        if (completedMeta) await recordModelCallMeta({ userId, traceId, conversationId, adapterId: gateway.id, meta: completedMeta });
-        const jobId = riskAssessment.level === "ordinary"
-          ? await enqueueJob({ userId, type: "reflection", idempotencyKey: `reflection:${userMessage.id}:v1`, payload: { conversationId, messageId: userMessage.id, content: input.content, kind: "chat", traceId } })
-          : riskEventId;
-        await recordTrace({ userId, traceId, stage: "dialogue.completed", durationMs: completedMeta?.durationMs, payload: { messageId: assistantMessageId, output, jobId, sources, meta: completedMeta, status } });
-        send({ type: "message.completed", messageId: assistantMessageId, jobId, sources });
-      } catch (error) {
-        if (output) {
-          await addMessage({ id: assistantMessageId, conversationId, userId, role: "assistant", content: output, metadata: { traceId, gateway: gateway.id, status: request.signal.aborted ? "stopped" : "interrupted", sources } });
+        assistantPersisted = true;
+        if (sources.length) await saveMessageSources({ userId, messageId: assistantMessageId, sources }).catch(() => undefined);
+        let jobId: string = riskEventId;
+        if (completedDisposition.enqueueReflection && status === "completed" && riskAssessment.level === "ordinary") {
+          try {
+            jobId = await enqueueJob({ userId, type: "reflection", idempotencyKey: `reflection:${userMessage.id}:v1`, payload: { conversationId, messageId: userMessage.id, content: input.content, kind: "chat", traceId } });
+          } catch (error) {
+            await recordTrace({ userId, traceId, stage: "reflection.enqueue_deferred", payload: { code: publicErrorCode(error), sourceMessageId: userMessage.id } }).catch(() => undefined);
+          }
         }
-        send({ type: "error", code: publicErrorCode(error), message: publicErrorMessage(error) });
+        await recordTrace({ userId, traceId, stage: "dialogue.completed", durationMs: completedMeta?.durationMs, payload: { messageId: assistantMessageId, output, jobId, sources, meta: completedMeta, status } }).catch(() => undefined);
+        send({ type: "message.completed", messageId: assistantMessageId, jobId, sources });
+        const usedVersionIds = [...new Set(compiled.memories.map((memory) => memory.versionId))].slice(0, 8);
+        if (usedVersionIds.length) {
+          try {
+            await callMemoryMcp({
+              tool: "memory_record_usage",
+              userId,
+              traceId,
+              arguments: {
+                versionIds: usedVersionIds,
+                conversationId,
+                idempotencyKey: `memory-usage:${assistantMessageId}`,
+              },
+            });
+          } catch (error) {
+            await recordTrace({ userId, traceId, stage: "memory.usage_record_failed", payload: { versionIds: usedVersionIds, code: publicErrorCode(error) } }).catch(() => undefined);
+          }
+        }
+      } catch (error) {
+        if (!assistantPersisted && assistantStreamDisposition(output, "interrupted").persistAssistant) {
+          await addMessage({ id: assistantMessageId, conversationId, userId, role: "assistant", content: output, metadata: { traceId, gateway: gateway.id, status: request.signal.aborted ? "stopped" : "interrupted", sources } }).catch(() => undefined);
+        }
+        try {
+          send({ type: "error", code: publicErrorCode(error), message: publicErrorMessage(error) });
+        } catch {
+          // The client may already have closed the stream; persistence is complete.
+        }
       } finally {
         controller.close();
       }
@@ -203,6 +236,21 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
 }
 
 function uniqueSources<T extends { url: string }>(sources: T[]) { return [...new Map(sources.map((source) => [source.url, source])).values()]; }
+function conservativeResponsePlan(content: string): Pick<FactRoutingOutput, "responseMode" | "depth" | "physicalSymptom" | "reason"> {
+  const physicalSymptom = /头晕|眩晕|头痛|头疼|胃痛|胃疼|胸闷|心慌|失眠|睡不着|恶心|发抖|喘不过气/u.test(content);
+  const highEmotion = /性压抑|压抑|懋闷|崩溃|撑不住|绝望|特别难过|非常焦虑|好痛苦|一直哭/u.test(content);
+  const depth = highEmotion || physicalSymptom
+    ? "high" as const
+    : /压力|焦虑|难过|委屈|害怕|痛苦|不舒服/u.test(content)
+      ? "moderate" as const
+      : "light" as const;
+  return {
+    responseMode: highEmotion || physicalSymptom ? "emotional-deep" : "character",
+    depth,
+    physicalSymptom,
+    reason: "事实路由暂时不可用，已使用本地保守陪伴深度判断。",
+  };
+}
 function publicErrorCode(error: unknown) { const code = error instanceof Error ? error.message : String(error); return ["rate_limited", "provider_unavailable", "invalid_response", "request_cancelled", "provider_authentication_failed"].includes(code) ? code : "generation_failed"; }
 function publicErrorMessage(error: unknown) {
   const messages: Record<string, string> = {

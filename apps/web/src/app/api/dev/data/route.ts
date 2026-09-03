@@ -3,6 +3,7 @@ import { foundationSkills } from "@zhiwei/skills";
 import { NextResponse } from "next/server";
 import { isDeveloperMode, jsonError } from "@/lib/http";
 import { getSessionUserId } from "@/lib/session";
+import { withCompetitionReplays } from "@/lib/competition-replays";
 
 export async function GET() {
   if (!isDeveloperMode()) return jsonError(new Error("developer_mode_disabled"), 404);
@@ -13,7 +14,7 @@ export async function GET() {
   ]);
   return NextResponse.json({
     ...developerData,
-    competition,
+    competition: withCompetitionReplays(competition),
     foundationSkills,
   });
 }

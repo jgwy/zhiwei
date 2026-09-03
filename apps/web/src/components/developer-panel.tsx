@@ -9,12 +9,34 @@ import styles from "./developer-panel.module.css";
 type DeveloperData = {
   traces: any[];
   memories: any[];
+  memoryEvents?: any[];
+  memoryLineage?: any[];
   profiles: any[];
   skills: any[];
   mcpCalls: any[];
   modelRuns: any[];
   foundationSkills: any[];
-  competition: { runs: any[]; risks: any[]; withdrawals: any[]; conversations: any[] };
+  competition: {
+    runs: any[];
+    risks: any[];
+    withdrawals: any[];
+    conversations: any[];
+    replayDataset?: {
+      schemaVersion: string;
+      datasetVersion: string;
+      releasedAt: string;
+      provenance: {
+        kind: "scripted-free-fixture";
+        gateway: string;
+        provider: "scripted";
+        synthetic: true;
+        liveModel: false;
+        billable: false;
+        description: string;
+      };
+    };
+    replays?: any[];
+  };
 };
 
 type ModelCostData = {
@@ -44,6 +66,8 @@ const taskLabels: Record<string, string> = {
   "fact-routing": "事实核验判断",
   "fact-brief": "事实简报",
   embedding: "记忆向量",
+  "memory-consolidation-plan": "记忆收拢方案",
+  "memory-consolidation-review": "记忆收拢核对",
 };
 
 const statusLabels: Record<string, string> = {
@@ -176,8 +200,26 @@ function ModelRunBatchCard({ batch }: { batch: ModelRunBatch }) {
 
 function memoryStatus(memory: any) {
   if (memory.status === "withdrawn") return { className: "status-withdrawn", label: "已撤回" };
+  if (memory.status === "expired") return { className: "status-old", label: "已过期" };
   if (memory.is_active || memory.status === "active") return { className: "status-active", label: "当前" };
   return { className: "status-old", label: "已替代" };
+}
+
+function memoryVersionId(memory: any) {
+  return String(memory.versionId ?? memory.version_id ?? memory.id ?? "");
+}
+
+function memoryLogicalId(memory: any) {
+  return String(memory.memoryId ?? memory.memory_id ?? "");
+}
+
+function memorySourceIds(memory: any) {
+  const ids = memory.evidenceMessageIds ?? memory.evidence_ids ?? memory.source_message_ids ?? [];
+  return Array.isArray(ids) ? ids.map(String) : [];
+}
+
+function scoreReasonMessage(reason: any) {
+  return typeof reason === "string" ? reason : String(reason?.message ?? "未知原因");
 }
 
 export function DeveloperPanel({ onClose }: { onClose: () => void }) {
@@ -186,6 +228,9 @@ export function DeveloperPanel({ onClose }: { onClose: () => void }) {
   const [costData, setCostData] = useState<ModelCostData | null>(null);
   const [costError, setCostError] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [restoreTarget, setRestoreTarget] = useState<string | null>(null);
+  const [restoreBusy, setRestoreBusy] = useState(false);
+  const [restoreError, setRestoreError] = useState("");
   const [labPrompt, setLabPrompt] = useState("请为高中生写一段关于太阳耀斑与空间天气的课程讲稿开场，要求准确、自然，不要模板腔。");
   const [labRunning, setLabRunning] = useState(false);
 
@@ -228,6 +273,29 @@ export function DeveloperPanel({ onClose }: { onClose: () => void }) {
     await load();
   }
 
+  async function restoreMemoryVersion(memory: any) {
+    const memoryId = memoryLogicalId(memory);
+    const versionId = memoryVersionId(memory);
+    const activeVersion = data?.memories.find((candidate) => memoryLogicalId(candidate) === memoryId && (candidate.is_active || candidate.status === "active"));
+    if (!memoryId || !versionId || restoreBusy) return;
+    setRestoreBusy(true);
+    setRestoreError("");
+    try {
+      const response = await fetch(`/api/dev/memories/${memoryId}/restore`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ versionId, expectedActiveVersionId: activeVersion ? memoryVersionId(activeVersion) : null }),
+      });
+      if (!response.ok) throw new Error(await response.text() || "历史版本没有恢复成功。");
+      setRestoreTarget(null);
+      await load();
+    } catch (error) {
+      setRestoreError(error instanceof Error ? error.message : "历史版本没有恢复成功。");
+    } finally {
+      setRestoreBusy(false);
+    }
+  }
+
   const groupedTraces = useMemo(() => {
     const groups = new Map<string, any[]>();
     for (const trace of data?.traces ?? []) {
@@ -239,12 +307,23 @@ export function DeveloperPanel({ onClose }: { onClose: () => void }) {
   }, [data]);
 
   const modelRunBatches = useMemo(() => groupModelRuns(costData?.runs ?? []), [costData]);
+  const memoryLineage = useMemo(() => {
+    if (data?.memoryLineage?.length) return data.memoryLineage;
+    const grouped = new Map<string, any[]>();
+    for (const memory of data?.memories ?? []) {
+      const id = memoryLogicalId(memory);
+      const versions = grouped.get(id) ?? [];
+      versions.push(memory);
+      grouped.set(id, versions);
+    }
+    return [...grouped.entries()].map(([memoryId, versions]) => ({ memoryId, versions: versions.map((version) => memoryVersionId(version)) }));
+  }, [data]);
 
   return (
     <div className="developer-shell">
       <header className="developer-header">
         <button className="back-button" onClick={onClose}><ArrowLeft size={18} /> 返回知微</button>
-        <div><strong>开发者模式</strong><span>当前匿名档案 · 只读证据视图</span></div>
+        <div><strong>开发者模式</strong><span>当前匿名档案 · 可审计证据视图</span></div>
         <Button variant="ghost" size="sm" onClick={() => void load()}><RefreshCw size={15} /> 刷新</Button>
       </header>
       <nav className="developer-tabs">
@@ -281,11 +360,43 @@ export function DeveloperPanel({ onClose }: { onClose: () => void }) {
         ) : null}
         {data && tab === "memory" ? (
           <section>
-            <div className="dev-section-heading"><div><h1>证据如何变成理解</h1><p>用户界面保持自然，这里保留证据来源、版本、置信度和了解度计算。</p></div><span>{data.memories.length} 个版本</span></div>
+            <div className="dev-section-heading"><div><h1>证据如何变成理解</h1><p>这里展示事件、版本血缘、来源 ID 与评分原因；普通用户界面不暴露这些实现细节。</p></div><span>{data.memories.length} 个版本</span></div>
+            {restoreError ? <div className="dev-error" role="alert">{restoreError}</div> : null}
             <div className="dev-grid">
-              <div className="dev-column"><h2>记忆版本</h2>{data.memories.map((memory) => { const state = memoryStatus(memory); return <article className="data-card" key={memory.id}><header><span className={state.className}>{state.label}</span><small>{memory.tier === "long" ? "长期" : "短期"} · {categoryLabel(memory.category)}</small></header><p>{memory.content}</p><footer>置信度 {Number(memory.confidence).toFixed(2)} · 证据 {memory.evidence_ids?.length ?? 0} 条</footer><details><summary>查看原始记录</summary><pre>{JSON.stringify(memory, null, 2)}</pre></details></article>; })}</div>
-              <div className="dev-column"><h2>画像快照</h2>{data.profiles.map((profile) => <article className="data-card" key={profile.id}><header><strong>{profile.understanding_score}%</strong><small>{new Date(profile.created_at).toLocaleString("zh-CN")}</small></header><p>{profile.summary}</p><pre>{JSON.stringify({ weights: profile.dimension_weights, components: profile.understanding_components }, null, 2)}</pre></article>)}</div>
+              <div className="dev-column"><h2>记忆版本</h2>{data.memories.map((memory) => {
+                const state = memoryStatus(memory);
+                const versionId = memoryVersionId(memory);
+                const sourceIds = memorySourceIds(memory);
+                const active = memory.is_active || memory.status === "active";
+                return (
+                  <article className="data-card dev-memory-card" key={`${memoryLogicalId(memory)}:${versionId}`}>
+                    <header><span className={state.className}>{state.label}</span><small>{memory.tier === "long" ? "长期" : "短期"} · {categoryLabel(memory.category)}</small></header>
+                    <p>{memory.content}</p>
+                    <footer>置信度 {Number(memory.confidence).toFixed(2)} · 来源 {sourceIds.length} 条</footer>
+                    <div className="dev-source-ids"><strong>版本 ID</strong><code>{versionId || "—"}</code><strong>来源消息 ID</strong><code>{sourceIds.length ? sourceIds.join("\n") : "—"}</code></div>
+                    <details><summary>查看原始记录</summary><pre>{JSON.stringify(memory, null, 2)}</pre></details>
+                    {!active ? restoreTarget === versionId ? (
+                      <div className="dev-restore-confirm"><span>将基于这一历史版本创建新的当前版本，不改写原记录。</span><div><button disabled={restoreBusy} onClick={() => setRestoreTarget(null)}>取消</button><button disabled={restoreBusy} onClick={() => void restoreMemoryVersion(memory)}>{restoreBusy ? "正在恢复…" : "确认恢复"}</button></div></div>
+                    ) : <button className="dev-restore-trigger" onClick={() => { setRestoreTarget(versionId); setRestoreError(""); }}><Undo2 size={13} />恢复此版本</button> : null}
+                  </article>
+                );
+              })}</div>
+              <div className="dev-column"><h2>画像快照</h2>{data.profiles.map((profile) => {
+                const sourceIds = profile.sourceMemoryVersionIds ?? profile.source_memory_version_ids ?? [];
+                const reasons = profile.scoreChangeReasons ?? profile.score_change_reasons ?? [];
+                return (
+                  <article className="data-card dev-profile-card" key={profile.id}>
+                    <header><strong>{profile.understanding_score ?? profile.score}%</strong><small>{new Date(profile.created_at ?? profile.createdAt).toLocaleString("zh-CN")}</small></header>
+                    <p>{profile.summary}</p>
+                    <div className="dev-score-reasons"><strong>评分变化原因</strong>{reasons.length ? <ul>{reasons.map((reason: any, index: number) => <li key={`${index}:${scoreReasonMessage(reason)}`}>{scoreReasonMessage(reason)}{typeof reason?.delta === "number" ? `（${reason.delta > 0 ? "+" : ""}${reason.delta}）` : ""}</li>)}</ul> : <span>无记录</span>}</div>
+                    <div className="dev-source-ids"><strong>画像来源版本 ID</strong><code>{sourceIds.length ? sourceIds.join("\n") : "—"}</code></div>
+                    <details><summary>查看评分与同步状态</summary><pre>{JSON.stringify({ weights: profile.dimension_weights, components: profile.understanding_components, reasons, sourceIds, syncStatus: profile.syncStatus ?? profile.sync_status }, null, 2)}</pre></details>
+                  </article>
+                );
+              })}</div>
             </div>
+            <section className="dev-memory-evidence"><h2>记忆事件</h2>{data.memoryEvents?.length ? <div className="dev-event-list">{data.memoryEvents.map((event) => <details key={event.id} className="data-card"><summary><strong>{event.eventType ?? event.event_type ?? event.type ?? "memory.event"}</strong><small>{new Date(event.createdAt ?? event.created_at).toLocaleString("zh-CN")}</small></summary><pre>{JSON.stringify(event, null, 2)}</pre></details>)}</div> : <p>尚无记忆事件。</p>}</section>
+            <section className="dev-memory-evidence"><h2>版本血缘</h2>{memoryLineage.length ? <div className="dev-lineage-list">{memoryLineage.map((lineage, index) => <details key={lineage.memoryId ?? lineage.memory_id ?? index} className="data-card"><summary><strong>{String(lineage.memoryId ?? lineage.memory_id ?? `memory-${index + 1}`)}</strong><small>展开血缘</small></summary><pre>{JSON.stringify(lineage, null, 2)}</pre></details>)}</div> : <p>尚无版本血缘。</p>}</section>
           </section>
         ) : null}
         {data && tab === "skills" ? (
@@ -332,8 +443,8 @@ export function DeveloperPanel({ onClose }: { onClose: () => void }) {
               ))}
             </div>
             <section className="live-conversation-evidence">
-              <h2>真实模型多轮会话</h2>
-              <p>以下记录来自当前匿名测试档案，可与运行追踪、记忆版本和费用明细交叉核对。</p>
+              <h2>当前匿名档案的多轮会话</h2>
+              <p>以下记录来自当前匿名测试档案，实际模型与传输方式以运行追踪和费用明细为准。</p>
               {data.competition.conversations.map((conversation) => (
                 <details className="live-conversation-card" key={conversation.id}>
                   <summary><span><strong>{conversation.title}</strong><small>{conversation.messages.length} 条消息</small></span><CheckCircle2 size={15} /></summary>
@@ -345,6 +456,11 @@ export function DeveloperPanel({ onClose }: { onClose: () => void }) {
               <section><h2><ShieldCheck size={16} />风险追踪</h2>{data.competition.risks.length ? data.competition.risks.map((risk) => <pre key={risk.id}>{JSON.stringify(risk, null, 2)}</pre>) : <p>尚无风险事件。</p>}</section>
               <section><h2><Undo2 size={16} />撤回审计</h2>{data.competition.withdrawals.length ? data.competition.withdrawals.map((item) => <pre key={item.id}>{JSON.stringify(item, null, 2)}</pre>) : <p>尚无撤回记录。</p>}</section>
             </div>
+            <section className="dev-replay-section">
+              <div className="dev-section-heading"><div><h2>记忆生命周期 Replay</h2><p>10 组版本化离线样例只读展示，不触发模型调用，也不会写入当前用户的画像或记忆。</p></div><span>{data.competition.replays?.length ?? 0} / 10 已接入</span></div>
+              <div className="replay-notice"><ShieldCheck size={17} /><div><strong>{data.competition.replayDataset?.provenance.liveModel ? "真实千问脱敏回放" : "免费脚本回归夹具"}</strong><span>{data.competition.replayDataset?.provenance.description ?? "这些数据用于可复现的 Harness 回归。"} {data.competition.replayDataset ? `数据集 ${data.competition.replayDataset.datasetVersion}` : ""}</span></div></div>
+              {data.competition.replays?.length ? <div className="replay-grid">{data.competition.replays.slice(0, 10).map((replay, index) => <details className="replay-card" key={replay.id ?? index}><summary><span><strong>{String(index + 1).padStart(2, "0")} · {replay.scenario ?? replay.title ?? "固定样例"}</strong><small>{data.competition.replayDataset?.provenance.liveModel ? "千问真实调用 · 脱敏 · 只读" : "脚本模式 · 免费 · 只读"}</small></span><ChevronDown size={15} /></summary><pre>{JSON.stringify(replay, null, 2)}</pre></details>)}</div> : <div className="empty-cost-state">尚无 Replay 数据。离线固定样例接入后，将在这里只读展示。</div>}
+            </section>
           </section>
         ) : null}
         {tab === "costs" ? (

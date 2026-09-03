@@ -4,10 +4,12 @@ export function Toggle({
   checked,
   onChange,
   label,
+  disabled = false,
 }: {
   checked: boolean;
   onChange: (checked: boolean) => void;
   label: string;
+  disabled?: boolean;
 }) {
   return (
     <button
@@ -15,6 +17,7 @@ export function Toggle({
       role="switch"
       aria-checked={checked}
       aria-label={label}
+      disabled={disabled}
       className={cn("toggle", checked && "toggle-on")}
       onClick={() => onChange(!checked)}
     >
@@ -22,4 +25,3 @@ export function Toggle({
     </button>
   );
 }
-
