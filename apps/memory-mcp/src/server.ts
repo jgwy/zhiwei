@@ -9,13 +9,14 @@ import {
   getLatestProfile,
   publishPersonalSkill,
   recordMcpCall,
+  resolveSecret,
   searchMemories,
   withdrawMemory,
 } from "@zhiwei/core";
 import { z } from "zod";
 
 const port = Number(process.env.MCP_PORT ?? 4100);
-const token = process.env.INTERNAL_MCP_TOKEN ?? "local-development-mcp-token";
+const token = resolveSecret("INTERNAL_MCP_TOKEN", "local-development-mcp-token");
 
 const toolSchemas = {
   memory_search: z.object({

@@ -1,7 +1,9 @@
 export * from "./context";
 export * from "./claims";
+export * from "./config";
 export * from "./db";
 export * from "./mcp-client";
+export * from "./memory-filter";
 export * from "./personal-skill";
 export * from "./pricing";
 export * from "./questions";
@@ -9,4 +11,5 @@ export * from "./repository";
 export * from "./risk";
 export * from "./science-mcp-client";
 export * from "./score";
+export * from "./terms";
 export * from "./types";

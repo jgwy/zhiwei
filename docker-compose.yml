@@ -2,6 +2,7 @@ name: zhiwei
 
 services:
   postgres:
+    restart: unless-stopped
     image: pgvector/pgvector:pg17
     environment:
       POSTGRES_DB: zhiwei
@@ -41,6 +42,7 @@ services:
         condition: service_healthy
 
   memory-mcp:
+    restart: unless-stopped
     build:
       context: .
       target: runner
@@ -56,6 +58,7 @@ services:
       retries: 20
 
   science-mcp:
+    restart: unless-stopped
     build:
       context: .
       target: runner
@@ -71,6 +74,7 @@ services:
       retries: 20
 
   worker:
+    restart: unless-stopped
     build:
       context: .
       target: runner
@@ -83,6 +87,7 @@ services:
         condition: service_healthy
 
   web:
+    restart: unless-stopped
     build:
       context: .
       target: web

@@ -420,7 +420,7 @@ export class AliyunBailianGateway implements ModelGateway {
           } : undefined,
         } as any, { signal: options.signal });
         const content = response.choices[0]?.message?.content ?? "";
-        const data = schema.parse(JSON.parse(content));
+        const data = schema.parse(parseJsonLoose(content));
         assertTaskQuality(task, data);
         const usage = parseUsage(response.usage, zeroUsage());
         const sources = parseSources((response as any).search_info);
@@ -626,6 +626,26 @@ function scriptedResult<T>(task: ModelTask, data: T, model: string, provider: "s
 function stripJsonSchema(schema: any) {
   const { $schema: _schema, ...rest } = schema;
   return rest;
+}
+
+/**
+ * 解析模型输出的 JSON：容忍 markdown 代码栅栏、BOM，
+ * 以及正文前后混入的非 JSON 文本（取首尾大括号之间的部分）。
+ */
+export function parseJsonLoose(content: string): unknown {
+  const cleaned = content.replace(/^\uFEFF/, "").trim();
+  const fenced = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = (fenced ? fenced[1]! : cleaned).trim();
+  try {
+    return JSON.parse(candidate);
+  } catch (error) {
+    const start = candidate.indexOf("{");
+    const end = candidate.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      return JSON.parse(candidate.slice(start, end + 1));
+    }
+    throw error;
+  }
 }
 
 function sanitizeTitle(content: string) {

@@ -3,6 +3,7 @@ import { diffJson } from "diff";
 import type { PoolClient } from "pg";
 import { getPool, withTransaction } from "./db";
 import { defaultPersonalSkill } from "./personal-skill";
+import { extractQueryTerms } from "./terms";
 import {
   calculateUnderstandingScore,
   deriveUnderstandingComponents,
@@ -72,7 +73,8 @@ export async function listConversations(userId: string) {
               FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 80) m), '[]') AS messages
      FROM conversations c
      WHERE c.user_id = $1 AND c.kind = 'chat'
-     ORDER BY c.updated_at DESC`,
+     ORDER BY c.updated_at DESC
+     LIMIT 200`,
     [userId],
   );
   return result.rows.map((row) => ({
@@ -84,6 +86,17 @@ export async function listConversations(userId: string) {
     updatedAt: row.updated_at,
     messages: (row.messages ?? []).map(mapMessage),
   }));
+}
+
+export async function getConversation(userId: string, conversationId: string) {
+  const result = await getPool().query(
+    `SELECT c.id, c.kind, c.title, c.title_source, c.title_locked, c.created_at, c.updated_at,
+       EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id = c.id) AS has_messages
+     FROM conversations c
+     WHERE c.id = $1 AND c.user_id = $2`,
+    [conversationId, userId],
+  );
+  return result.rows[0] ?? null;
 }
 
 export async function createConversation(
@@ -133,23 +146,25 @@ export async function addMessage(input: {
   id?: string;
 }): Promise<ChatMessage> {
   const id = input.id ?? randomUUID();
-  const result = await getPool().query(
-    `INSERT INTO messages (id, conversation_id, user_id, role, content, metadata)
-     VALUES ($1, $2, $3, $4, $5, $6::jsonb) RETURNING *`,
-    [
-      id,
-      input.conversationId,
-      input.userId,
-      input.role,
-      input.content,
-      JSON.stringify(input.metadata ?? {}),
-    ],
-  );
-  await getPool().query(
-    `UPDATE conversations SET updated_at = now() WHERE id = $1 AND user_id = $2`,
-    [input.conversationId, input.userId],
-  );
-  return mapMessage(result.rows[0]);
+  return withTransaction(async (client) => {
+    const result = await client.query(
+      `INSERT INTO messages (id, conversation_id, user_id, role, content, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb) RETURNING *`,
+      [
+        id,
+        input.conversationId,
+        input.userId,
+        input.role,
+        input.content,
+        JSON.stringify(input.metadata ?? {}),
+      ],
+    );
+    await client.query(
+      `UPDATE conversations SET updated_at = now() WHERE id = $1 AND user_id = $2`,
+      [input.conversationId, input.userId],
+    );
+    return mapMessage(result.rows[0]);
+  });
 }
 
 export async function listMessages(
@@ -226,16 +241,29 @@ export async function getUserSettings(userId: string) {
   return result.rows[0]?.settings ?? {};
 }
 
+export type JobType =
+  | "reflection"
+  | "evolve_skill"
+  | "conversation_title"
+  | "memory_embedding";
+
+export type JobRecord = {
+  id: string;
+  user_id: string;
+  type: JobType;
+  payload: Record<string, unknown>;
+  status: string;
+  attempts: number;
+  run_after: string;
+  started_at: string | null;
+  completed_at: string | null;
+  last_error: string | null;
+  created_at: string;
+};
+
 export async function enqueueJob(input: {
   userId: string;
-  type:
-    | "reflection"
-    | "profile_synthesis"
-    | "session_summary"
-    | "return_note"
-    | "evolve_skill"
-    | "conversation_title"
-    | "memory_embedding";
+  type: JobType;
   payload: Record<string, unknown>;
   idempotencyKey?: string;
 }): Promise<string> {
@@ -251,8 +279,16 @@ export async function enqueueJob(input: {
   return result.rows[0].id;
 }
 
-export async function claimJob(): Promise<any | null> {
+export async function claimJob(): Promise<JobRecord | null> {
   return withTransaction(async (client) => {
+    // 回收租约过期的任务：worker 崩溃后 running 任务不能永久卡死。
+    const leaseMinutes = Number(process.env.JOB_LEASE_MINUTES ?? 10);
+    const lease = Number.isFinite(leaseMinutes) && leaseMinutes > 0 ? leaseMinutes : 10;
+    await client.query(
+      `UPDATE jobs SET status = 'pending', started_at = NULL
+       WHERE status = 'running' AND started_at < now() - make_interval(mins => $1)`,
+      [lease],
+    );
     const result = await client.query(
       `SELECT * FROM jobs
        WHERE status = 'pending' AND run_after <= now()
@@ -260,7 +296,7 @@ export async function claimJob(): Promise<any | null> {
        FOR UPDATE SKIP LOCKED LIMIT 1`,
     );
     if (!result.rowCount) return null;
-    const job = result.rows[0];
+    const job = result.rows[0] as JobRecord;
     await client.query(
       `UPDATE jobs SET status = 'running', attempts = attempts + 1, started_at = now()
        WHERE id = $1`,
@@ -277,7 +313,7 @@ export async function completeJob(jobId: string): Promise<void> {
   );
 }
 
-export async function failJob(job: any, error: unknown): Promise<void> {
+export async function failJob(job: JobRecord, error: unknown): Promise<void> {
   const terminal = Number(job.attempts ?? 0) + 1 >= 3;
   const seconds = Math.min(60, 2 ** Math.max(1, Number(job.attempts ?? 1)));
   await getPool().query(
@@ -344,7 +380,7 @@ export async function searchMemories(
 }
 
 function rankHybridMemories(rows: any[], query: string, limit: number): MemoryRecord[] {
-  const terms = query.replace(/[，。！？,.!?]/g, " ").split(/\s+/).filter((term) => term.length >= 2).slice(0, 12);
+  const terms = extractQueryTerms(query, 12);
   const now = Date.now();
   return rows.map((row) => {
     const lexical = terms.length
@@ -372,11 +408,7 @@ export function rankMemories(
   query: string,
   limit = 8,
 ): MemoryRecord[] {
-  const terms = query
-    .replace(/[，。！？,.!?]/g, " ")
-    .split(/\s+/)
-    .filter((term) => term.length >= 2)
-    .slice(0, 8);
+  const terms = extractQueryTerms(query, 8);
   return memories
     .map((memory) => ({
       memory,
@@ -945,6 +977,14 @@ export async function getCompetitionData(userId: string) {
   return { runs: runs.rows, risks: risks.rows, withdrawals: withdrawals.rows, conversations };
 }
 
+const TRACE_PAYLOAD_MAX_CHARS = Number(process.env.TRACE_PAYLOAD_MAX_CHARS ?? 32_000);
+
+function clampTracePayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const json = JSON.stringify(payload);
+  if (json.length <= TRACE_PAYLOAD_MAX_CHARS) return payload;
+  return { truncated: true, originalSize: json.length, preview: json.slice(0, TRACE_PAYLOAD_MAX_CHARS) };
+}
+
 export async function recordTrace(input: {
   userId: string;
   traceId: string;
@@ -960,10 +1000,71 @@ export async function recordTrace(input: {
       input.userId,
       input.traceId,
       input.stage,
-      JSON.stringify(input.payload),
+      JSON.stringify(clampTracePayload(input.payload)),
       input.durationMs ?? null,
     ],
   );
+}
+
+export async function pruneOldTraces(days: number): Promise<number> {
+  const retention = Number.isFinite(days) && days > 0 ? Math.floor(days) : 30;
+  const result = await getPool().query(
+    `DELETE FROM trace_events WHERE created_at < now() - make_interval(days => $1)`,
+    [retention],
+  );
+  return result.rowCount ?? 0;
+}
+
+export async function getMemoriesMissingEmbedding(
+  userId: string,
+  limit = 20,
+): Promise<Array<{ versionId: string; content: string }>> {
+  const result = await getPool().query(
+    `SELECT mv.id AS version_id, mv.content FROM memories m
+     JOIN memory_versions mv ON mv.memory_id = m.id AND mv.is_active = true
+     WHERE m.user_id = $1 AND mv.embedding_v2 IS NULL
+       AND (mv.valid_until IS NULL OR mv.valid_until > now())
+     ORDER BY mv.created_at DESC LIMIT $2`,
+    [userId, limit],
+  );
+  return result.rows.map((row) => ({ versionId: row.version_id, content: row.content }));
+}
+
+export async function updateMemoryVersionEmbedding(
+  userId: string,
+  versionId: string,
+  embedding: number[],
+): Promise<void> {
+  if (embedding.length !== 1024) return;
+  await getPool().query(
+    `UPDATE memory_versions SET embedding_v2 = $3::vector WHERE id = $1 AND user_id = $2`,
+    [versionId, userId, `[${embedding.join(",")}]`],
+  );
+}
+
+/**
+ * 记忆巩固：临近过期的高置信短期记忆提升为长期，而不是悄悄失效。
+ * 确定性规则，不调用模型；返回被提升的条数。
+ */
+export async function consolidateExpiringShortMemories(
+  options: { horizonDays?: number; minConfidence?: number; minEvidence?: number } = {},
+): Promise<number> {
+  const horizonDays = options.horizonDays ?? 7;
+  const minConfidence = options.minConfidence ?? 0.8;
+  const minEvidence = options.minEvidence ?? 1;
+  const result = await getPool().query(
+    `UPDATE memory_versions mv
+     SET tier = 'long', valid_until = NULL
+     WHERE mv.is_active = true
+       AND mv.tier = 'short'
+       AND mv.confidence >= $2
+       AND mv.valid_until IS NOT NULL
+       AND mv.valid_until > now()
+       AND mv.valid_until < now() + make_interval(days => $1)
+       AND (SELECT count(*) FROM memory_evidence me WHERE me.memory_version_id = mv.id) >= $3`,
+    [horizonDays, minConfidence, minEvidence],
+  );
+  return result.rowCount ?? 0;
 }
 
 export async function recordModelRun(input: {
@@ -1178,7 +1279,7 @@ export async function getDeveloperData(userId: string) {
         FILTER (WHERE me.message_id IS NOT NULL), '[]') AS evidence_ids
        FROM memories m JOIN memory_versions mv ON mv.memory_id = m.id
        LEFT JOIN memory_evidence me ON me.memory_version_id = mv.id
-       WHERE m.user_id = $1 GROUP BY m.id, mv.id ORDER BY mv.created_at DESC`,
+       WHERE m.user_id = $1 GROUP BY m.id, mv.id ORDER BY mv.created_at DESC LIMIT 500`,
       [userId],
     ),
     getPool().query(

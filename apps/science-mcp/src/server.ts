@@ -4,12 +4,13 @@ import {
   ScienceImpactSchema,
   ScienceSourceSchema,
   recordMcpCall,
+  resolveSecret,
 } from "@zhiwei/core";
 import { z } from "zod";
 import { assessScienceSources, auditScienceClaims } from "./audit";
 
 const port = Number(process.env.SCIENCE_MCP_PORT ?? 4200);
-const token = process.env.INTERNAL_MCP_TOKEN ?? "local-development-mcp-token";
+const token = resolveSecret("INTERNAL_MCP_TOKEN", "local-development-mcp-token");
 
 const toolSchemas = {
   science_source_assess: z.object({

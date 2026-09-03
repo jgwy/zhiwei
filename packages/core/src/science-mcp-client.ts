@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { resolveSecret } from "./config";
 
 export const ScienceSourceSchema = z.object({
   title: z.string().min(1).max(500),
@@ -59,7 +60,7 @@ export async function callScienceMcp<T>(input: {
     headers: {
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
-      authorization: `Bearer ${process.env.INTERNAL_MCP_TOKEN ?? "local-development-mcp-token"}`,
+      authorization: `Bearer ${resolveSecret("INTERNAL_MCP_TOKEN", "local-development-mcp-token")}`,
       "mcp-protocol-version": "2026-07-28",
       "mcp-method": "tools/call",
       "mcp-name": input.tool,

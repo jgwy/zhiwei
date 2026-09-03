@@ -6,15 +6,21 @@ import {
   claimJob,
   compileContext,
   completeJob,
+  consolidateExpiringShortMemories,
   enqueueJob,
   failJob,
+  filterMemoryMutations,
   getConversationSummary,
+  getMemoriesMissingEmbedding,
   getUserSettings,
   listMessages,
   normalizeDimensionWeights,
+  pruneOldTraces,
   recordModelCallMeta,
   recordTrace,
   updateConversationTitle,
+  updateMemoryVersionEmbedding,
+  type JobRecord,
   type MemoryRecord,
   type PersonalSkill,
   type ProfileSnapshot,
@@ -25,20 +31,59 @@ import { composeFoundationInstructions } from "@zhiwei/skills";
 const gateway = getModelGateway();
 let stopping = false;
 
+const POLL_MS = Number(process.env.WORKER_POLL_MS ?? 600);
+const TRACE_RETENTION_DAYS = Number(process.env.TRACE_RETENTION_DAYS ?? 30);
+const CONSOLIDATION_HORIZON_DAYS = Number(process.env.MEMORY_CONSOLIDATION_HORIZON_DAYS ?? 7);
+const DAILY_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
 process.on("SIGINT", () => (stopping = true));
 process.on("SIGTERM", () => (stopping = true));
 process.stdout.write(`知微后台进程已启动：${gateway.id}\n`);
 
+let pollFailures = 0;
+let lastDailySweepAt = 0;
+
 while (!stopping) {
-  const job = await claimJob();
+  if (Date.now() - lastDailySweepAt > DAILY_SWEEP_INTERVAL_MS) {
+    lastDailySweepAt = Date.now();
+    if (TRACE_RETENTION_DAYS > 0) {
+      pruneOldTraces(TRACE_RETENTION_DAYS).catch((error) => {
+        process.stderr.write(`[worker] 过期追踪清理失败：${error instanceof Error ? error.message : String(error)}\n`);
+      });
+    }
+    consolidateExpiringShortMemories({ horizonDays: CONSOLIDATION_HORIZON_DAYS }).catch((error) => {
+      process.stderr.write(`[worker] 记忆巩固失败：${error instanceof Error ? error.message : String(error)}\n`);
+    });
+  }
+
+  let job: JobRecord | null = null;
+  try {
+    job = await claimJob();
+  } catch (error) {
+    // 队列数据库暂时不可用时不能让后台进程退出：退避后继续轮询。
+    pollFailures += 1;
+    const backoffMs = Math.min(30_000, 500 * 2 ** Math.min(pollFailures, 6));
+    process.stderr.write(
+      `[worker] 任务队列暂不可用（第 ${pollFailures} 次），${Math.round(backoffMs / 100) / 10}s 后重试：${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    await delay(backoffMs);
+    continue;
+  }
+  pollFailures = 0;
   if (!job) {
-    await delay(600);
+    await delay(POLL_MS);
     continue;
   }
   try {
     if (job.type === "reflection") await handleReflection(job);
-    if (job.type === "evolve_skill") await handleEvolution(job);
-    if (job.type === "conversation_title") await handleConversationTitle(job);
+    else if (job.type === "evolve_skill") await handleEvolution(job);
+    else if (job.type === "conversation_title") await handleConversationTitle(job);
+    else if (job.type === "memory_embedding") await handleMemoryEmbedding(job);
+    else {
+      // 未知类型显式失败，避免被静默 complete 掩盖问题。
+      await failJob(job, new Error(`未知的任务类型：${String((job as { type: string }).type)}`));
+      continue;
+    }
     await completeJob(job.id);
   } catch (error) {
     await failJob(job, error);
@@ -50,7 +95,7 @@ while (!stopping) {
   }
 }
 
-async function handleConversationTitle(job: any) {
+async function handleConversationTitle(job: JobRecord) {
   const payload = job.payload as { conversationId: string; content: string; traceId?: string };
   const traceId = payload.traceId ?? crypto.randomUUID();
   const result = await gateway.generateTitle(payload.content);
@@ -60,7 +105,7 @@ async function handleConversationTitle(job: any) {
   await addActivity({ userId: job.user_id, type: "conversation.title.updated", payload: { conversationId: payload.conversationId, title: result.data.title } });
 }
 
-async function handleReflection(job: any) {
+async function handleReflection(job: JobRecord) {
   const payload = job.payload as {
     conversationId: string;
     messageId: string;
@@ -206,7 +251,7 @@ async function handleReflection(job: any) {
   }
 }
 
-async function handleEvolution(job: any) {
+async function handleEvolution(job: JobRecord) {
   const payload = job.payload as {
     evidenceIds: string[];
     feedback?: "understood" | "not-me";
@@ -226,6 +271,18 @@ async function handleEvolution(job: any) {
   await addActivity({ userId: job.user_id, type: "skill.evolved", payload: { version: published.version.version, message: "知微又更了解你一点。", reason: nextSkill.evolution.reason } });
 }
 
+async function handleMemoryEmbedding(job: JobRecord) {
+  const traceId = typeof job.payload?.traceId === "string" ? job.payload.traceId : crypto.randomUUID();
+  const missing = await getMemoriesMissingEmbedding(job.user_id, 20);
+  if (!missing.length) return;
+  const result = await gateway.embed(missing.map((memory) => memory.content));
+  for (const [index, memory] of missing.entries()) {
+    await updateMemoryVersionEmbedding(job.user_id, memory.versionId, result.data[index] ?? []);
+  }
+  await recordModelCallMeta({ userId: job.user_id, traceId, adapterId: gateway.id, meta: result.meta });
+  await recordTrace({ userId: job.user_id, traceId, stage: "memory.embedding_backfilled", payload: { count: missing.length } });
+}
+
 async function tryEmbedding(userId: string, traceId: string, conversationId: string, texts: string[]) {
   if (!texts.length) return [];
   try {
@@ -234,36 +291,18 @@ async function tryEmbedding(userId: string, traceId: string, conversationId: str
     return result.data;
   } catch (error) {
     await recordTrace({ userId, traceId, stage: "retrieval.degraded", payload: { code: publicErrorCode(error), message: "向量服务不可用，已降级为关键词检索。" } });
+    // 安排一次补偿任务：等向量服务恢复后为缺失向量的活动记忆补齐 embedding。
+    const bucket = new Date().toISOString().slice(0, 13);
+    await enqueueJob({
+      userId,
+      type: "memory_embedding",
+      idempotencyKey: `memory_embedding:${userId}:${bucket}`,
+      payload: { traceId },
+    }).catch(() => undefined);
     return null;
   }
 }
 
 function equalWeights() { return { basic: 1, goal: 1, interest: 1, expression: 1, emotion: 1, experience: 1, challenge: 1, boundary: 1 }; }
-function filterMemoryMutations(mutations: any[], active: MemoryRecord[]) {
-  const accepted: any[] = [];
-  for (const mutation of mutations) {
-    if (accepted.length >= 2) break;
-    if (mutation.category === "goal" && /^(担心|害怕|忧虑|压力|风险|困扰)/u.test(mutation.content.trim())) continue;
-    const sameCategory = [
-      ...active.filter((memory) => memory.category === mutation.category).map((memory) => memory.content),
-      ...accepted.filter((memory) => memory.category === mutation.category).map((memory) => memory.content),
-    ];
-    if (mutation.operation === "create" && sameCategory.some((content) => semanticOverlap(content, mutation.content) >= 0.72)) continue;
-    accepted.push(mutation);
-  }
-  return accepted;
-}
-
-function semanticOverlap(left: string, right: string) {
-  const grams = (value: string) => {
-    const normalized = value.replace(/[\s，。！？、,.!?：“”"'（）()]/gu, "");
-    return new Set(Array.from({ length: Math.max(0, normalized.length - 1) }, (_, index) => normalized.slice(index, index + 2)));
-  };
-  const a = grams(left);
-  const b = grams(right);
-  if (!a.size || !b.size) return left === right ? 1 : 0;
-  const intersection = [...a].filter((gram) => b.has(gram)).length;
-  return intersection / Math.max(a.size, b.size);
-}
 function publicErrorCode(error: unknown) { const code = error instanceof Error ? error.message : String(error); return ["rate_limited", "provider_unavailable", "invalid_response", "request_cancelled"].includes(code) ? code : "background_failed"; }
 function delay(ms: number) { return new Promise((resolve) => setTimeout(resolve, ms)); }

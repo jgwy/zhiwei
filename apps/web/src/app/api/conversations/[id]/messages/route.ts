@@ -5,8 +5,8 @@ import {
   callScienceMcp,
   compileContext,
   enqueueJob,
+  getConversation,
   getConversationSummary,
-  listConversations,
   listMessages,
   recordModelCallMeta,
   recordRiskEvent,
@@ -22,6 +22,7 @@ import {
 import { getModelGateway } from "@zhiwei/model-gateway";
 import { composeFoundationInstructions } from "@zhiwei/skills";
 import { z } from "zod";
+import { consumeRateLimit } from "@/lib/rate-limit";
 import { getSessionUserId } from "@/lib/session";
 
 const InputSchema = z.object({ content: z.string().trim().min(1).max(8_000) });
@@ -39,15 +40,20 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
   const userId = await getSessionUserId();
   const { id: conversationId } = await context.params;
   const input = InputSchema.parse(await request.json());
-  const conversations = await listConversations(userId);
-  const conversation = conversations.find((item) => item.id === conversationId);
+  if (!consumeRateLimit(`messages:${userId}`)) {
+    return Response.json(
+      { code: "rate_limited", error: "现在请求有点多，请稍等片刻再发。" },
+      { status: 429 },
+    );
+  }
+  const conversation = await getConversation(userId, conversationId);
   if (!conversation) return new Response("这段对话已经不可用，请新建一段对话。", { status: 404 });
 
   const traceId = crypto.randomUUID();
   const userMessage = await addMessage({ conversationId, userId, role: "user", content: input.content, metadata: { traceId } });
   const riskAssessment = assessRisk(input.content);
   const riskEventId = await recordRiskEvent({ userId, conversationId, messageId: userMessage.id, assessment: riskAssessment });
-  if (conversation.messages.length === 0) {
+  if (!conversation.has_messages) {
     await enqueueJob({
       userId,
       type: "conversation_title",
@@ -57,107 +63,122 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
   }
 
   const gateway = getModelGateway();
-  let queryEmbedding: number[] | undefined;
-  try {
-    const embedded = await gateway.embed([input.content], { signal: request.signal });
-    queryEmbedding = embedded.data[0];
-    await recordModelCallMeta({ userId, traceId, conversationId, adapterId: gateway.id, meta: embedded.meta });
-  } catch {
-    await recordTrace({ userId, traceId, stage: "retrieval.degraded", payload: { message: "向量服务不可用，已降级为关键词检索。" } });
-  }
-
-  const [messages, profileResult, memoryResult, summary, skillResult] = await Promise.all([
-    listMessages(userId, conversationId, 24),
-    callMemoryMcp<{ profile: ProfileSnapshot | null }>({ tool: "profile_get_current", userId, traceId }),
-    callMemoryMcp<{ memories: MemoryRecord[] }>({ tool: "memory_search", userId, traceId, arguments: { query: input.content, limit: 8, ...(queryEmbedding ? { queryEmbedding } : {}) } }),
-    getConversationSummary(userId, conversationId),
-    callMemoryMcp<any>({ tool: "personal_skill_get_active", userId, traceId }),
-  ]);
-  const memories = memoryResult.memories;
-  const activeSkill = skillResult.skill;
-  const compiled = compileContext({
-    foundationInstructions: composeFoundationInstructions(["zhiwei-persona", "dialogue-orchestrator", "fact-and-tool-use", "scientific-answering", "risk-and-boundary", "privacy-and-withdrawal"]),
-    personalSkill: activeSkill?.content as PersonalSkill,
-    profile: profileResult.profile,
-    memories,
-    sessionSummary: summary,
-    messages,
-    maxInputTokens: Math.min(18_000, gateway.capabilities.maxContextTokens - 2_000),
-  });
-
-  let factBrief: FactBriefOutput | null = null;
-  let scienceMode = false;
-  let responsePlan: Pick<FactRoutingOutput, "responseMode" | "depth" | "physicalSymptom" | "reason"> | undefined;
-  let verifiedSources: Array<{ title: string; url: string; siteName?: string }> = [];
-  if (riskAssessment.level === "ordinary") {
-    try {
-      const route = await gateway.routeFacts(input.content, { signal: request.signal });
-      scienceMode = route.data.scientific;
-      responsePlan = {
-        responseMode: route.data.responseMode,
-        depth: route.data.depth,
-        physicalSymptom: route.data.physicalSymptom,
-        reason: route.data.reason,
-      };
-      await recordModelCallMeta({ userId, traceId, conversationId, adapterId: gateway.id, meta: route.meta });
-      if (route.data.needsSearch || route.data.scientific) {
-        const brief = await gateway.buildFactBrief({ content: input.content, route: route.data }, { signal: request.signal });
-        factBrief = brief.data;
-        verifiedSources = brief.meta.sources;
-        await recordModelCallMeta({ userId, traceId, conversationId, adapterId: gateway.id, meta: brief.meta });
-        if (route.data.scientific && factBrief.claims.length) {
-          try {
-            const audit = await callScienceMcp<any>({
-              tool: "science_claim_audit",
-              userId,
-              traceId,
-              arguments: {
-                impact: route.data.impact === "high" ? "high" : "medium",
-                sources: verifiedSources.map((source) => ({ title: source.title, url: source.url, publisher: source.siteName, kind: "unknown" })),
-                claims: factBrief.claims.map((claim) => ({ ...claim, sourceIndices: claim.sourceIndices.map((index) => index - 1) })),
-              },
-            });
-            factBrief = {
-              ...factBrief,
-              claims: audit.auditedClaims.map((claim: any) => ({
-                text: claim.text,
-                status: claim.status,
-                sourceIndices: claim.sourceIndices.map((index: number) => index + 1),
-                note: claim.auditReason ?? claim.note,
-              })),
-            };
-            await recordTrace({ userId, traceId, stage: "science.claims_audited", payload: audit });
-          } catch (error) {
-            factBrief = { ...factBrief, claims: factBrief.claims.map((claim) => ({ ...claim, status: claim.status === "supported" ? "human_review" as const : claim.status, note: "科学审计工具暂时不可用，未将该主张视为已核实。" })) };
-            await recordTrace({ userId, traceId, stage: "science.audit_unavailable", payload: { code: publicErrorCode(error) } });
-          }
-        }
-      }
-    } catch (error) {
-      await recordTrace({ userId, traceId, stage: "fact.verification_unavailable", payload: { code: publicErrorCode(error) } });
-    }
-  }
-
-  await recordTrace({
-    userId,
-    traceId,
-    stage: "dialogue.context_compiled",
-    payload: { gateway: gateway.id, skillVersion: activeSkill?.version, memoryIds: memories.map((memory) => memory.id), riskAssessment, responsePlan, factBrief, compiled },
-  });
-
   const assistantMessageId = crypto.randomUUID();
+
+  // 立即返回 SSE 流：向量化、记忆检索、事实路由与联网查证全部在流内进行，
+  // 用户端第一时间收到 message.started 并出现输入指示，不再等待整段前置链路。
   const stream = new ReadableStream({
     async start(controller) {
-      const send = (event: StreamEvent) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      let closed = false;
+      const send = (event: StreamEvent) => {
+        if (closed || request.signal.aborted) return;
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+        } catch {
+          closed = true;
+        }
+      };
       let output = "";
-      let sources: Array<{ title: string; url: string; siteName?: string }> = [...verifiedSources];
+      let sources: Array<{ title: string; url: string; siteName?: string }> = [];
       let completedMeta: any = null;
       try {
         send({ type: "message.started", messageId: assistantMessageId, traceId });
+
+        let queryEmbedding: number[] | undefined;
+        try {
+          const embedded = await gateway.embed([input.content], { signal: request.signal });
+          queryEmbedding = embedded.data[0];
+          await recordModelCallMeta({ userId, traceId, conversationId, adapterId: gateway.id, meta: embedded.meta });
+        } catch {
+          await recordTrace({ userId, traceId, stage: "retrieval.degraded", payload: { message: "向量服务不可用，已降级为关键词检索。" } });
+        }
+
+        const [messages, profileResult, memoryResult, summary, skillResult] = await Promise.all([
+          listMessages(userId, conversationId, 24),
+          callMemoryMcp<{ profile: ProfileSnapshot | null }>({ tool: "profile_get_current", userId, traceId }),
+          callMemoryMcp<{ memories: MemoryRecord[] }>({ tool: "memory_search", userId, traceId, arguments: { query: input.content, limit: 8, ...(queryEmbedding ? { queryEmbedding } : {}) } }),
+          getConversationSummary(userId, conversationId),
+          callMemoryMcp<any>({ tool: "personal_skill_get_active", userId, traceId }),
+        ]);
+        const memories = memoryResult.memories;
+        const activeSkill = skillResult.skill;
         if (memories.length) {
           send({ type: "tool.started", name: "memory_search" });
           send({ type: "tool.completed", name: "memory_search" });
         }
+        const compiled = compileContext({
+          foundationInstructions: composeFoundationInstructions(["zhiwei-persona", "dialogue-orchestrator", "fact-and-tool-use", "scientific-answering", "risk-and-boundary", "privacy-and-withdrawal"]),
+          personalSkill: activeSkill?.content as PersonalSkill,
+          profile: profileResult.profile,
+          memories,
+          sessionSummary: summary,
+          messages,
+          maxInputTokens: Math.min(18_000, gateway.capabilities.maxContextTokens - 2_000),
+        });
+
+        let factBrief: FactBriefOutput | null = null;
+        let scienceMode = false;
+        let responsePlan: Pick<FactRoutingOutput, "responseMode" | "depth" | "physicalSymptom" | "reason"> | undefined;
+        if (riskAssessment.level === "ordinary") {
+          try {
+            send({ type: "tool.started", name: "fact_routing" });
+            const route = await gateway.routeFacts(input.content, { signal: request.signal });
+            scienceMode = route.data.scientific;
+            responsePlan = {
+              responseMode: route.data.responseMode,
+              depth: route.data.depth,
+              physicalSymptom: route.data.physicalSymptom,
+              reason: route.data.reason,
+            };
+            await recordModelCallMeta({ userId, traceId, conversationId, adapterId: gateway.id, meta: route.meta });
+            if (route.data.needsSearch || route.data.scientific) {
+              send({ type: "tool.started", name: "fact_search" });
+              const brief = await gateway.buildFactBrief({ content: input.content, route: route.data }, { signal: request.signal });
+              factBrief = brief.data;
+              sources = uniqueSources([...sources, ...brief.meta.sources]);
+              await recordModelCallMeta({ userId, traceId, conversationId, adapterId: gateway.id, meta: brief.meta });
+              if (route.data.scientific && factBrief.claims.length) {
+                try {
+                  const audit = await callScienceMcp<any>({
+                    tool: "science_claim_audit",
+                    userId,
+                    traceId,
+                    arguments: {
+                      impact: route.data.impact === "high" ? "high" : "medium",
+                      sources: brief.meta.sources.map((source) => ({ title: source.title, url: source.url, publisher: source.siteName, kind: "unknown" })),
+                      claims: factBrief.claims.map((claim) => ({ ...claim, sourceIndices: claim.sourceIndices.map((index) => index - 1) })),
+                    },
+                  });
+                  factBrief = {
+                    ...factBrief,
+                    claims: audit.auditedClaims.map((claim: any) => ({
+                      text: claim.text,
+                      status: claim.status,
+                      sourceIndices: claim.sourceIndices.map((index: number) => index + 1),
+                      note: claim.auditReason ?? claim.note,
+                    })),
+                  };
+                  await recordTrace({ userId, traceId, stage: "science.claims_audited", payload: audit });
+                } catch (error) {
+                  factBrief = { ...factBrief, claims: factBrief.claims.map((claim) => ({ ...claim, status: claim.status === "supported" ? "human_review" as const : claim.status, note: "科学审计工具暂时不可用，未将该主张视为已核实。" })) };
+                  await recordTrace({ userId, traceId, stage: "science.audit_unavailable", payload: { code: publicErrorCode(error) } });
+                }
+              }
+              send({ type: "tool.completed", name: "fact_search" });
+            }
+            send({ type: "tool.completed", name: "fact_routing" });
+          } catch (error) {
+            await recordTrace({ userId, traceId, stage: "fact.verification_unavailable", payload: { code: publicErrorCode(error) } });
+          }
+        }
+
+        await recordTrace({
+          userId,
+          traceId,
+          stage: "dialogue.context_compiled",
+          payload: { gateway: gateway.id, skillVersion: activeSkill?.version, memoryIds: memories.map((memory) => memory.id), riskAssessment, responsePlan, factBrief, compiled },
+        });
+
         for await (const event of gateway.streamDialogue({
           userId,
           conversationId,
@@ -194,7 +215,12 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
         }
         send({ type: "error", code: publicErrorCode(error), message: publicErrorMessage(error) });
       } finally {
-        controller.close();
+        closed = true;
+        try {
+          controller.close();
+        } catch {
+          // 流已被取消时 close 会抛出，忽略即可。
+        }
       }
     },
   });

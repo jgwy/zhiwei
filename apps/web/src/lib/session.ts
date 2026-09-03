@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { cookies } from "next/headers";
+import { resolveSecret } from "@zhiwei/core";
 
 export const USER_COOKIE = "zhiwei_uid";
 
@@ -18,9 +19,10 @@ export async function getSessionUserId(): Promise<string> {
 }
 
 function sign(value: string): string {
-  const secret =
-    process.env.ANON_COOKIE_SECRET ??
-    "local-development-cookie-secret-change-before-deploy";
+  const secret = resolveSecret(
+    "ANON_COOKIE_SECRET",
+    "local-development-cookie-secret-change-before-deploy",
+  );
   return createHmac("sha256", secret).update(value).digest("base64url");
 }
 

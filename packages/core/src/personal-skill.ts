@@ -39,12 +39,13 @@ export function normalizeDimensionWeights(
   if (!total) {
     return {
       basic: 0.12,
-      goal: 0.18,
+      goal: 0.16,
       interest: 0.12,
       expression: 0.16,
       emotion: 0.12,
-      experience: 0.12,
-      challenge: 0.18,
+      experience: 0.1,
+      challenge: 0.16,
+      boundary: 0.06,
     };
   }
   return Object.fromEntries(entries.map(([key, value]) => [key, value / total]));
