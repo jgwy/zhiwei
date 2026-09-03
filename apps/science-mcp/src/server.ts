@@ -4,12 +4,21 @@ import {
   ScienceImpactSchema,
   ScienceSourceSchema,
   recordMcpCall,
+  MCP_PROTOCOL_VERSION,
+  completeMcpResult,
+  mcpRpcError as rpcError,
+  mcpRpcResult as rpcResult,
+  mcpToolResult,
+  readMcpBody as readBody,
+  recordMcpAudit,
+  sendMcpJson as sendJson,
 } from "@zhiwei/core";
 import { z } from "zod";
 import { assessScienceSources, auditScienceClaims } from "./audit";
 
 const port = Number(process.env.SCIENCE_MCP_PORT ?? 4200);
 const token = process.env.INTERNAL_MCP_TOKEN ?? "local-development-mcp-token";
+const serverInfo = { name: "zhiwei-science-mcp", version: "0.2.0" };
 
 const toolSchemas = {
   science_source_assess: z.object({
@@ -23,6 +32,7 @@ const toolSchemas = {
 } as const;
 
 const server = createServer(async (request, response) => {
+  let requestId: unknown = null;
   try {
     if (request.url === "/health") {
       sendJson(response, 200, { ok: true, service: "zhiwei-science-mcp" });
@@ -36,6 +46,13 @@ const server = createServer(async (request, response) => {
       sendJson(response, 401, rpcError(null, -32001, "未通过内部服务认证"));
       return;
     }
+    if (request.headers["mcp-protocol-version"] !== MCP_PROTOCOL_VERSION) {
+      sendJson(response, 400, {
+        ...rpcError(null, -32022, "unsupported_protocol_version"),
+        supported: [MCP_PROTOCOL_VERSION],
+      });
+      return;
+    }
     const origin = request.headers.origin;
     if (origin && !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
       sendJson(response, 403, rpcError(null, -32002, "不允许该请求来源"));
@@ -43,6 +60,7 @@ const server = createServer(async (request, response) => {
     }
 
     const body = JSON.parse(await readBody(request));
+    requestId = body.id ?? null;
     const methodHeader = request.headers["mcp-method"];
     if (methodHeader !== body.method) {
       sendJson(response, 400, rpcError(body.id ?? null, -32600, "Mcp-Method 与请求体不一致"));
@@ -50,23 +68,24 @@ const server = createServer(async (request, response) => {
     }
 
     if (body.method === "server/discover") {
-      sendJson(response, 200, rpcResult(body.id, {
-        protocolVersion: "2026-07-28",
-        serverInfo: { name: "zhiwei-science-mcp", version: "0.1.0" },
+      sendJson(response, 200, rpcResult(body.id, completeMcpResult(serverInfo, {
+        supportedVersions: [MCP_PROTOCOL_VERSION],
         capabilities: { tools: {} },
-      }));
+        ttlMs: 300_000,
+        cacheScope: "private",
+      })));
       return;
     }
     if (body.method === "tools/list") {
-      sendJson(response, 200, rpcResult(body.id, {
+      sendJson(response, 200, rpcResult(body.id, completeMcpResult(serverInfo, {
         tools: Object.entries(toolSchemas).map(([name, schema]) => ({
           name,
           description: toolDescription(name),
           inputSchema: z.toJSONSchema(schema),
         })),
         ttlMs: 300_000,
-        cacheScope: "global",
-      }));
+        cacheScope: "private",
+      })));
       return;
     }
     if (body.method !== "tools/call") {
@@ -92,20 +111,21 @@ const server = createServer(async (request, response) => {
     const args = schema.parse(body.params?.arguments ?? {}) as any;
     const started = Date.now();
     const result = invokeTool(toolName, args);
-    await recordMcpCall({
+    await recordMcpAudit("Science MCP", () => recordMcpCall({
       userId,
       traceId: typeof request.headers.traceparent === "string" ? request.headers.traceparent : undefined,
       toolName,
       arguments: args,
       result: result as Record<string, unknown>,
       durationMs: Date.now() - started,
-    });
-    sendJson(response, 200, rpcResult(body.id, result));
+    }));
+    sendJson(response, 200, rpcResult(body.id, mcpToolResult(serverInfo, result)));
   } catch (error) {
     const message = error instanceof z.ZodError
       ? "科学审计参数不符合工具约定"
       : error instanceof Error ? error.message : String(error);
-    sendJson(response, 500, rpcError(null, -32603, message));
+    const invalid = error instanceof z.ZodError || error instanceof SyntaxError;
+    sendJson(response, invalid ? 400 : 500, rpcError(requestId, invalid ? -32602 : -32603, message));
   }
 });
 
@@ -128,30 +148,4 @@ function toolDescription(name: string): string {
     science_claim_audit: "审计原子科学主张与从 0 开始的来源索引；高影响主张缺少权威一手证据时转为人工复核。",
   };
   return descriptions[name] ?? name;
-}
-
-function readBody(request: import("node:http").IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let body = "";
-    request.setEncoding("utf8");
-    request.on("data", (chunk) => {
-      body += chunk;
-      if (body.length > 2_000_000) request.destroy(new Error("请求体过大"));
-    });
-    request.on("end", () => resolve(body));
-    request.on("error", reject);
-  });
-}
-
-function rpcResult(id: unknown, result: unknown) {
-  return { jsonrpc: "2.0", id, result };
-}
-
-function rpcError(id: unknown, code: number, message: string) {
-  return { jsonrpc: "2.0", id, error: { code, message } };
-}
-
-function sendJson(response: import("node:http").ServerResponse, status: number, payload: unknown) {
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
-  response.end(JSON.stringify(payload));
 }

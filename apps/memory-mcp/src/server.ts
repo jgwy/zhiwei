@@ -16,6 +16,8 @@ import {
   assertUserExists,
   getActiveSkill,
   getProfileForContext,
+  getReflectionControlState,
+  getLatestProfile,
   listMemoriesForUser,
   publishPersonalSkill,
   recordMcpCall,
@@ -24,12 +26,20 @@ import {
   searchMemories,
   setMemoryEmbedding,
   withdrawMemory,
+  MCP_PROTOCOL_VERSION,
+  completeMcpResult,
+  mcpRpcError as rpcError,
+  mcpRpcResult as rpcResult,
+  mcpToolResult,
+  readMcpBody as readBody,
+  recordMcpAudit,
+  sendMcpJson as sendJson,
 } from "@zhiwei/core";
 import { z } from "zod";
 
 const port = Number(process.env.MCP_PORT ?? 4100);
 const token = process.env.INTERNAL_MCP_TOKEN ?? "local-development-mcp-token";
-const protocolVersion = "2026-07-28";
+const protocolVersion = MCP_PROTOCOL_VERSION;
 const serverInfo = { name: "zhiwei-memory-mcp", version: "0.2.0" };
 
 const toolSchemas = {
@@ -38,6 +48,9 @@ const toolSchemas = {
   memory_commit_reflection: z.object({
     conversationId: z.string().uuid(),
     sourceMessageId: z.string().uuid(),
+    sourceMessageIds: z.array(z.string().uuid()).max(3).optional(),
+    expectedMutationCursor: z.number().int().nonnegative().optional(),
+    summaryEvidenceMessageIds: z.array(z.string().uuid()).max(3).optional(),
     reflection: MemoryReflectionCommitSchema,
     embeddings: z.array(z.array(z.number()).length(1024).nullable()).max(3).optional(),
     idempotencyKey: z.string().trim().min(8).max(200),
@@ -47,7 +60,7 @@ const toolSchemas = {
   memory_set_embedding: MemoryEmbeddingInputSchema,
   memory_commit_consolidation: MemoryConsolidationInputSchema,
   memory_restore_version: MemoryRestoreInputSchema,
-  profile_get_current: z.object({}),
+  profile_get_current: z.object({ forDisplay: z.boolean().optional() }),
   profile_commit_snapshot: z.object({
     summary: z.string().min(1).max(1_600),
     dimensionWeights: DimensionWeightsSchema,
@@ -57,7 +70,10 @@ const toolSchemas = {
     idempotencyKey: z.string().trim().min(8).max(200),
   }),
   personal_skill_get_active: z.object({}),
-  personal_skill_publish_rewrite: z.object({ skill: PersonalSkillSchema }),
+  personal_skill_publish_rewrite: z.object({
+    skill: PersonalSkillSchema,
+    idempotencyKey: z.string().trim().min(8).max(200).optional(),
+  }),
 } as const;
 
 const server = createServer(async (request, response) => {
@@ -98,7 +114,7 @@ const server = createServer(async (request, response) => {
     }
 
     if (body.method === "server/discover") {
-      sendJson(response, 200, rpcResult(body.id, completeResult({
+      sendJson(response, 200, rpcResult(body.id, completeMcpResult(serverInfo, {
         supportedVersions: [protocolVersion],
         capabilities: { tools: {} },
         ttlMs: 300_000,
@@ -109,7 +125,7 @@ const server = createServer(async (request, response) => {
 
     if (body.method === "tools/list") {
       const developerCaller = request.headers["x-zhiwei-role"] === "developer" && process.env.DEV_MODE === "true";
-      sendJson(response, 200, rpcResult(body.id, completeResult({
+      sendJson(response, 200, rpcResult(body.id, completeMcpResult(serverInfo, {
         tools: Object.entries(toolSchemas).filter(([name]) => name !== "memory_restore_version" || developerCaller).map(([name, schema]) => ({
           name,
           description: toolDescription(name),
@@ -153,19 +169,15 @@ const server = createServer(async (request, response) => {
     const started = Date.now();
     const traceId = typeof request.headers.traceparent === "string" ? request.headers.traceparent : undefined;
     const result = await invokeTool(toolName, userId, args, traceId);
-    try {
-      await recordMcpCall({
+    await recordMcpAudit("Memory MCP", () => recordMcpCall({
         userId,
         traceId,
         toolName,
         arguments: args,
         result: result as Record<string, unknown>,
         durationMs: Date.now() - started,
-      });
-    } catch (auditError) {
-      process.stderr.write(`Memory MCP 审计记录失败：${auditError instanceof Error ? auditError.message : String(auditError)}\n`);
-    }
-    sendJson(response, 200, rpcResult(body.id, toolResult(result)));
+    }));
+    sendJson(response, 200, rpcResult(body.id, mcpToolResult(serverInfo, result)));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const invalid = error instanceof z.ZodError || error instanceof SyntaxError;
@@ -189,8 +201,10 @@ server.listen(port, "0.0.0.0", () => {
 
 async function invokeTool(tool: keyof typeof toolSchemas, userId: string, args: any, traceId?: string) {
   switch (tool) {
-    case "memory_search":
-      return { memories: await searchMemories(userId, args.query, args.limit, args.queryEmbedding) };
+    case "memory_search": {
+      const memories=await searchMemories(userId,args.query,args.limit,args.queryEmbedding,args.purpose);
+      return {memories,...(args.purpose==="reflection"?await getReflectionControlState(userId,args.query,args.afterEvidenceAt):{})};
+    }
     case "memory_list":
       return { memories: await listMemoriesForUser(userId, args) };
     case "memory_commit_reflection":
@@ -206,21 +220,21 @@ async function invokeTool(tool: keyof typeof toolSchemas, userId: string, args: 
     case "memory_restore_version":
       return restoreMemoryVersion({ userId, traceId, ...args });
     case "profile_get_current":
-      return { profile: await getProfileForContext(userId) };
+      return { profile: await (args.forDisplay ? getLatestProfile(userId) : getProfileForContext(userId)) };
     case "profile_commit_snapshot":
       return { profile: await commitProfileSnapshot({ userId, ...args }) };
     case "personal_skill_get_active":
       return { skill: await getActiveSkill(userId) };
     case "personal_skill_publish_rewrite":
       return {
-        version: await publishPersonalSkill({ userId, skill: args.skill, source: "model" }),
+        version: await publishPersonalSkill({ userId, skill: args.skill, source: "model", idempotencyKey: args.idempotencyKey }),
       };
   }
 }
 
 function toolDescription(name: string): string {
   const descriptions: Record<string, string> = {
-    memory_search: "在当前用户已授权的活动记忆中检索最多八条相关内容。",
+    memory_search: "检索当前用户已授权的活动记忆：对话最多八条，后台反思候选最多十二条。",
     memory_list: "按层级和状态列出当前用户自己的记忆版本。",
     memory_commit_reflection: "以幂等方式提交模型生成的记忆动作和会话观察。",
     memory_withdraw: "按记忆和版本撤回当前活动认识。",
@@ -234,45 +248,4 @@ function toolDescription(name: string): string {
     personal_skill_publish_rewrite: "发布模型重写的完整个人 Skill，并立即激活新版本。",
   };
   return descriptions[name] ?? name;
-}
-
-function readBody(request: import("node:http").IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let body = "";
-    request.setEncoding("utf8");
-    request.on("data", (chunk) => {
-      body += chunk;
-      if (body.length > 2_000_000) request.destroy(new Error("request_too_large"));
-    });
-    request.on("end", () => resolve(body));
-    request.on("error", reject);
-  });
-}
-
-function rpcResult(id: unknown, result: unknown) {
-  return { jsonrpc: "2.0", id, result };
-}
-
-function completeResult<T extends Record<string, unknown>>(result: T) {
-  return {
-    resultType: "complete" as const,
-    ...result,
-    _meta: { "io.modelcontextprotocol/serverInfo": serverInfo },
-  };
-}
-
-function toolResult(result: unknown) {
-  return completeResult({
-    content: [{ type: "text", text: JSON.stringify(result) }],
-    structuredContent: result,
-  });
-}
-
-function rpcError(id: unknown, code: number, message: string) {
-  return { jsonrpc: "2.0", id, error: { code, message } };
-}
-
-function sendJson(response: import("node:http").ServerResponse, status: number, payload: unknown) {
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
-  response.end(JSON.stringify(payload));
 }
