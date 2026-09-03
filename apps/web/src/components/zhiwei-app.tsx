@@ -12,6 +12,7 @@ import {
   Menu,
   MessageCircleMore,
   MoreHorizontal,
+  Pencil,
   PanelRightClose,
   PanelRightOpen,
   Plus,
@@ -21,7 +22,7 @@ import {
   ThumbsUp,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import type { ChatMessage } from "@zhiwei/core/client";
 import type { BootstrapData, ConversationView } from "@/lib/client-types";
 import { readSseStream, formatTime } from "@/lib/utils";
@@ -41,6 +42,7 @@ export function ZhiweiApp() {
   const [mobileMenu, setMobileMenu] = useState<"conversations" | "insights" | null>(null);
   const [developerMode, setDeveloperMode] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [renameTarget, setRenameTarget] = useState<ConversationView | null>(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [receipts, setReceipts] = useState<Record<string, { count: number; open: boolean }>>({});
@@ -138,19 +140,25 @@ export function ZhiweiApp() {
     setMobileMenu(null);
   }
 
-  async function renameConversation(conversation: ConversationView) {
-    const title = window.prompt("给这段对话起个名字", conversation.title)?.trim();
-    if (!title || title === conversation.title) return;
-    const response = await fetch(`/api/conversations/${conversation.id}`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ title }),
-    });
-    if (!response.ok) {
-      setToast(await responseMessage(response, "标题没有修改成功，请重试。"));
-      return;
+  async function renameConversation(conversation: ConversationView, nextTitle: string) {
+    const title = nextTitle.trim();
+    if (!title || title === conversation.title) return true;
+    try {
+      const response = await fetch(`/api/conversations/${conversation.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title }),
+      });
+      if (!response.ok) {
+        setToast(await responseMessage(response, "标题没有修改成功，请重试。"));
+        return false;
+      }
+      setData((current) => current ? { ...current, conversations: current.conversations.map((item) => item.id === conversation.id ? { ...item, title, titleSource: "manual", titleLocked: true } : item) } : current);
+      return true;
+    } catch {
+      setToast("标题没有修改成功，请检查网络后重试。");
+      return false;
     }
-    setData((current) => current ? { ...current, conversations: current.conversations.map((item) => item.id === conversation.id ? { ...item, title, titleSource: "manual", titleLocked: true } : item) } : current);
   }
 
   async function sendMessage(content = input) {
@@ -285,7 +293,7 @@ export function ZhiweiApp() {
         <div className="sidebar-brand"><span>知微</span><button className="mobile-close" onClick={() => setMobileMenu(null)}><X size={18} /></button></div>
         <Button variant="secondary" className="new-chat-button" onClick={() => void createConversation()}><Plus size={17} /> 新的对话</Button>
         <nav className="conversation-list">
-          {data.conversations.map((conversation) => <div className={conversation.id === activeId ? "conversation-row active" : "conversation-row"} key={conversation.id}><button className="conversation-open" onClick={() => { setActiveId(conversation.id); setMobileMenu(null); }}><MessageCircleMore size={16} /><span>{conversation.title}</span></button><button className="conversation-more" onClick={() => void renameConversation(conversation)} aria-label={`修改对话标题：${conversation.title}`}><MoreHorizontal size={15} /></button></div>)}
+          {data.conversations.map((conversation) => <div className={conversation.id === activeId ? "conversation-row active" : "conversation-row"} key={conversation.id}><button className="conversation-open" onClick={() => { setActiveId(conversation.id); setMobileMenu(null); }}><MessageCircleMore size={16} /><span>{conversation.title}</span></button><button className="conversation-more" onClick={() => setRenameTarget(conversation)} aria-label={`管理对话：${conversation.title}`} aria-haspopup="dialog"><MoreHorizontal size={16} /></button></div>)}
         </nav>
         <div className="sidebar-footer">
           <button ref={aboutTriggerRef} onClick={openAbout}><Info size={16} /><span>关于</span></button>
@@ -350,8 +358,48 @@ export function ZhiweiApp() {
       </div>
       {mobileMenu ? <button className="mobile-scrim" onClick={() => setMobileMenu(null)} aria-label="关闭面板" /> : null}
       {aboutOpen ? <AboutDialog onClose={closeAbout} /> : null}
+      {renameTarget ? <RenameConversationDialog conversation={renameTarget} onClose={() => setRenameTarget(null)} onSave={async (title) => {
+        const saved = await renameConversation(renameTarget, title);
+        if (saved) setRenameTarget(null);
+        return saved;
+      }} /> : null}
       {toast ? <div className="toast" aria-live="polite"><Check size={16} />{toast}</div> : null}
     </main>
+  );
+}
+
+function RenameConversationDialog({ conversation, onClose, onSave }: { conversation: ConversationView; onClose: () => void; onSave: (title: string) => Promise<boolean> }) {
+  const dialogRef = useRef<HTMLDialogElement | null>(null);
+  const [title, setTitle] = useState(conversation.title);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    dialog.showModal();
+    return () => {
+      if (dialog.open) dialog.close();
+    };
+  }, []);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const nextTitle = title.trim();
+    if (!nextTitle || saving) return;
+    setSaving(true);
+    const saved = await onSave(nextTitle);
+    if (!saved) setSaving(false);
+  }
+
+  return (
+    <dialog ref={dialogRef} className="rename-dialog" aria-labelledby="rename-dialog-title" onCancel={(event) => { event.preventDefault(); onClose(); }} onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <form className="rename-dialog-card" onSubmit={submit}>
+        <div className="rename-dialog-heading"><span><Pencil size={16} /></span><div><h2 id="rename-dialog-title">修改对话名称</h2><p>手动修改后，知微不会再自动覆盖这个标题。</p></div></div>
+        <label htmlFor="conversation-title">对话名称</label>
+        <input id="conversation-title" value={title} onChange={(event) => setTitle(event.target.value)} onFocus={(event) => event.currentTarget.select()} maxLength={36} autoFocus />
+        <div className="rename-dialog-actions"><button type="button" onClick={onClose} disabled={saving}>取消</button><button type="submit" disabled={!title.trim() || saving}>{saving ? "正在保存…" : "保存"}</button></div>
+      </form>
+    </dialog>
   );
 }
 
