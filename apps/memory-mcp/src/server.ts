@@ -10,6 +10,8 @@ import {
   publishPersonalSkill,
   recordMcpCall,
   searchMemories,
+  updateMemory,
+  confirmMemory,
   withdrawMemory,
 } from "@zhiwei/core";
 import { z } from "zod";
@@ -33,6 +35,15 @@ const toolSchemas = {
     memoryId: z.string().uuid(),
     reason: z.string().max(300).optional(),
   }),
+  memory_update: z.object({
+    memoryId: z.string().uuid(),
+    content: z.string().trim().min(1).max(600),
+    category: z.enum(["basic", "goal", "interest", "expression", "emotion", "experience", "challenge", "boundary"]).optional(),
+    tier: z.enum(["short", "long"]).optional(),
+    validUntil: z.string().datetime().nullable().optional(),
+    reason: z.string().trim().max(500).optional(),
+  }),
+  memory_confirm: z.object({ memoryId: z.string().uuid() }),
   profile_get_current: z.object({}),
   profile_commit_snapshot: z.object({
     summary: z.string().min(1).max(1_600),
@@ -142,6 +153,10 @@ async function invokeTool(tool: keyof typeof toolSchemas, userId: string, args: 
       return commitReflection({ userId, ...args });
     case "memory_withdraw":
       return withdrawMemory({ userId, ...args });
+    case "memory_update":
+      return updateMemory({ userId, ...args });
+    case "memory_confirm":
+      return confirmMemory({ userId, ...args });
     case "profile_get_current":
       return { profile: await getLatestProfile(userId) };
     case "profile_commit_snapshot":
@@ -160,6 +175,8 @@ function toolDescription(name: string): string {
     memory_search: "在当前用户的活动记忆中检索最多八条相关内容。",
     memory_commit_reflection: "提交由模型生成的记忆、画像、情绪和会话摘要。",
     memory_withdraw: "撤回当前用户的一条活动记忆，使其不再参与检索。",
+    memory_update: "由用户直接编辑一条活动记忆，并创建可追溯的确认版本。",
+    memory_confirm: "确认一条活动记忆，使其作为用户确认的认识参与后续检索。",
     profile_get_current: "读取当前用户最新画像快照。",
     profile_commit_snapshot: "提交模型生成的画像综述与维度权重。",
     personal_skill_get_active: "读取当前用户正在生效的个人 Skill。",

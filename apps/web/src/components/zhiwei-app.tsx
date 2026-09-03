@@ -224,6 +224,7 @@ export function ZhiweiApp() {
   }
 
   async function withdrawMemory(memoryId: string) {
+    if (!window.confirm("撤回后，知微将不再使用这条认识。确定撤回吗？")) return;
     const response = await fetch(`/api/memories/${memoryId}/withdraw`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -231,6 +232,24 @@ export function ZhiweiApp() {
     });
     if (!response.ok) throw new Error(await responseMessage(response, "这条认识没有撤回成功，请重试。"));
     setToast("这条认识已撤回，之后不会再用于回答。");
+    await load();
+  }
+
+  async function updateMemory(memoryId: string, input: { content: string; category?: string; tier?: "short" | "long" }) {
+    const response = await fetch(`/api/memories/${memoryId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    if (!response.ok) throw new Error(await responseMessage(response, "这条认识没有修改成功，请重试。"));
+    setToast("这条认识已更新，并标记为你确认的内容。");
+    await load();
+  }
+
+  async function confirmMemory(memoryId: string) {
+    const response = await fetch(`/api/memories/${memoryId}/confirm`, { method: "POST" });
+    if (!response.ok) throw new Error(await responseMessage(response, "这条认识没有确认成功，请重试。"));
+    setToast("已确认这条认识，之后会更稳定地用于回答。");
     await load();
   }
 
@@ -343,6 +362,8 @@ export function ZhiweiApp() {
         <InsightPanel
           data={data}
           onMemoryClick={startMemoryCorrection}
+          onMemoryUpdate={updateMemory}
+          onMemoryConfirm={confirmMemory}
           onSettings={(settings) => void updateSettings(settings)}
           onWithdraw={(memoryId) => void withdrawMemory(memoryId)}
           onDeleteAll={(confirmation) => void deleteAllData(confirmation)}

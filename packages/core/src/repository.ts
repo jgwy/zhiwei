@@ -291,7 +291,9 @@ export async function failJob(job: any, error: unknown): Promise<void> {
 export async function getActiveMemories(userId: string): Promise<MemoryRecord[]> {
   const result = await getPool().query(
     `SELECT m.id, mv.id AS version_id, mv.category, mv.content, mv.tier,
-            mv.confidence, mv.valid_until, mv.reason, mv.created_at
+            mv.confidence, mv.valid_until, mv.reason, mv.created_at,
+            mv.source_type, mv.scope, mv.sensitivity, mv.importance,
+            mv.evidence_quote, mv.last_confirmed_at, mv.last_used_at
      FROM memories m
      JOIN memory_versions mv ON mv.memory_id = m.id AND mv.is_active = true
      JOIN users u ON u.id = m.user_id
@@ -301,17 +303,7 @@ export async function getActiveMemories(userId: string): Promise<MemoryRecord[]>
      ORDER BY mv.confidence DESC, mv.created_at DESC LIMIT 100`,
     [userId],
   );
-  return result.rows.map((row) => ({
-    id: row.id,
-    versionId: row.version_id,
-    category: row.category,
-    content: row.content,
-    tier: row.tier,
-    confidence: Number(row.confidence),
-    validUntil: row.valid_until,
-    reason: row.reason,
-    createdAt: row.created_at,
-  }));
+  return result.rows.map(mapMemoryRow);
 }
 
 export async function searchMemories(
@@ -325,6 +317,8 @@ export async function searchMemories(
     const result = await getPool().query(
       `SELECT m.id, mv.id AS version_id, mv.category, mv.content, mv.tier,
               mv.confidence, mv.valid_until, mv.reason, mv.created_at,
+              mv.source_type, mv.scope, mv.sensitivity, mv.importance,
+              mv.evidence_quote, mv.last_confirmed_at, mv.last_used_at,
               1 - (mv.embedding_v2 <=> $2::vector) AS similarity
        FROM memories m
        JOIN memory_versions mv ON mv.memory_id = m.id AND mv.is_active = true
@@ -352,18 +346,15 @@ function rankHybridMemories(rows: any[], query: string, limit: number): MemoryRe
       : 0;
     const ageDays = Math.max(0, (now - new Date(row.created_at).getTime()) / 86_400_000);
     const freshness = Math.exp(-ageDays / 90);
-    const score = Number(row.similarity) * 0.55 + lexical * 0.15 + Number(row.confidence) * 0.15 + freshness * 0.1 + (row.tier === "long" ? 0.05 : 0);
+    const confirmationAgeDays = row.last_confirmed_at
+      ? Math.max(0, (now - new Date(row.last_confirmed_at).getTime()) / 86_400_000)
+      : 365;
+    const confirmationFreshness = Math.exp(-confirmationAgeDays / 180);
+    const sourceBoost = row.source_type === "explicit" ? 0.08 : row.source_type === "confirmed" ? 0.06 : 0;
+    const score = Number(row.similarity) * 0.5 + lexical * 0.16 + Number(row.confidence) * 0.14 + freshness * 0.08 + confirmationFreshness * 0.04 + Number(row.importance ?? 0.5) * 0.03 + sourceBoost + (row.tier === "long" ? 0.05 : 0);
     return { row, score };
   }).sort((a, b) => b.score - a.score).slice(0, limit).map(({ row }) => ({
-    id: row.id,
-    versionId: row.version_id,
-    category: row.category,
-    content: row.content,
-    tier: row.tier,
-    confidence: Number(row.confidence),
-    validUntil: row.valid_until,
-    reason: row.reason,
-    createdAt: row.created_at,
+    ...mapMemoryRow(row),
   }));
 }
 
@@ -383,6 +374,8 @@ export function rankMemories(
       score:
         memory.confidence * 2 +
         (memory.tier === "long" ? 0.35 : 0) +
+        (memory.sourceType === "explicit" ? 0.22 : memory.sourceType === "confirmed" ? 0.16 : 0) +
+        (memory.importance ?? 0.5) * 0.18 +
         terms.reduce(
           (sum, term) => sum + (memory.content.includes(term) ? 1 : 0),
           0,
@@ -529,8 +522,21 @@ export async function commitReflection(input: {
     const memoryEnabled = settings.memoryEnabled !== false;
 
     for (const [mutationIndex, mutation] of (memoryEnabled ? input.reflection.memories : []).entries()) {
+      const evidenceResult = await client.query(
+        `SELECT count(*)::int AS count FROM messages
+         WHERE id = ANY($1::uuid[]) AND user_id = $2 AND conversation_id = $3`,
+        [mutation.evidenceMessageIds, input.userId, input.conversationId],
+      );
+      if (Number(evidenceResult.rows[0]?.count ?? 0) !== mutation.evidenceMessageIds.length) {
+        throw new Error("记忆证据不属于当前用户或当前对话");
+      }
       const memoryId = mutation.memoryId ?? randomUUID();
       if (mutation.memoryId) {
+        const existing = await client.query(
+          `SELECT id FROM memories WHERE id = $1 AND user_id = $2 FOR UPDATE`,
+          [memoryId, input.userId],
+        );
+        if (!existing.rowCount) throw new Error("要更新的记忆不存在或不属于当前用户");
         await client.query(
           `UPDATE memory_versions SET is_active = false, status = 'superseded'
            WHERE memory_id = $1 AND user_id = $2 AND is_active = true`,
@@ -543,10 +549,16 @@ export async function commitReflection(input: {
         );
       }
       const versionId = randomUUID();
+      const confirmedAt = mutation.sourceType === "explicit" || mutation.sourceType === "confirmed"
+        ? new Date().toISOString()
+        : null;
       await client.query(
         `INSERT INTO memory_versions
-          (id, memory_id, user_id, category, content, tier, confidence, valid_until, reason, embedding_v2, is_active, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector, true, 'active')`,
+          (id, memory_id, user_id, category, content, tier, confidence, valid_until, reason,
+           embedding_v2, source_type, scope, sensitivity, importance, evidence_quote,
+           last_confirmed_at, is_active, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector,
+                 $11, $12, $13, $14, $15, $16, true, 'active')`,
         [
           versionId,
           memoryId,
@@ -560,6 +572,12 @@ export async function commitReflection(input: {
           input.embeddings?.[mutationIndex]?.length === 1024
             ? `[${input.embeddings[mutationIndex]!.join(",")}]`
             : null,
+          mutation.sourceType,
+          mutation.scope,
+          mutation.sensitivity,
+          mutation.importance,
+          mutation.evidenceQuote ?? null,
+          confirmedAt,
         ],
       );
       for (const evidenceId of mutation.evidenceMessageIds) {
@@ -569,6 +587,21 @@ export async function commitReflection(input: {
           [versionId, evidenceId, input.userId],
         );
       }
+      await recordMemoryEvent(client, {
+        userId: input.userId,
+        memoryId,
+        versionId,
+        eventType: mutation.operation === "promote" ? "promoted" : mutation.memoryId ? "superseded" : "created",
+        content: mutation.content,
+        payload: {
+          category: mutation.category,
+          operation: mutation.operation,
+          sourceType: mutation.sourceType,
+          scope: mutation.scope,
+          sensitivity: mutation.sensitivity,
+          importance: mutation.importance,
+        },
+      });
     }
 
     if (memoryEnabled && input.reflection.summaryChanged !== false) {
@@ -606,22 +639,14 @@ export async function commitReflection(input: {
     if (memoryEnabled && input.reflection.profileChanged !== false) {
       const memoriesResult = await client.query(
       `SELECT m.id, mv.id AS version_id, mv.category, mv.content, mv.tier,
-              mv.confidence, mv.valid_until, mv.reason, mv.created_at
+              mv.confidence, mv.valid_until, mv.reason, mv.created_at,
+              mv.source_type, mv.scope, mv.sensitivity, mv.importance,
+              mv.evidence_quote, mv.last_confirmed_at, mv.last_used_at
        FROM memories m JOIN memory_versions mv ON mv.memory_id = m.id AND mv.is_active = true
        WHERE m.user_id = $1`,
       [input.userId],
     );
-      const memories: MemoryRecord[] = memoriesResult.rows.map((row) => ({
-      id: row.id,
-      versionId: row.version_id,
-      category: row.category,
-      content: row.content,
-      tier: row.tier,
-      confidence: Number(row.confidence),
-      validUntil: row.valid_until,
-      reason: row.reason,
-      createdAt: row.created_at,
-    }));
+      const memories: MemoryRecord[] = memoriesResult.rows.map(mapMemoryRow);
       const feedback = await client.query(
       `SELECT
         count(*) FILTER (WHERE value = 'understood')::int AS positive,
@@ -769,6 +794,102 @@ export async function addFeedback(input: {
   return id;
 }
 
+export async function updateMemory(input: {
+  userId: string;
+  memoryId: string;
+  content: string;
+  category?: string;
+  tier?: "short" | "long";
+  validUntil?: string | null;
+  reason?: string;
+}) {
+  return withTransaction(async (client) => {
+    const currentResult = await client.query(
+      `SELECT m.id AS memory_id, mv.id AS version_id, mv.* FROM memories m
+       JOIN memory_versions mv ON mv.memory_id = m.id AND mv.is_active = true
+       WHERE m.id = $1 AND m.user_id = $2 FOR UPDATE`,
+      [input.memoryId, input.userId],
+    );
+    if (!currentResult.rowCount) throw new Error("找不到可编辑的活动记忆");
+    const current = currentResult.rows[0];
+    const versionId = randomUUID();
+    await client.query(
+      `UPDATE memory_versions SET is_active = false, status = 'superseded'
+       WHERE id = $1 AND user_id = $2`,
+      [current.version_id, input.userId],
+    );
+    await recordMemoryEvent(client, {
+      userId: input.userId,
+      memoryId: input.memoryId,
+      versionId: current.version_id,
+      eventType: "superseded",
+      content: current.content,
+      payload: { reason: "用户编辑生成了新的确认版本" },
+    });
+    const result = await client.query(
+      `INSERT INTO memory_versions
+        (id, memory_id, user_id, category, content, tier, confidence, valid_until, reason,
+         embedding_v2, source_type, scope, sensitivity, importance, evidence_quote,
+         last_confirmed_at, is_active, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL,
+               'confirmed', $10, $11, $12, $13, now(), true, 'active')
+       RETURNING *`,
+      [
+        versionId,
+        input.memoryId,
+        input.userId,
+        input.category ?? current.category,
+        input.content.trim(),
+        input.tier ?? current.tier,
+        1,
+        input.validUntil === undefined ? current.valid_until : input.validUntil,
+        input.reason ?? "用户主动修改了这条认识",
+        current.scope ?? "user",
+        current.sensitivity ?? "normal",
+        Number(current.importance ?? 0.5),
+        "用户编辑后的确认内容",
+      ],
+    );
+    const row = result.rows[0];
+    await recordMemoryEvent(client, {
+      userId: input.userId,
+      memoryId: input.memoryId,
+      versionId,
+      eventType: "updated",
+      content: input.content,
+      payload: { category: row.category, tier: row.tier, sourceType: "confirmed" },
+    });
+    return mapMemoryRow({ ...row, id: input.memoryId, version_id: versionId });
+  });
+}
+
+export async function confirmMemory(input: { userId: string; memoryId: string }) {
+  return withTransaction(async (client) => {
+    const result = await client.query(
+      `UPDATE memory_versions mv SET source_type = 'confirmed', last_confirmed_at = now()
+       FROM memories m
+       WHERE mv.memory_id = m.id AND mv.id = (
+         SELECT latest.id FROM memory_versions latest
+         WHERE latest.memory_id = m.id AND latest.user_id = $2 AND latest.is_active = true
+         ORDER BY latest.created_at DESC LIMIT 1
+       ) AND m.id = $1 AND m.user_id = $2
+       RETURNING mv.*`,
+      [input.memoryId, input.userId],
+    );
+    if (!result.rowCount) throw new Error("找不到可确认的活动记忆");
+    const row = result.rows[0];
+    await recordMemoryEvent(client, {
+      userId: input.userId,
+      memoryId: input.memoryId,
+      versionId: row.id,
+      eventType: "confirmed",
+      content: row.content,
+      payload: { sourceType: "confirmed" },
+    });
+    return mapMemoryRow({ ...row, id: input.memoryId, version_id: row.id });
+  });
+}
+
 export async function withdrawMemory(input: {
   userId: string;
   memoryId: string;
@@ -802,6 +923,14 @@ export async function withdrawMemory(input: {
         input.reason ?? "用户在画像界面主动撤回",
       ],
     );
+    await recordMemoryEvent(client, {
+      userId: input.userId,
+      memoryId: input.memoryId,
+      versionId: row.id,
+      eventType: "withdrawn",
+      content: row.content,
+      payload: { category: row.category, reason: input.reason ?? "用户在画像界面主动撤回" },
+    });
     return { withdrawalId, memoryId: input.memoryId, category: row.category };
   });
 }
@@ -1232,4 +1361,53 @@ function mapMessage(row: any): ChatMessage {
     createdAt: row.created_at,
     metadata: row.metadata ?? {},
   };
+}
+
+function mapMemoryRow(row: any): MemoryRecord {
+  return {
+    id: row.id,
+    versionId: row.version_id ?? row.id,
+    category: row.category,
+    content: row.content,
+    tier: row.tier,
+    confidence: Number(row.confidence),
+    validUntil: row.valid_until,
+    reason: row.reason,
+    status: row.status,
+    sourceType: row.source_type,
+    scope: row.scope,
+    sensitivity: row.sensitivity,
+    importance: row.importance == null ? undefined : Number(row.importance),
+    evidenceQuote: row.evidence_quote ?? null,
+    lastConfirmedAt: row.last_confirmed_at ?? null,
+    lastUsedAt: row.last_used_at ?? null,
+    createdAt: row.created_at,
+  };
+}
+
+async function recordMemoryEvent(
+  client: Pick<PoolClient, "query">,
+  input: {
+    userId: string;
+    memoryId?: string;
+    versionId?: string;
+    eventType: "created" | "updated" | "confirmed" | "promoted" | "superseded" | "withdrawn" | "expired" | "used";
+    content?: string;
+    payload?: Record<string, unknown>;
+  },
+) {
+  await client.query(
+    `INSERT INTO memory_events
+      (id, user_id, memory_id, version_id, event_type, content_hash, payload)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+    [
+      randomUUID(),
+      input.userId,
+      input.memoryId ?? null,
+      input.versionId ?? null,
+      input.eventType,
+      input.content ? createHash("sha256").update(input.content).digest("hex") : null,
+      JSON.stringify(input.payload ?? {}),
+    ],
+  );
 }

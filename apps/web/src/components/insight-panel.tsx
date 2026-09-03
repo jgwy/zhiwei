@@ -1,7 +1,7 @@
 "use client";
 
 import { LineChart, Line, ResponsiveContainer, YAxis, Tooltip } from "recharts";
-import { ChevronRight, Settings2, Undo2, Trash2 } from "lucide-react";
+import { Check, ChevronRight, Pencil, Settings2, ShieldCheck, Undo2, Trash2, X } from "lucide-react";
 import { useState } from "react";
 import type { BootstrapData } from "@/lib/client-types";
 import { categoryLabel } from "@zhiwei/core/client";
@@ -10,12 +10,16 @@ import { Toggle } from "@/components/ui/toggle";
 export function InsightPanel({
   data,
   onMemoryClick,
+  onMemoryUpdate,
+  onMemoryConfirm,
   onSettings,
   onWithdraw,
   onDeleteAll,
 }: {
   data: BootstrapData;
   onMemoryClick: (content: string) => void;
+  onMemoryUpdate: (memoryId: string, input: { content: string; category?: string; tier?: "short" | "long" }) => Promise<void>;
+  onMemoryConfirm: (memoryId: string) => Promise<void>;
   onSettings: (settings: Record<string, boolean>) => void;
   onWithdraw: (memoryId: string) => void;
   onDeleteAll: (confirmation: string) => void;
@@ -24,6 +28,25 @@ export function InsightPanel({
   const components = data.profile?.understanding;
   const settings = data.user.settings;
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [savingId, setSavingId] = useState<string | null>(null);
+
+  function beginEdit(memory: BootstrapData["memories"][number]) {
+    setEditingId(memory.id);
+    setDraft(memory.content);
+  }
+
+  async function saveEdit(memory: BootstrapData["memories"][number]) {
+    if (!draft.trim() || savingId) return;
+    setSavingId(memory.id);
+    try {
+      await onMemoryUpdate(memory.id, { content: draft.trim(), category: memory.category, tier: memory.tier });
+      setEditingId(null);
+    } finally {
+      setSavingId(null);
+    }
+  }
   return (
     <aside className="insight-panel">
       <div className="insight-heading">
@@ -86,13 +109,30 @@ export function InsightPanel({
         <div className="memory-list">
           {data.memories.slice(0, 6).map((memory) => (
             <div className="memory-row" key={memory.versionId}>
-              <button onClick={() => onMemoryClick(memory.content)}>
-                <span><small>{categoryLabel(memory.category)}</small>{memory.content}</span>
-                <ChevronRight size={15} />
-              </button>
-              <button className="withdraw-button" onClick={() => onWithdraw(memory.id)} aria-label={`撤回记忆：${memory.content}`} title="撤回这条认识">
-                <Undo2 size={13} />
-              </button>
+              {editingId === memory.id ? (
+                <div className="memory-editor">
+                  <textarea value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={600} rows={3} aria-label="编辑记忆内容" />
+                  <div className="memory-editor-actions">
+                    <button onClick={() => void saveEdit(memory)} disabled={!draft.trim() || savingId === memory.id} title="保存修改"><Check size={14} /> 保存</button>
+                    <button onClick={() => setEditingId(null)} disabled={savingId === memory.id} title="取消编辑"><X size={14} /> 取消</button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <button onClick={() => onMemoryClick(memory.content)}>
+                    <span>
+                      <small>{categoryLabel(memory.category)} · {memory.tier === "long" ? "长期" : "短期"} · {memory.sourceType === "explicit" ? "用户明确提供" : memory.sourceType === "confirmed" ? "用户已确认" : memory.sourceType === "system" ? "系统记录" : "对话推断"}</small>
+                      {memory.content}
+                    </span>
+                    <ChevronRight size={15} />
+                  </button>
+                  <div className="memory-actions">
+                    {memory.sourceType === "inferred" ? <button className="memory-action-button" onClick={() => void onMemoryConfirm(memory.id)} aria-label={`确认记忆：${memory.content}`} title="确认这条认识"><ShieldCheck size={13} /></button> : null}
+                    <button className="memory-action-button" onClick={() => beginEdit(memory)} aria-label={`编辑记忆：${memory.content}`} title="编辑这条认识"><Pencil size={13} /></button>
+                    <button className="withdraw-button" onClick={() => onWithdraw(memory.id)} aria-label={`撤回记忆：${memory.content}`} title="撤回这条认识"><Undo2 size={13} /></button>
+                  </div>
+                </>
+              )}
             </div>
           ))}
         </div>

@@ -12,14 +12,16 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { jsonError } from "@/lib/http";
 import { getSessionUserId } from "@/lib/session";
+import { isNoDbMode, withdrawNoDbMemory } from "@/lib/no-db-store";
 
 const InputSchema = z.object({ reason: z.string().max(300).optional() });
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
-    const userId = await getSessionUserId();
     const { id } = await context.params;
     const input = InputSchema.parse(await request.json().catch(() => ({})));
+    if (isNoDbMode()) return NextResponse.json({ withdrawn: true, ...withdrawNoDbMemory(id) });
+    const userId = await getSessionUserId();
     const traceId = crypto.randomUUID();
     const withdrawal = await callMemoryMcp<any>({ tool: "memory_withdraw", userId, traceId, arguments: { memoryId: id, reason: input.reason } });
     try {

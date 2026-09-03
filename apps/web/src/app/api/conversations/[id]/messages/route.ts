@@ -23,6 +23,7 @@ import { getModelGateway } from "@zhiwei/model-gateway";
 import { composeFoundationInstructions } from "@zhiwei/skills";
 import { z } from "zod";
 import { getSessionUserId } from "@/lib/session";
+import { addNoDbMessage, commitNoDbMemories, isNoDbMode, listNoDbConversations } from "@/lib/no-db-store";
 
 const InputSchema = z.object({ content: z.string().trim().min(1).max(8_000) });
 const encoder = new TextEncoder();
@@ -36,6 +37,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 }
 
 async function handlePost(request: Request, context: { params: Promise<{ id: string }> }) {
+  if (isNoDbMode()) return handleNoDbPost(request, context);
   const userId = await getSessionUserId();
   const { id: conversationId } = await context.params;
   const input = InputSchema.parse(await request.json());
@@ -199,6 +201,72 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
     },
   });
 
+  return new Response(stream, { headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-transform", connection: "keep-alive", "x-accel-buffering": "no" } });
+}
+
+async function handleNoDbPost(request: Request, context: { params: Promise<{ id: string }> }) {
+  const userId = "local-user";
+  const { id: conversationId } = await context.params;
+  const input = InputSchema.parse(await request.json());
+  const conversation = listNoDbConversations().find((item) => item.id === conversationId);
+  if (!conversation) return new Response("这段对话已经不可用，请新建一段对话。", { status: 404 });
+
+  const traceId = crypto.randomUUID();
+  const userMessage = addNoDbMessage(conversationId, "user", input.content, { traceId });
+  const riskAssessment = assessRisk(input.content);
+  const gateway = getModelGateway();
+  const compiled = compileContext({
+    foundationInstructions: composeFoundationInstructions(["zhiwei-persona", "dialogue-orchestrator", "risk-and-boundary", "privacy-and-withdrawal"]),
+    personalSkill: undefined as never,
+    profile: null,
+    memories: [],
+    sessionSummary: null,
+    messages: conversation.messages,
+    maxInputTokens: Math.min(18_000, gateway.capabilities.maxContextTokens - 2_000),
+  });
+  const assistantMessageId = crypto.randomUUID();
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (event: StreamEvent) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      let output = "";
+      try {
+        send({ type: "message.started", messageId: assistantMessageId, traceId });
+        for await (const event of gateway.streamDialogue({
+          userId,
+          conversationId,
+          messageId: userMessage.id,
+          content: input.content,
+          context: compiled,
+          riskAssessment,
+        }, { signal: request.signal })) {
+          if (event.type === "text.delta") {
+            output += event.delta;
+            send({ type: "text.delta", delta: event.delta });
+          }
+        }
+        addNoDbMessage(conversationId, "assistant", output, { traceId, gateway: gateway.id, status: "completed" }, assistantMessageId);
+        try {
+          const reflection = await gateway.reflect({
+            userId,
+            conversationId,
+            messageId: userMessage.id,
+            content: input.content,
+            context: compiled,
+            riskAssessment,
+            kind: "chat",
+          });
+          commitNoDbMemories(reflection.data.memories, input.content);
+        } catch {
+          // 对话回复不依赖记忆反思；无数据库演示模式下反思失败时保留当前对话即可。
+        }
+        send({ type: "message.completed", messageId: assistantMessageId, jobId: `no-db:${assistantMessageId}`, sources: [] });
+      } catch (error) {
+        send({ type: "error", code: publicErrorCode(error), message: publicErrorMessage(error) });
+      } finally {
+        controller.close();
+      }
+    },
+  });
   return new Response(stream, { headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-transform", connection: "keep-alive", "x-accel-buffering": "no" } });
 }
 
