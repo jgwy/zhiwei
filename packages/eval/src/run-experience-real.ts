@@ -232,6 +232,7 @@ export async function runExperienceReal(): Promise<void> {
         session = await initialize(index + 1);
         if (scenario.emotionOff) await json(session, "/api/settings", "PATCH", { emotionTrackingEnabled: false });
         await settled(session); baseline = await state(session);
+        check(session, "三题初识不因权重集中而高估了解度", baseline.score === null || baseline.score <= 10, { score: baseline.score });
         for (const [turnIndex, content] of scenario.messages.entries()) {
           const turn = await send(session, content, { stop: scenario.stopAt === turnIndex });
           session.turns.push(turn);

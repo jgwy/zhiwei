@@ -292,7 +292,7 @@ describe("Aliyun structured-output quality retry contract", () => {
   });
 
   it("keeps an explicit memory-control command on the concise acknowledgement path", async () => {
-    const reply = "好，这条认识会立即撤回，之后不再用于回答。";
+    const reply = "好，我会按你的要求处理，完成后会显示更新提示。";
     openAiMock.completionCreate.mockResolvedValue(streamedChatText(reply));
     const context: CompiledContext = {
       foundationInstructions: "",
@@ -319,6 +319,27 @@ describe("Aliyun structured-output quality retry contract", () => {
     expect(output).toBe(reply);
     expect(openAiMock.completionCreate).toHaveBeenCalledTimes(1);
     expect(openAiMock.responseCreate).not.toHaveBeenCalled();
+  });
+
+  it("retries an unseen memory-control reply that claims the background change already completed", async () => {
+    const premature = "好的，我已经按照你的要求忘记了关于上海求职的事情。";
+    const corrected = "好，我会按你刚才的要求整理，完成后会显示更新提示。";
+    openAiMock.completionCreate
+      .mockResolvedValueOnce(streamedChatText(premature))
+      .mockResolvedValueOnce(streamedChatText(corrected));
+
+    let output = "";
+    for await (const event of new AliyunBailianGateway().streamDialogue(testInput(
+      "请忘掉刚才上海找工作的事情，之后别再提它",
+    ))) {
+      if (event.type === "text.delta") output += event.delta;
+    }
+
+    expect(output).toBe(corrected);
+    expect(output).not.toContain(premature);
+    expect(openAiMock.completionCreate).toHaveBeenCalledTimes(2);
+    const repairSystem = openAiMock.completionCreate.mock.calls[1]?.[0].messages[0].content as string;
+    expect(repairSystem).toContain("误说成已经完成");
   });
 
   it("allows an onboarding answer to produce no memory without a repair call", async () => {

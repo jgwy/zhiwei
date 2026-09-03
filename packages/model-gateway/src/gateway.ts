@@ -144,7 +144,11 @@ export class AliyunBailianGateway implements ModelGateway {
       let emitted = false;
       let content = "";
       const messages = dialogueMessages(model === this.dialogueModel ? characterSystem : fallbackSystem, input);
-      if (attempt > 0) messages[0]!.content += "\n上次输出有技术异常，请重新输出完整、连贯的正文。";
+      if (attempt > 0) {
+        messages[0]!.content += lastError instanceof Error && lastError.message === "invalid_generated_text:premature-memory-claim"
+          ? "\n上次把仍在后台处理的记忆操作误说成已经完成。请只确认收到这项意图，并说明完成后会出现更新提示。"
+          : "\n上次输出有技术异常，请重新输出完整、连贯的正文。";
+      }
       try {
         for await (const delta of this.streamText(model, messages, {
           signal: options.signal, temperature: flashOnly ? 0.32 : deep ? 0.52 : 0.58,
@@ -153,6 +157,9 @@ export class AliyunBailianGateway implements ModelGateway {
           firstTokenMs ??= Date.now() - started;
           const safe = buffer.push(delta);
           if (!safe) continue;
+          if (!emitted && pendingMemoryControl) {
+            assertMemoryControlRemainsPending(safe);
+          }
           emitted = true;
           firstDeltaMs ??= Date.now() - started;
           content += safe;
@@ -160,6 +167,9 @@ export class AliyunBailianGateway implements ModelGateway {
         }
         const tail = buffer.finish();
         if (tail) {
+          if (!emitted && pendingMemoryControl) {
+            assertMemoryControlRemainsPending(tail);
+          }
           emitted = true;
           firstDeltaMs ??= Date.now() - started;
           content += tail;
@@ -1185,6 +1195,12 @@ function assertReplyIsNotEcho(reply: string, userInput: string): void {
     || (output.includes(input) && output.length <= input.length * 1.28)
     || (input.includes(output) && input.length <= output.length * 1.28);
   if (nearVerbatim) throw new Error("invalid_generated_text:echo");
+}
+
+function assertMemoryControlRemainsPending(prefix: string): void {
+  if (/(?:已经|我已|已替你|已为你|这就).{0,16}(?:记住|忘掉|忘记|撤回|更新|修正)|(?:记住|忘掉|忘记|撤回|更新|修正)(?:好了|完成了)/u.test(prefix)) {
+    throw new Error("invalid_generated_text:premature-memory-claim");
+  }
 }
 
 function assertDeepAdviceTiming(reply: string, userInput: string): void {
