@@ -436,8 +436,9 @@ export async function commitProfileSnapshot(input: {
     [input.userId],
   );
   const corrected = await getPool().query(
+    // 只有用户主动撤回（withdrawn）才算纠正；superseded 是记忆正常换代，不应扣分。
     `SELECT count(*)::int AS count FROM memory_versions
-     WHERE user_id = $1 AND is_active = false`,
+     WHERE user_id = $1 AND status = 'withdrawn'`,
     [input.userId],
   );
   const components = deriveUnderstandingComponents({
@@ -630,8 +631,9 @@ export async function commitReflection(input: {
       [input.userId],
     );
       const corrected = await client.query(
+      // 只有用户主动撤回（withdrawn）才算纠正；superseded 是记忆正常换代，不应扣分。
       `SELECT count(*)::int AS count FROM memory_versions mv
-       WHERE mv.user_id = $1 AND mv.is_active = false`,
+       WHERE mv.user_id = $1 AND mv.status = 'withdrawn'`,
       [input.userId],
     );
       const components = deriveUnderstandingComponents({
