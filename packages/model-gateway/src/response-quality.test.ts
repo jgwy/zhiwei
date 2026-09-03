@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ensureEmotionalParagraphs, inspectGeneratedText, limitUnquotedQuestions } from "./response-quality";
+import { inspectGeneratedText } from "./response-quality";
 
 describe("生成正文质量校验", () => {
   it("接受有具体内容的两段中文回应", () => {
@@ -55,19 +55,9 @@ describe("生成正文质量校验", () => {
     expect(result.metrics.questions).toBe(1);
   });
 
-  it("deterministically keeps only the final user-facing question", () => {
-    const content = "你会不会担心自己不正常？这种孤单是不是更难受？你更想先说身体的紧绷，还是无人可谈的感觉？引号里的‘我是不是有问题？’会原样保留。";
-    const normalized = limitUnquotedQuestions(content, 1);
-
-    expect(normalized).toBe("你会不会担心自己不正常，这种孤单是不是更难受，你更想先说身体的紧绷，还是无人可谈的感觉？引号里的‘我是不是有问题？’会原样保留。");
-    expect(inspectGeneratedText(normalized).metrics.questions).toBe(1);
-  });
-
-  it("turns a sufficiently developed single block into two readable paragraphs", () => {
-    const content = "你愿意把这件难以启齿的事说出来，本身就需要勇气，也说明这种憋闷已经积累了一阵。性需求和想被理解的需要都不值得羞耻，它们更不等于你哪里出了问题。一个人找不到安全的倾诉对象时，孤独常常会把身体的紧绷放大。我们可以先把最难承受的那一层慢慢说清楚，不急着给它贴标签。";
-    const normalized = ensureEmotionalParagraphs(content);
-
-    expect(normalized.split(/\n\s*\n/u)).toHaveLength(2);
-    expect(normalized.replace(/\n/g, "")).toBe(content);
+  it("reports style issues without mutating the inspected text", () => {
+    const content = "你现在更害怕身体不适吗？还是担心课程跟不上？";
+    expect(inspectGeneratedText(content, { maxQuestions: 1 }).reason).toBe("too-many-questions");
+    expect(content).toBe("你现在更害怕身体不适吗？还是担心课程跟不上？");
   });
 });

@@ -1,12 +1,15 @@
 # Memory 输出协议
 
-每次 Reflection 返回 `memories[]`，数组硬上限为 3。
+每次 Reflection 对固定的一至三条有序证据返回 `memories[]`，数组硬上限为 3；不追加第二次语义去重调用。
 
 ## 公共字段
 
 - `operation`: `create`、`supersede`、`promote` 或 `withdraw`。
 - `reason`: 此证据为什么足以产生该动作。
-- `evidenceMessageIds`: 支持该动作的原始用户消息 ID；必须包含当前源消息。
+- `evidenceMessageIds`: 真正支持该动作的本批 E1–E3 编号，网关精确映射为原始用户消息 ID。
+- `triggerMessageId`: 本批使该动作成立的证据编号，必须包含在该动作的证据集合中。不能默认为批次末条。
+- `mood.evidenceMessageIds`: 实际明确表达该心情的本批证据，记录原消息时间。
+- `summaryEvidenceMessageIds`: 可进入会话摘要的具体证据；空数组不触发摘要更新。
 
 ## 创建与新版本字段
 
@@ -48,7 +51,7 @@ Memory MCP 只接受通过 Schema、当前用户证据归属和版本检查的�
 - `challenge`：正在面对的压力、困难、冲突或待解决问题。
 - `boundary`：不希望被提及、推断、保存或采用的明确边界。
 
-一句话包含多个类别时拆成多条。例如“刚进入职场，项目压力很大，希望你先听我说”应分别形成 `basic`、`challenge` 与 `expression`，不能合并成 `goal`。
+同一句话包含真正独立的具体信息时可以拆分。例如“刚进入职场，项目验收将在周五截止，希望你先听我说”包含阶段、明确压力来源和交流偏好。但同一购物烦恼不能同时生成泛化的“生活琐事烦恼”和具体的“购物退货受阻”两条认识。
 
 ## 语义粒度
 

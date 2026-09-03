@@ -126,4 +126,22 @@ describe("ScriptedGateway", () => {
     expect(norm).toBeCloseTo(1, 8);
     expect(first.meta.task).toBe("embedding");
   });
+
+  it.each(["最近有点烦", "生活琐事让我烦", "我目前因生活琐事感到烦恼"])("leaves vague evidence unmaterialized: %s", async (content) => {
+    const result = await new ScriptedGateway().reflect({ userId: crypto.randomUUID(), conversationId: crypto.randomUUID(), messageId: crypto.randomUUID(), content, context, kind: "chat" });
+    expect(result.data).toMatchObject({ memories: [], mood: null, refreshProfile: false, refreshSummary: false, summaryEvidenceMessageIds: [], returnTopic: null, shouldEvolveSkill: false });
+  });
+
+  it("keeps same-event detail in one action while preserving a separate preference", async () => {
+    const sources = [
+      { id: crypto.randomUUID(), role: "user" as const, content: "这次购物退货让我很烦恼", createdAt: "2026-09-04T00:00:00Z" },
+      { id: crypto.randomUUID(), role: "user" as const, content: "购物退货被拒，我很委屈", createdAt: "2026-09-04T00:01:00Z" },
+      { id: crypto.randomUUID(), role: "user" as const, content: "请你先听我说，不要马上给建议", createdAt: "2026-09-04T00:02:00Z" },
+    ];
+    const result = await new ScriptedGateway().reflect({ userId: crypto.randomUUID(), conversationId: crypto.randomUUID(), messageId: sources[2]!.id, content: sources[2]!.content, context, kind: "chat", sourceMessages: sources });
+    expect(result.data.memories).toHaveLength(2);
+    expect(result.data.memories[0]).toMatchObject({ evidenceMessageIds: [sources[0]!.id, sources[1]!.id], triggerMessageId: sources[1]!.id });
+    expect(result.data.memories[1]).toMatchObject({ category: "expression", evidenceMessageIds: [sources[2]!.id], triggerMessageId: sources[2]!.id });
+    expect(result.data.mood?.evidenceMessageIds).toEqual([sources[1]!.id]);
+  });
 });
