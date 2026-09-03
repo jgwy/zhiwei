@@ -31,6 +31,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   try {
     return await handlePost(request, context);
   } catch (error) {
+    console.error("[messages] 消息发送失败:", error);
     return Response.json({ code: publicErrorCode(error), error: publicErrorMessage(error) }, { status: 400 });
   }
 }

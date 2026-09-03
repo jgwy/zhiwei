@@ -11,9 +11,11 @@ import {
   recordMcpCall,
   searchMemories,
   withdrawMemory,
+  loadLocalEnv,
 } from "@zhiwei/core";
 import { z } from "zod";
 
+loadLocalEnv();
 const port = Number(process.env.MCP_PORT ?? 4100);
 const token = process.env.INTERNAL_MCP_TOKEN ?? "local-development-mcp-token";
 

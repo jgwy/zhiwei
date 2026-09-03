@@ -4,10 +4,12 @@ import {
   ScienceImpactSchema,
   ScienceSourceSchema,
   recordMcpCall,
+  loadLocalEnv,
 } from "@zhiwei/core";
 import { z } from "zod";
 import { assessScienceSources, auditScienceClaims } from "./audit";
 
+loadLocalEnv();
 const port = Number(process.env.SCIENCE_MCP_PORT ?? 4200);
 const token = process.env.INTERNAL_MCP_TOKEN ?? "local-development-mcp-token";
 
