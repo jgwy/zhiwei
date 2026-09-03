@@ -564,9 +564,12 @@ export async function getReflectionControlState(
   const result = await getPool().query(
     `SELECT w.memory_id AS "memoryId",w.version_id AS "versionId",mv.content,
       COALESCE(msg.created_at,w.created_at) AS "withdrawnAt"
-    FROM memory_withdrawals w JOIN memory_versions mv ON mv.id=w.version_id
+    FROM memory_withdrawals w JOIN memory_versions mv ON mv.id=w.version_id JOIN users u ON u.id=w.user_id
     LEFT JOIN messages msg ON msg.id=w.source_message_id
     WHERE w.user_id=$1 AND COALESCE(msg.created_at,w.created_at)>=$2::timestamptz
+      AND COALESCE((u.settings->>'memoryEnabled')::boolean,true)
+      AND COALESCE((u.settings->>CASE WHEN mv.tier='long' THEN 'longTermMemoryEnabled' ELSE 'shortTermMemoryEnabled' END)::boolean,true)
+      AND (mv.category<>'emotion' OR COALESCE((u.settings->>'emotionTrackingEnabled')::boolean,true))
     ORDER BY (SELECT count(*) FROM unnest($3::text[]) term WHERE strpos(mv.content,term)>0) DESC,w.created_at DESC LIMIT 12`,
     [userId, afterEvidenceAt, extractSearchTerms(query).slice(0, 64)],
   );
