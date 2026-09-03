@@ -4,6 +4,7 @@ test("思考图标随首段文本和停止操作正确清理", async ({ page }, 
   test.skip(testInfo.project.name !== "chromium-desktop", "动画生命周期只需在桌面 Chromium 验证一次");
   const conversationId = crypto.randomUUID();
   const now = new Date().toISOString();
+  let bootstrapResponses = 0;
   await page.route("**/api/bootstrap", async (route) => {
     await route.fulfill({
       contentType: "application/json",
@@ -21,6 +22,17 @@ test("思考图标随首段文本和停止操作正确清理", async ({ page }, 
         modelModeLabel: "仿真模式",
         modelCapabilities: { streaming: true, structuredOutput: true, toolCalls: true, nativeWebSearch: false, usage: true, maxContextTokens: 24_000 },
       }),
+    });
+    bootstrapResponses += 1;
+  });
+
+  let releaseActivity: (() => void) | undefined;
+  const activityGate = new Promise<void>((resolve) => { releaseActivity = resolve; });
+  await page.route("**/api/activity/stream", async (route) => {
+    await activityGate;
+    await route.fulfill({
+      contentType: "text/event-stream; charset=utf-8",
+      body: `event: memory.updated\ndata: ${JSON.stringify({ payload: { memoryCount: 1 } })}\n\n`,
     });
   });
 
@@ -52,6 +64,9 @@ test("思考图标随首段文本和停止操作正确清理", async ({ page }, 
   await expect(indicator).toBeVisible();
   await expect(indicator.locator("img")).toHaveAttribute("src", "/about/aliyun-cloud.png");
   expect(await indicator.locator("img").evaluate((element) => getComputedStyle(element).animationName)).toBe("thinking-logo-bounce");
+  releaseActivity?.();
+  await expect.poll(() => bootstrapResponses).toBeGreaterThan(1);
+  await expect(indicator).toBeVisible();
   releaseResponse?.();
   await expect(page.getByText("回复完成", { exact: true })).toBeVisible();
   await expect(indicator).toBeHidden();

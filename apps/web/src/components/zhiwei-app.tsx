@@ -61,7 +61,24 @@ export function ZhiweiApp() {
       const response = await fetch("/api/bootstrap", { cache: "no-store" });
       if (!response.ok) throw new Error(await responseMessage(response, "知微没有成功启动，请稍后重试。"));
       const next = (await response.json()) as BootstrapData;
-      setData(next);
+      setData((current) => {
+        const pending = pendingAssistantRef.current;
+        if (!current || !pending) return next;
+        const currentConversation = current.conversations.find((conversation) => conversation.id === pending.conversationId);
+        const pendingMessage = currentConversation?.messages.find((message) => message.id === pending.messageId)
+          ?? currentConversation?.messages.find((message) => message.metadata?.streaming === true);
+        const loadedConversation = next.conversations.find((conversation) => conversation.id === pending.conversationId);
+        if (!pendingMessage || !loadedConversation) return next;
+        const messages = loadedConversation.messages.some((message) => message.id === pendingMessage.id)
+          ? loadedConversation.messages
+          : [...loadedConversation.messages, pendingMessage];
+        return {
+          ...next,
+          conversations: next.conversations.map((conversation) => conversation.id === pending.conversationId
+            ? { ...conversation, messages }
+            : conversation),
+        };
+      });
       setLoadError(null);
       setActiveId((current) => current ?? next.conversations[0]?.id ?? null);
     } catch (error) {
