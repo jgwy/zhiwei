@@ -18,10 +18,12 @@ import {
   type MemoryRecord,
   type PersonalSkill,
   type ProfileSnapshot,
+  loadLocalEnv,
 } from "@zhiwei/core";
 import { getModelGateway } from "@zhiwei/model-gateway";
 import { composeFoundationInstructions } from "@zhiwei/skills";
 
+loadLocalEnv();
 const gateway = getModelGateway();
 let stopping = false;
 

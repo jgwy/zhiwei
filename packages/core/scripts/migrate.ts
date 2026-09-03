@@ -2,7 +2,9 @@ import { readdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getPool } from "../src/db";
+import { loadLocalEnv } from "../src/env";
 
+loadLocalEnv();
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const migrationDir = join(currentDir, "..", "migrations");
 const pool = getPool();
