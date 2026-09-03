@@ -306,7 +306,7 @@ export function ZhiweiApp() {
         <div className="sidebar-brand"><span>知微</span><button className="mobile-close" onClick={() => setMobileMenu(null)}><X size={18} /></button></div>
         <Button variant="secondary" className="new-chat-button" onClick={() => void createConversation()}><Plus size={17} /> 新的对话</Button>
         <nav className="conversation-list">
-          {data.conversations.map((conversation) => <div className={conversation.id === activeId ? "conversation-row active" : "conversation-row"} key={conversation.id}><button className="conversation-open" onClick={() => { setActiveId(conversation.id); setMobileMenu(null); }}><MessageCircleMore size={16} /><span>{conversation.title}</span></button><button className="conversation-more" onClick={() => setRenameTarget(conversation)} aria-label={`管理对话：${conversation.title}`} aria-haspopup="dialog"><MoreHorizontal size={16} /></button></div>)}
+          {data.conversations.length ? data.conversations.map((conversation) => <div className={conversation.id === activeId ? "conversation-row active" : "conversation-row"} key={conversation.id}><button className="conversation-open" onClick={() => { setActiveId(conversation.id); setMobileMenu(null); }}><MessageCircleMore size={16} /><span>{conversation.title}</span></button><button className="conversation-more" onClick={() => setRenameTarget(conversation)} aria-label={`管理对话：${conversation.title}`} aria-haspopup="dialog"><MoreHorizontal size={16} /></button></div>) : <p className="list-empty">点上方「新的对话」，开始第一段闲聊。</p>}
         </nav>
         <div className="sidebar-footer">
           <button ref={aboutTriggerRef} onClick={openAbout}><Info size={16} /><span>关于</span></button>

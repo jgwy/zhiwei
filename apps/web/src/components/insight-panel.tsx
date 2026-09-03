@@ -81,10 +81,10 @@ export function InsightPanel({
       </section>
 
       <section className="insight-section">
-        <div className="section-title"><h3>知微眼中的你</h3><span>{data.memories.length} 条认识</span></div>
+        <div className="section-title"><h3>知微眼中的你</h3><span>{data.memories.length ? `${data.memories.length} 条认识` : "还没有认识"}</span></div>
         <p className="profile-summary">{data.profile?.summary ?? "我们还在初识阶段。等你多说一点，我会在这里形成一段会持续更新的理解。"}</p>
         <div className="memory-list">
-          {data.memories.slice(0, 6).map((memory) => (
+          {data.memories.length ? data.memories.slice(0, 6).map((memory) => (
             <div className="memory-row" key={memory.versionId}>
               <button onClick={() => onMemoryClick(memory.content)}>
                 <span><small>{categoryLabel(memory.category)}</small>{memory.content}</span>
@@ -94,7 +94,7 @@ export function InsightPanel({
                 <Undo2 size={13} />
               </button>
             </div>
-          ))}
+          )) : <p className="list-empty">聊几轮之后，知微对你的认识会出现在这里。</p>}
         </div>
       </section>
 
