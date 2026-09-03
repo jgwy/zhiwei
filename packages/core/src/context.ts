@@ -25,7 +25,9 @@ export function compileContext(input: {
   messages: ChatMessage[];
   maxInputTokens: number;
 }): CompiledContext {
-  const recentMessages = input.messages.slice(-12);
+  // Keep roughly sixteen dialogue turns before falling back to the bounded
+  // session summary. This remains capped by maxInputTokens below.
+  const recentMessages = input.messages.slice(-32);
   const memories = input.memories.slice(0, 8);
   let context: CompiledContext = {
     foundationInstructions: input.foundationInstructions,
@@ -64,4 +66,3 @@ export function compileContext(input: {
 function roughTokens(value: unknown): number {
   return Math.ceil(JSON.stringify(value).length / 2.4);
 }
-
