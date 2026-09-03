@@ -547,12 +547,35 @@ function AboutDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
+// 等待反馈阈值：多数回合在 6 秒内出首字，超过才提示；15 秒基本是多协议长链路。
+const WAIT_HINT_MS = 6_000;
+const WAIT_LONG_MS = 15_000;
+const WAIT_HINT_TEXT = "在认真想怎么回应你…";
+const WAIT_LONG_TEXT = "这条回复想了比平时久一点，还在写…";
+
 function Message({ message, receipt, onToggleReceipt, onFeedback, onRetry }: { message: ChatMessage; receipt?: { count: number; open: boolean }; onToggleReceipt: () => void; onFeedback: (id: string, value: "understood" | "not-me", reason?: string) => Promise<void>; onRetry?: () => void }) {
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const assistant = message.role === "assistant";
+  const streaming = Boolean(message.metadata?.streaming);
+  const [waitStage, setWaitStage] = useState(0);
+  useEffect(() => {
+    if (!streaming) {
+      setWaitStage(0);
+      return;
+    }
+    const hintTimer = window.setTimeout(() => setWaitStage(1), WAIT_HINT_MS);
+    const longTimer = window.setTimeout(() => setWaitStage(2), WAIT_LONG_MS);
+    return () => {
+      window.clearTimeout(hintTimer);
+      window.clearTimeout(longTimer);
+    };
+  }, [streaming]);
   return (
     <article className={assistant ? "message assistant" : "message user"}>
-      <div className="message-content">{message.content || (message.metadata?.streaming ? <span className="typing"><i /><i /><i /></span> : null)}</div>
+      <div className="message-content">
+        {message.content || (streaming ? <span className="typing" role="status" aria-label="知微正在回复"><i /><i /><i /></span> : null)}
+        {streaming && waitStage > 0 ? <p className="typing-hint">{waitStage === 1 ? WAIT_HINT_TEXT : WAIT_LONG_TEXT}</p> : null}
+      </div>
       {message.metadata?.status === "interrupted" ? <div className="message-status">回复中断了，可以重试。{onRetry ? <button className="retry-inline" onClick={onRetry}>重试</button> : null}</div> : null}
       {Array.isArray(message.metadata?.sources) && message.metadata.sources.length ? <details className="message-sources"><summary>查看事实来源（{message.metadata.sources.length}）</summary>{message.metadata.sources.map((source: any) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer"><span>{source.title}</span>{source.siteName ? <small>{source.siteName}</small> : null}</a>)}</details> : null}
       <footer>
