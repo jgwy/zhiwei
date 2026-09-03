@@ -82,7 +82,9 @@ describe("memory retrieval", () => {
     expect(result[0]?.content).toBe("希望完成毕业论文");
     expect(database.query).toHaveBeenCalledTimes(1);
     expect(database.query.mock.calls[0]?.[0]).not.toContain("embedding_v2 <=>");
-    expect(database.query.mock.calls[0]?.[1]).toEqual([userId]);
+    expect(database.query.mock.calls[0]?.[1]).toEqual([userId, null]);
+    expect(database.query.mock.calls[0]?.[0]).toContain("mv.status = 'active'");
+    expect(database.query.mock.calls[0]?.[0]).toContain("mv.scope_key = $2");
   });
 
   it("updates a title within the current user scope and preserves the manual lock guard", async () => {

@@ -25,8 +25,8 @@
       "name": "memory-reflection",
       "description": "将问卷和对话证据转换为可追溯的原子记忆、更新与短长期变化。",
       "version": "1.0.0",
-      "sha256": "075323c6ea7515b7f3ef4ebb449d1f006455b91ce7172cdcb93498cdc60037e7",
-      "content": "---\nname: memory-reflection\ndescription: 将问卷和对话证据转换为可追溯的原子记忆、更新与短长期变化。\n---\n\n# Memory Reflection\n\n原始消息是 evidence，不是 memory。只输出结构化 memory mutation；数据库和固定代码不得自行编写记忆正文。\n\n- 每条记忆只表达一个可独立检索和更新的认识。\n- 区分短期状态与长期认识；由重复、重要性和未来价值决定是否升级。\n- 新证据与旧记忆冲突时，判断是变化、例外还是误解；不确定则要求下一轮自然确认。\n- 用户说“忘掉”或“别再提”时，生成高优先级的新事实或边界偏好，不删除旧版本。\n- 推断和明确陈述在用户界面中使用同一种自然表述，但 evidence IDs、confidence 与 reason 必须完整。\n- 模型不得生成没有用户消息证据的用户事实。\n- 不从交流要求推断人格倾向、控制欲、防御性、依恋风格或心理状态；心情摘要只复述可观察的当下感受与处境，不使用诊断或贬义标签。\n- 不把“处于某阶段”写成目标，不把“正在承受某个问题”写成基本情况。出现多个独立事实时拆成多条并分别归类。\n\n输出字段与操作语义见 [Memory 输出协议](references/memory-output.md)。\n"
+      "sha256": "c74635086b029b3d41d438b6b8349ebc523ef1e0e92ae7c4001f118283bbc070",
+      "content": "---\nname: memory-reflection\ndescription: 将问卷和对话证据转换为可追溯的原子记忆、更新与短长期变化。\n---\n\n# Memory Reflection\n\n原始消息是 evidence，不是 memory。只输出结构化 memory mutation；数据库和固定代码不得自行编写记忆正文。\n\n- 每条记忆只表达一个可独立检索和更新的认识。\n- 区分短期状态与长期认识；由重复、重要性和未来价值决定是否升级。\n- 新证据与旧记忆冲突时，用 `memoryId` 和当前 `expectedVersionId` 提出候选版本；旧的活动版本在用户确认前继续生效。\n- 用户说“忘掉”或“别再提”时，提取可见的边界表达；已撤回的内容只有在用户之后明确要求重新记住时才能再次提议。\n- 用户原文直接支持的内容标记为 `user_stated`，并提供原文中连续的 `evidenceQuote`；需要概括或推测的内容标记为 `inferred`。\n- 推断和明确陈述在普通界面中使用同一种自然表述，来源类型、evidence IDs、confidence 与 reason 仅在开发者追踪中完整保留。\n- 模型不得生成没有用户消息证据的用户事实。\n- 不从交流要求推断人格倾向、控制欲、防御性、依恋风格或心理状态；心情摘要只复述可观察的当下感受与处境，不使用诊断或贬义标签。\n- 不把“处于某阶段”写成目标，不把“正在承受某个问题”写成基本情况。出现多个独立事实时拆成多条并分别归类。\n\n输出字段与操作语义见 [Memory 输出协议](references/memory-output.md)。\n"
     },
     {
       "name": "onboarding-interview",

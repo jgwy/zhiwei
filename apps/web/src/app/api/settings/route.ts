@@ -6,6 +6,8 @@ import { getSessionUserId } from "@/lib/session";
 
 const SettingsSchema = z.object({
   memoryEnabled: z.boolean().optional(),
+  shortTermMemoryEnabled: z.boolean().optional(),
+  longTermMemoryEnabled: z.boolean().optional(),
   emotionTrackingEnabled: z.boolean().optional(),
   skillEvolutionEnabled: z.boolean().optional(),
   returnNotesEnabled: z.boolean().optional(),
@@ -21,4 +23,3 @@ export async function PATCH(request: Request) {
     return jsonError(error, 400);
   }
 }
-

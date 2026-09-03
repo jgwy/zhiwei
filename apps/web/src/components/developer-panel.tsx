@@ -9,6 +9,7 @@ import styles from "./developer-panel.module.css";
 type DeveloperData = {
   traces: any[];
   memories: any[];
+  memoryEvents: any[];
   profiles: any[];
   skills: any[];
   mcpCalls: any[];
@@ -175,7 +176,11 @@ function ModelRunBatchCard({ batch }: { batch: ModelRunBatch }) {
 }
 
 function memoryStatus(memory: any) {
+  if (memory.status === "pending") return { className: "status-old", label: "待确认" };
+  if (memory.status === "accepted") return { className: "status-old", label: "已采纳候选" };
+  if (memory.status === "rejected") return { className: "status-withdrawn", label: "已拒绝" };
   if (memory.status === "withdrawn") return { className: "status-withdrawn", label: "已撤回" };
+  if (memory.status === "expired") return { className: "status-old", label: "已过期" };
   if (memory.is_active || memory.status === "active") return { className: "status-active", label: "当前" };
   return { className: "status-old", label: "已替代" };
 }
@@ -286,6 +291,7 @@ export function DeveloperPanel({ onClose }: { onClose: () => void }) {
               <div className="dev-column"><h2>记忆版本</h2>{data.memories.map((memory) => { const state = memoryStatus(memory); return <article className="data-card" key={memory.id}><header><span className={state.className}>{state.label}</span><small>{memory.tier === "long" ? "长期" : "短期"} · {categoryLabel(memory.category)}</small></header><p>{memory.content}</p><footer>置信度 {Number(memory.confidence).toFixed(2)} · 证据 {memory.evidence_ids?.length ?? 0} 条</footer><details><summary>查看原始记录</summary><pre>{JSON.stringify(memory, null, 2)}</pre></details></article>; })}</div>
               <div className="dev-column"><h2>画像快照</h2>{data.profiles.map((profile) => <article className="data-card" key={profile.id}><header><strong>{profile.understanding_score}%</strong><small>{new Date(profile.created_at).toLocaleString("zh-CN")}</small></header><p>{profile.summary}</p><pre>{JSON.stringify({ weights: profile.dimension_weights, components: profile.understanding_components }, null, 2)}</pre></article>)}</div>
             </div>
+            {data.memoryEvents.length ? <details className="mcp-log"><summary>记忆生命周期事件（{data.memoryEvents.length}）</summary><pre>{JSON.stringify(data.memoryEvents, null, 2)}</pre></details> : null}
           </section>
         ) : null}
         {data && tab === "skills" ? (

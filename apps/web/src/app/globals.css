@@ -206,10 +206,43 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #222; outline-
 .mood-chart { height: 118px; background: white; border: 1px solid #ededed; border-radius: 14px; overflow: hidden; }
 .empty-chart { height: 100%; display: grid; place-items: center; align-content: center; color: #aaa; gap: 6px; }.empty-chart span { color: #ddd; font-size: 30px; }.empty-chart p { margin: 0; font-size: 10px; }
 .profile-summary { font-size: 12px; line-height: 1.72; color: #626262; padding: 12px 13px; margin: 0 0 8px; background: white; border: 1px solid #ededed; border-radius: 14px; }
-.memory-list { display: grid; gap: 4px; }.memory-row { display: grid; grid-template-columns: 1fr 27px; gap: 2px; align-items: center; }.memory-row > button:first-child { border: 0; background: transparent; display: grid; grid-template-columns: 1fr 15px; gap: 8px; text-align: left; padding: 8px 4px; cursor: pointer; color: #555; align-items: center; }.memory-row > button:first-child:hover { color: #111; }.memory-row button span { font-size: 11px; line-height: 1.5; }.memory-list small { display: block; color: #aaa; font-size: 9px; margin-bottom: 2px; }.withdraw-button { width: 27px; height: 27px; display: grid; place-items: center; border: 0; border-radius: 8px; background: transparent; color: #aaa; cursor: pointer; }.withdraw-button:hover { color: #b42318; background: #fff0ee; }
+.memory-section .profile-summary { margin-bottom: 12px; }
+.memory-candidate-box { margin: 12px 0 15px; padding: 10px; border: 1px solid #eadfc8; border-radius: 14px; background: #fffaf1; }
+.memory-candidate-box > header, .memory-tier-group > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.memory-candidate-box > header { margin-bottom: 8px; }
+.memory-candidate-box > header > div, .memory-tier-group > header > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.memory-candidate-box > header strong, .memory-tier-group > header strong { font-size: 11px; font-weight: 650; }
+.memory-candidate-box > header strong { color: #755823; }
+.memory-candidate-box > header span, .memory-tier-group > header span { color: #9a9a9a; font-size: 9px; line-height: 1.5; }
+.memory-candidate-box > header em, .memory-tier-group > header em { flex: 0 0 auto; color: #aaa; font-size: 9px; font-style: normal; }
+.memory-card-list { display: grid; gap: 7px; }
+.memory-card { padding: 10px; border: 1px solid #e9e9e9; border-radius: 12px; background: white; }
+.memory-card-pending { border-color: #eadfc8; background: rgba(255,255,255,.82); }
+.memory-card[aria-busy="true"] { opacity: .7; }
+.memory-card-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.memory-card-meta > span { flex: 0 0 auto; padding: 2px 6px; border-radius: 99px; background: #f1f1f1; color: #666; font-size: 8px; }
+.memory-card-pending .memory-card-meta > span { background: #f5ead3; color: #755823; }
+.memory-card-meta small { overflow: hidden; color: #aaa; font-size: 8px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.memory-card > p { margin: 8px 0 10px; color: #4d4d4d; font-size: 11px; line-height: 1.62; }
+.memory-card-actions { display: flex; align-items: center; gap: 6px; }
+.memory-card-actions button, .memory-withdraw-confirm button { min-height: 29px; display: inline-flex; align-items: center; justify-content: center; gap: 4px; padding: 0 8px; border: 1px solid #e5e5e5; border-radius: 8px; background: #fafafa; color: #666; cursor: pointer; font-size: 9px; }
+.memory-card-actions button:hover, .memory-withdraw-confirm button:hover { border-color: #cecece; background: #f4f4f4; color: #222; }
+.memory-card-actions .memory-confirm-button { border-color: #2f6046; background: #315f47; color: white; }
+.memory-card-actions .memory-confirm-button:hover { border-color: #244c37; background: #244c37; color: white; }
+.memory-card-actions .memory-withdraw-trigger { margin-left: auto; border-color: transparent; background: transparent; color: #999; }
+.memory-card-actions button:disabled, .memory-withdraw-confirm button:disabled { opacity: .45; cursor: default; }
+.memory-withdraw-confirm { padding-top: 8px; border-top: 1px solid #ededed; }
+.memory-withdraw-confirm > span { display: block; margin-bottom: 7px; color: #8c625f; font-size: 9px; line-height: 1.5; }
+.memory-withdraw-confirm > div { display: flex; justify-content: flex-end; gap: 6px; }
+.memory-withdraw-confirm .memory-withdraw-button { border-color: #a54840; background: #a54840; color: white; }
+.memory-withdraw-confirm .memory-withdraw-button:hover { border-color: #8f3933; background: #8f3933; color: white; }
+.memory-panel-error { margin: 10px 0; padding: 8px 9px; border: 1px solid #f0d1ce; border-radius: 9px; background: #fff7f6; color: #9f2d25; font-size: 9px; line-height: 1.55; }
+.memory-tier-list { display: grid; gap: 17px; }
+.memory-tier-group > header { margin: 0 2px 8px; }
+.memory-empty { margin: 0; padding: 10px; border: 1px dashed #e4e4e4; border-radius: 10px; color: #aaa; font-size: 9px; text-align: center; }
 .settings-section { padding-top: 4px; }.setting-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 0; border-bottom: 1px solid #ededed; }.setting-row > span { display: flex; flex-direction: column; gap: 3px; }.setting-row strong { font-size: 11px; }.setting-row small { color: #999; font-size: 9px; }
 .delete-data-box { display: grid; gap: 8px; margin-top: 18px; padding: 12px; border: 1px solid #f1d4d1; border-radius: 12px; background: #fffafa; }.delete-data-box strong { display: flex; align-items: center; gap: 6px; color: #9f2d25; font-size: 11px; }.delete-data-box small { color: #9b7774; line-height: 1.5; }.delete-data-box input { width: 100%; border: 1px solid #e8cecb; border-radius: 8px; padding: 8px; background: white; font-size: 10px; }.delete-data-box button { border: 0; border-radius: 8px; padding: 8px; background: #b42318; color: white; font-size: 10px; cursor: pointer; }.delete-data-box button:disabled { opacity: .28; cursor: default; }
-.toggle { width: 38px; height: 23px; border-radius: 99px; background: #d9d9d9; border: 0; padding: 2px; cursor: pointer; transition: .2s; flex: 0 0 auto; }.toggle span { width: 19px; height: 19px; background: white; border-radius: 50%; display: block; box-shadow: 0 1px 4px rgba(0,0,0,.22); transition: .2s; }.toggle-on { background: #222; }.toggle-on span { transform: translateX(15px); }
+.toggle { width: 38px; height: 23px; border-radius: 99px; background: #d9d9d9; border: 0; padding: 2px; cursor: pointer; transition: .2s; flex: 0 0 auto; }.toggle span { width: 19px; height: 19px; background: white; border-radius: 50%; display: block; box-shadow: 0 1px 4px rgba(0,0,0,.22); transition: .2s; }.toggle-on { background: #222; }.toggle-on span { transform: translateX(15px); }.toggle:disabled { opacity: .5; cursor: wait; }
 .mobile-insight-close { display: none; }
 .toast { position: fixed; left: 50%; bottom: 92px; transform: translateX(-50%); background: rgba(20,20,20,.92); color: white; border-radius: 12px; padding: 10px 14px; display: flex; gap: 8px; align-items: center; font-size: 12px; z-index: 100; box-shadow: 0 10px 34px rgba(0,0,0,.2); animation: toast-in .22s ease; }
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%, 8px); } }

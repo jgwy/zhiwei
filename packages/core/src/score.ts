@@ -87,6 +87,7 @@ export function deriveUnderstandingComponents(input: {
     : 0;
   const correctionRate = input.correctedMemories /
     Math.max(1, total + input.correctedMemories);
+  const confirmedShare = input.memories.filter((memory) => Boolean(memory.confirmedAt)).length / total;
 
   // Model confidence is only a weak prior. Stability across conversations and
   // explicit user confirmation provide the stronger validation signals.
@@ -94,7 +95,8 @@ export function deriveUnderstandingComponents(input: {
     0.14 +
     0.34 * sessionMaturity +
     0.18 * corroborationMaturity * sessionMaturity +
-    0.34 * feedbackMaturity * positiveShare;
+    0.34 * feedbackMaturity * positiveShare +
+    0.22 * confirmedShare;
   const validation = clamp(
     confidence * validationSupport -
       0.45 * correctionRate -

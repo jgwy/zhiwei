@@ -2,6 +2,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { diffJson } from "diff";
 import type { PoolClient } from "pg";
 import { getPool, withTransaction } from "./db";
+import {
+  memoryContentHash,
+  isExplicitMemoryRequestForQuote,
+  normalizeMemoryMutation,
+  shouldPersistMemory,
+  validatedMemorySourceType,
+} from "./memory-policy";
 import { defaultPersonalSkill } from "./personal-skill";
 import {
   calculateUnderstandingScore,
@@ -9,7 +16,11 @@ import {
 } from "./score";
 import type {
   ChatMessage,
+  MemoryConfirmInput,
   MemoryRecord,
+  MemoryRejectInput,
+  MemoryUsageInput,
+  MemoryWithdrawInput,
   ModelCallMeta,
   ModelSource,
   ModelTask,
@@ -37,7 +48,16 @@ const UNDERSTANDING_OBSERVATIONS_SQL = `
    AND msg.user_id = me.user_id
   WHERE me.user_id = $1
     AND mv.is_active = true
+    AND mv.status = 'active'
+    AND mv.tier = 'long'
+    AND mv.scope = 'user'
     AND (mv.valid_until IS NULL OR mv.valid_until > now())`;
+
+export type MemoryOperationReceipt = {
+  idempotencyKey: string;
+  operation: string;
+  replayed: boolean;
+};
 
 export async function ensureUser(userId: string): Promise<void> {
   await withTransaction(async (client) => {
@@ -68,7 +88,7 @@ export async function getUserState(userId: string) {
     getPool().query(`SELECT * FROM users WHERE id = $1`, [userId]),
     listConversations(userId),
     getLatestProfile(userId),
-    getActiveMemories(userId),
+    listMemoriesForUser(userId),
     getMoodSeries(userId),
     getActiveSkill(userId),
   ]);
@@ -232,10 +252,22 @@ export async function updateSettings(
   userId: string,
   settings: Record<string, boolean>,
 ): Promise<void> {
-  await getPool().query(
-    `UPDATE users SET settings = settings || $2::jsonb, updated_at = now() WHERE id = $1`,
-    [userId, JSON.stringify(settings)],
-  );
+  await withTransaction(async (client) => {
+    const current = await client.query(`SELECT settings FROM users WHERE id = $1 FOR UPDATE`, [userId]);
+    if (!current.rowCount) throw new Error("user_not_found");
+    const previous = current.rows[0].settings ?? {};
+    const next = { ...previous, ...settings };
+    if (settings.memoryEnabled !== undefined) {
+      next.shortTermMemoryEnabled = settings.memoryEnabled;
+      next.longTermMemoryEnabled = settings.memoryEnabled;
+    } else if (settings.shortTermMemoryEnabled !== undefined || settings.longTermMemoryEnabled !== undefined) {
+      next.memoryEnabled = next.shortTermMemoryEnabled !== false || next.longTermMemoryEnabled !== false;
+    }
+    await client.query(
+      `UPDATE users SET settings = $2::jsonb, updated_at = now() WHERE id = $1`,
+      [userId, JSON.stringify(next)],
+    );
+  });
 }
 
 export async function getUserSettings(userId: string) {
@@ -306,30 +338,88 @@ export async function failJob(job: any, error: unknown): Promise<void> {
   );
 }
 
-export async function getActiveMemories(userId: string): Promise<MemoryRecord[]> {
+export type MemorySearchContext = {
+  conversationId?: string;
+};
+
+const MEMORY_SELECT_COLUMNS = `m.id, mv.id AS version_id, mv.category, mv.content, mv.tier,
+  mv.confidence, mv.valid_until, mv.reason, mv.status, mv.created_at,
+  mv.source_type, mv.scope, mv.scope_key, mv.sensitivity, mv.evidence_quote,
+  mv.confirmed_at, mv.last_used_at, mv.parent_version_id`;
+
+export async function expireStaleMemories(userId: string): Promise<number> {
+  return withTransaction((client) => expireStaleMemoriesWithClient(client, userId));
+}
+
+async function expireStaleMemoriesWithClient(client: PoolClient, userId: string): Promise<number> {
+  const expired = await client.query(
+    `UPDATE memory_versions
+     SET status = 'expired', is_active = false
+     WHERE user_id = $1 AND status IN ('active', 'pending')
+       AND valid_until IS NOT NULL AND valid_until <= now()
+     RETURNING id, memory_id, content`,
+    [userId],
+  );
+  if (!expired.rowCount) return 0;
+  await client.query(
+    `INSERT INTO memory_events
+      (id, user_id, memory_id, version_id, event_type, actor, content_hash, payload)
+     SELECT event_id, $1, memory_id, version_id, 'expired', 'system', content_hash, '{}'::jsonb
+     FROM unnest($2::uuid[], $3::uuid[], $4::uuid[], $5::text[])
+       AS expired_events(event_id, memory_id, version_id, content_hash)`,
+    [
+      userId,
+      expired.rows.map(() => randomUUID()),
+      expired.rows.map((row) => row.memory_id),
+      expired.rows.map((row) => row.id),
+      expired.rows.map((row) => memoryContentHash(row.content)),
+    ],
+  );
+  return expired.rowCount;
+}
+
+export async function listMemoriesForUser(userId: string): Promise<MemoryRecord[]> {
+  await expireStaleMemories(userId);
   const result = await getPool().query(
-    `SELECT m.id, mv.id AS version_id, mv.category, mv.content, mv.tier,
-            mv.confidence, mv.valid_until, mv.reason, mv.created_at
+    `SELECT ${MEMORY_SELECT_COLUMNS}
      FROM memories m
-     JOIN memory_versions mv ON mv.memory_id = m.id AND mv.is_active = true
+     JOIN memory_versions mv ON mv.memory_id = m.id
+     WHERE m.user_id = $1
+       AND mv.status IN ('active', 'pending')
+       AND (mv.valid_until IS NULL OR mv.valid_until > now())
+     ORDER BY CASE WHEN mv.status = 'pending' THEN 0 ELSE 1 END, mv.created_at DESC
+     LIMIT 100`,
+    [userId],
+  );
+  return result.rows.map(mapMemoryRow);
+}
+
+export async function getActiveMemories(
+  userId: string,
+  context: MemorySearchContext = {},
+): Promise<MemoryRecord[]> {
+  await expireStaleMemories(userId);
+  const result = await getPool().query(
+    `SELECT ${MEMORY_SELECT_COLUMNS}
+     FROM memories m
+     JOIN memory_versions mv ON mv.memory_id = m.id
      JOIN users u ON u.id = m.user_id
      WHERE m.user_id = $1
        AND (u.settings->>'memoryEnabled')::boolean = true
+       AND mv.is_active = true
+       AND mv.status = 'active'
        AND (mv.valid_until IS NULL OR mv.valid_until > now())
+       AND (
+         (COALESCE((u.settings->>'longTermMemoryEnabled')::boolean, true) = true
+           AND mv.tier = 'long' AND mv.scope = 'user' AND mv.scope_key IS NULL)
+         OR
+         (COALESCE((u.settings->>'shortTermMemoryEnabled')::boolean, true) = true
+           AND mv.tier = 'short' AND mv.scope = 'conversation' AND mv.scope_key = $2)
+       )
      ORDER BY mv.confidence DESC, mv.created_at DESC LIMIT 100`,
-    [userId],
+    [userId, context.conversationId ?? null],
   );
-  return result.rows.map((row) => ({
-    id: row.id,
-    versionId: row.version_id,
-    category: row.category,
-    content: row.content,
-    tier: row.tier,
-    confidence: Number(row.confidence),
-    validUntil: row.valid_until,
-    reason: row.reason,
-    createdAt: row.created_at,
-  }));
+  return result.rows.map(mapMemoryRow);
 }
 
 export async function searchMemories(
@@ -337,28 +427,35 @@ export async function searchMemories(
   query: string,
   limit = 8,
   queryEmbedding?: number[],
+  context: MemorySearchContext = {},
 ): Promise<MemoryRecord[]> {
+  await expireStaleMemories(userId);
   if (queryEmbedding?.length === 1024) {
     const vector = `[${queryEmbedding.join(",")}]`;
     const result = await getPool().query(
-      `SELECT m.id, mv.id AS version_id, mv.category, mv.content, mv.tier,
-              mv.confidence, mv.valid_until, mv.reason, mv.created_at,
+      `SELECT ${MEMORY_SELECT_COLUMNS},
               1 - (mv.embedding_v2 <=> $2::vector) AS similarity
        FROM memories m
-       JOIN memory_versions mv ON mv.memory_id = m.id AND mv.is_active = true
+       JOIN memory_versions mv ON mv.memory_id = m.id
        JOIN users u ON u.id = m.user_id
        WHERE m.user_id = $1
          AND (u.settings->>'memoryEnabled')::boolean = true
+         AND mv.status = 'active' AND mv.is_active = true
          AND (mv.valid_until IS NULL OR mv.valid_until > now())
          AND mv.embedding_v2 IS NOT NULL
+         AND (
+           (COALESCE((u.settings->>'longTermMemoryEnabled')::boolean, true) = true
+             AND mv.tier = 'long' AND mv.scope = 'user' AND mv.scope_key IS NULL)
+           OR
+           (COALESCE((u.settings->>'shortTermMemoryEnabled')::boolean, true) = true
+             AND mv.tier = 'short' AND mv.scope = 'conversation' AND mv.scope_key = $3)
+         )
        ORDER BY mv.embedding_v2 <=> $2::vector LIMIT 32`,
-      [userId, vector],
+      [userId, vector, context.conversationId ?? null],
     );
-    if (result.rowCount) {
-      return rankHybridMemories(result.rows, query, limit);
-    }
+    if (result.rowCount) return rankHybridMemories(result.rows, query, limit);
   }
-  return rankMemories(await getActiveMemories(userId), query, limit);
+  return rankMemories(await getActiveMemories(userId, context), query, limit);
 }
 
 function rankHybridMemories(rows: any[], query: string, limit: number): MemoryRecord[] {
@@ -372,17 +469,7 @@ function rankHybridMemories(rows: any[], query: string, limit: number): MemoryRe
     const freshness = Math.exp(-ageDays / 90);
     const score = Number(row.similarity) * 0.55 + lexical * 0.15 + Number(row.confidence) * 0.15 + freshness * 0.1 + (row.tier === "long" ? 0.05 : 0);
     return { row, score };
-  }).sort((a, b) => b.score - a.score).slice(0, limit).map(({ row }) => ({
-    id: row.id,
-    versionId: row.version_id,
-    category: row.category,
-    content: row.content,
-    tier: row.tier,
-    confidence: Number(row.confidence),
-    validUntil: row.valid_until,
-    reason: row.reason,
-    createdAt: row.created_at,
-  }));
+  }).sort((a, b) => b.score - a.score).slice(0, limit).map(({ row }) => mapMemoryRow(row));
 }
 
 export function rankMemories(
@@ -436,7 +523,7 @@ export async function getProfileForContext(
   const settings = await getPool().query(`SELECT settings FROM users WHERE id = $1`, [
     userId,
   ]);
-  if (settings.rows[0]?.settings?.memoryEnabled === false) return null;
+  if (settings.rows[0]?.settings?.memoryEnabled === false || settings.rows[0]?.settings?.longTermMemoryEnabled === false) return null;
   return getLatestProfile(userId);
 }
 
@@ -444,47 +531,82 @@ export async function commitProfileSnapshot(input: {
   userId: string;
   summary: string;
   dimensionWeights: Record<string, number>;
+  idempotencyKey?: string;
 }) {
-  const memories = await getActiveMemories(input.userId);
-  const [feedback, corrected, observations] = await Promise.all([
-    getPool().query(
+  return withTransaction(async (client) => {
+    const commit = async () => {
+      await expireStaleMemoriesWithClient(client, input.userId);
+      const memoriesResult = await client.query(
+        `SELECT ${MEMORY_SELECT_COLUMNS}
+         FROM memories m
+         JOIN memory_versions mv ON mv.memory_id = m.id
+         JOIN users u ON u.id = m.user_id
+         WHERE m.user_id = $1
+           AND (u.settings->>'memoryEnabled')::boolean = true
+           AND COALESCE((u.settings->>'longTermMemoryEnabled')::boolean, true) = true
+           AND mv.status = 'active' AND mv.is_active = true
+           AND mv.tier = 'long' AND mv.scope = 'user' AND mv.scope_key IS NULL
+           AND (mv.valid_until IS NULL OR mv.valid_until > now())`,
+        [input.userId],
+      );
+      const memories = memoriesResult.rows.map(mapMemoryRow);
+      const [feedback, corrected, observations] = await Promise.all([
+        client.query(
       `SELECT
         count(DISTINCT message_id) FILTER (WHERE value = 'understood')::int AS positive,
         count(DISTINCT message_id) FILTER (WHERE value = 'not-me')::int AS negative
        FROM feedback WHERE user_id = $1`,
       [input.userId],
-    ),
-    getPool().query(
+        ),
+        client.query(
       `SELECT count(*)::int AS count FROM memory_versions
-       WHERE user_id = $1 AND is_active = false`,
+       WHERE user_id = $1 AND status IN ('superseded', 'rejected', 'withdrawn')`,
       [input.userId],
-    ),
-    getPool().query(UNDERSTANDING_OBSERVATIONS_SQL, [input.userId]),
-  ]);
-  const components = deriveUnderstandingComponents({
-    memories,
-    dimensionWeights: input.dimensionWeights,
-    positiveFeedback: feedback.rows[0]?.positive ?? 0,
-    negativeFeedback: feedback.rows[0]?.negative ?? 0,
-    correctedMemories: corrected.rows[0]?.count ?? 0,
-    observationSessions: observations.rows[0]?.sessions ?? 0,
-    observationSpanDays: observations.rows[0]?.span_days ?? 0,
+        ),
+        client.query(UNDERSTANDING_OBSERVATIONS_SQL, [input.userId]),
+      ]);
+      const components = deriveUnderstandingComponents({
+        memories,
+        dimensionWeights: input.dimensionWeights,
+        positiveFeedback: feedback.rows[0]?.positive ?? 0,
+        negativeFeedback: feedback.rows[0]?.negative ?? 0,
+        correctedMemories: corrected.rows[0]?.count ?? 0,
+        observationSessions: observations.rows[0]?.sessions ?? 0,
+        observationSpanDays: observations.rows[0]?.span_days ?? 0,
+      });
+      const score = calculateUnderstandingScore(components);
+      const result = await client.query(
+        `INSERT INTO profile_snapshots
+          (id, user_id, summary, dimension_weights, understanding_components, understanding_score)
+         VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6) RETURNING *`,
+        [
+          randomUUID(),
+          input.userId,
+          input.summary,
+          JSON.stringify(input.dimensionWeights),
+          JSON.stringify(components),
+          score,
+        ],
+      );
+      const row = result.rows[0];
+      return {
+        id: row.id,
+        summary: row.summary,
+        dimensionWeights: row.dimension_weights,
+        understanding: row.understanding_components,
+        score: row.understanding_score,
+        createdAt: row.created_at,
+      } satisfies ProfileSnapshot;
+    };
+
+    if (!input.idempotencyKey) return commit();
+    return runMemoryOperation(client, {
+      userId: input.userId,
+      idempotencyKey: input.idempotencyKey,
+      operation: "commit_profile",
+      request: { trigger: input.idempotencyKey },
+    }, commit);
   });
-  const score = calculateUnderstandingScore(components);
-  const result = await getPool().query(
-    `INSERT INTO profile_snapshots
-      (id, user_id, summary, dimension_weights, understanding_components, understanding_score)
-     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6) RETURNING *`,
-    [
-      randomUUID(),
-      input.userId,
-      input.summary,
-      JSON.stringify(input.dimensionWeights),
-      JSON.stringify(components),
-      score,
-    ],
-  );
-  return result.rows[0];
 }
 
 export async function getConversationSummary(
@@ -496,6 +618,7 @@ export async function getConversationSummary(
      JOIN users u ON u.id = cs.user_id
      WHERE cs.user_id = $1 AND cs.conversation_id = $2
        AND (u.settings->>'memoryEnabled')::boolean = true
+       AND COALESCE((u.settings->>'shortTermMemoryEnabled')::boolean, true) = true
      ORDER BY cs.created_at DESC LIMIT 1`,
     [userId, conversationId],
   );
@@ -543,178 +666,254 @@ export async function commitReflection(input: {
   sourceMessageId: string;
   reflection: ReflectionOutput;
   embeddings?: Array<number[] | null>;
-}): Promise<{ memoryCount: number; profile: ProfileSnapshot | null }> {
+  idempotencyKey: string;
+  traceId?: string;
+}): Promise<{ memoryCount: number; profile: ProfileSnapshot | null; receipt: MemoryOperationReceipt }> {
   return withTransaction(async (client) => {
-    const settingsResult = await client.query(`SELECT settings FROM users WHERE id = $1`, [
-      input.userId,
-    ]);
-    const settings = settingsResult.rows[0]?.settings ?? {};
-    const memoryEnabled = settings.memoryEnabled !== false;
+    return runMemoryOperation(client, {
+      userId: input.userId,
+      idempotencyKey: input.idempotencyKey,
+      operation: "commit_reflection",
+      request: {
+        conversationId: input.conversationId,
+        sourceMessageId: input.sourceMessageId,
+      },
+    }, async () => {
+      await expireStaleMemoriesWithClient(client, input.userId);
+      const settingsResult = await client.query(`SELECT settings FROM users WHERE id = $1`, [input.userId]);
+      const settings = settingsResult.rows[0]?.settings ?? {};
+      const memoryEnabled = settings.memoryEnabled !== false;
+      const shortTermEnabled = memoryEnabled && settings.shortTermMemoryEnabled !== false;
+      const longTermEnabled = memoryEnabled && settings.longTermMemoryEnabled !== false;
+      const sourceResult = await client.query(
+        `SELECT msg.content, msg.created_at, c.kind
+         FROM messages msg
+         JOIN conversations c ON c.id = msg.conversation_id AND c.user_id = msg.user_id
+         WHERE msg.id = $1 AND msg.user_id = $2 AND msg.conversation_id = $3`,
+        [input.sourceMessageId, input.userId, input.conversationId],
+      );
+      if (!sourceResult.rowCount) throw new Error("memory_evidence_scope_invalid");
+      const sourceText = String(sourceResult.rows[0].content);
+      let committedMemoryCount = 0;
 
-    for (const [mutationIndex, mutation] of (memoryEnabled ? input.reflection.memories : []).entries()) {
-      const memoryId = mutation.memoryId ?? randomUUID();
-      if (mutation.memoryId) {
-        await client.query(
-          `UPDATE memory_versions SET is_active = false, status = 'superseded'
-           WHERE memory_id = $1 AND user_id = $2 AND is_active = true`,
-          [memoryId, input.userId],
+      for (const [mutationIndex, rawMutation] of input.reflection.memories.entries()) {
+        if (rawMutation.tier === "short" ? !shortTermEnabled : !longTermEnabled) continue;
+        const evidenceIds = [...new Set(rawMutation.evidenceMessageIds)];
+        if (evidenceIds.length !== rawMutation.evidenceMessageIds.length) {
+          throw new Error("memory_evidence_scope_invalid");
+        }
+        const evidenceResult = await client.query(
+          `SELECT id, content FROM messages
+           WHERE id = ANY($1::uuid[]) AND user_id = $2 AND conversation_id = $3`,
+          [evidenceIds, input.userId, input.conversationId],
         );
-      } else {
-        await client.query(
-          `INSERT INTO memories (id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-          [memoryId, input.userId],
+        if (evidenceResult.rowCount !== evidenceIds.length) throw new Error("memory_evidence_scope_invalid");
+        const sourceType = validatedMemorySourceType(
+          rawMutation.sourceType,
+          rawMutation.evidenceQuote,
+          evidenceResult.rows.map((row) => String(row.content)),
+          sourceResult.rows[0].kind,
         );
-      }
-      const versionId = randomUUID();
-      await client.query(
-        `INSERT INTO memory_versions
-          (id, memory_id, user_id, category, content, tier, confidence, valid_until, reason, embedding_v2, is_active, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector, true, 'active')`,
-        [
-          versionId,
-          memoryId,
-          input.userId,
-          mutation.category,
+        const mutation = normalizeMemoryMutation(rawMutation, {
+          conversationId: input.conversationId,
+          sourceText,
+          sourceType,
+        });
+        if (!shouldPersistMemory(
           mutation.content,
-          mutation.tier,
-          mutation.confidence,
-          mutation.validUntil,
-          mutation.reason,
-          input.embeddings?.[mutationIndex]?.length === 1024
-            ? `[${input.embeddings[mutationIndex]!.join(",")}]`
-            : null,
-        ],
-      );
-      for (const evidenceId of mutation.evidenceMessageIds) {
-        await client.query(
-          `INSERT INTO memory_evidence (memory_version_id, message_id, user_id)
-           VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-          [versionId, evidenceId, input.userId],
+          sourceText,
+          mutation.sourceType,
+          mutation.category,
+          mutation.evidenceQuote,
+        )) continue;
+
+        const withdrawn = await client.query(
+          `SELECT max(created_at) AS withdrawn_at FROM memory_withdrawals
+           WHERE user_id = $1 AND category = $2 AND content_hash = $3`,
+          [input.userId, mutation.category, memoryContentHash(mutation.content)],
         );
-      }
-    }
+        const withdrawnAt = withdrawn.rows[0]?.withdrawn_at;
+        const explicitRelearning = withdrawnAt
+          && isExplicitMemoryRequestForQuote(sourceText, mutation.evidenceQuote)
+          && new Date(sourceResult.rows[0].created_at).getTime() > new Date(withdrawnAt).getTime();
+        if (withdrawnAt && !explicitRelearning) continue;
 
-    if (memoryEnabled && input.reflection.summaryChanged !== false) {
-      await client.query(
-        `INSERT INTO conversation_summaries (id, conversation_id, user_id, summary, source_message_id)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [
-          randomUUID(),
-          input.conversationId,
-          input.userId,
-          input.reflection.sessionSummary,
-          input.sourceMessageId,
-        ],
-      );
-    }
+        const memoryId = mutation.memoryId ?? randomUUID();
+        if (mutation.memoryId) {
+          const expected = await client.query(
+            `SELECT mv.id FROM memories m
+             JOIN memory_versions mv ON mv.memory_id = m.id
+             WHERE m.id = $1 AND m.user_id = $2 AND mv.id = $3
+               AND mv.status = 'active' AND mv.is_active = true
+             FOR UPDATE`,
+            [memoryId, input.userId, mutation.expectedVersionId],
+          );
+          if (!expected.rowCount) throw new Error("memory_version_conflict");
+          const staleCandidates = await client.query(
+            `UPDATE memory_versions
+             SET status = 'rejected'
+             WHERE memory_id = $1 AND user_id = $2 AND status = 'pending'
+             RETURNING id, content`,
+            [memoryId, input.userId],
+          );
+          for (const row of staleCandidates.rows) {
+            await recordMemoryEvent(client, {
+              userId: input.userId,
+              memoryId,
+              versionId: row.id,
+              eventType: "rejected",
+              actor: "system",
+              traceId: input.traceId,
+              content: row.content,
+              payload: { reason: "被更新的候选替代" },
+            });
+          }
+        } else {
+          await client.query(`INSERT INTO memories (id, user_id) VALUES ($1, $2)`, [memoryId, input.userId]);
+        }
 
-    if (input.reflection.mood?.meaningful) {
-      if (settings.emotionTrackingEnabled !== false) {
+        const versionId = randomUUID();
+        const status = mutation.memoryId ? "pending" : mutation.status;
+        const isActive = status === "active";
         await client.query(
-          `INSERT INTO mood_samples (id, user_id, conversation_id, message_id, score, summary)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
+          `INSERT INTO memory_versions
+            (id, memory_id, user_id, category, content, tier, confidence, valid_until, reason,
+             embedding_v2, is_active, status, source_type, scope, scope_key, sensitivity,
+             evidence_quote, confirmed_at, parent_version_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector,
+                   $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
+          [
+            versionId,
+            memoryId,
+            input.userId,
+            mutation.category,
+            mutation.content,
+            mutation.tier,
+            mutation.confidence,
+            mutation.validUntil,
+            mutation.reason,
+            input.embeddings?.[mutationIndex]?.length === 1024
+              ? `[${input.embeddings[mutationIndex]!.join(",")}]`
+              : null,
+            isActive,
+            status,
+            mutation.sourceType,
+            mutation.scope,
+            mutation.scopeKey,
+            mutation.sensitivity,
+            mutation.evidenceQuote ?? null,
+            null,
+            mutation.expectedVersionId ?? null,
+          ],
+        );
+        for (const evidenceId of evidenceIds) {
+          await client.query(
+            `INSERT INTO memory_evidence (memory_version_id, message_id, user_id)
+             VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+            [versionId, evidenceId, input.userId],
+          );
+        }
+        await recordMemoryEvent(client, {
+          userId: input.userId,
+          memoryId,
+          versionId,
+          eventType: status === "pending" ? "candidate_created" : "created",
+          actor: "model",
+          traceId: input.traceId,
+          content: mutation.content,
+          payload: {
+            operation: mutation.operation,
+            parentVersionId: mutation.expectedVersionId ?? null,
+            sourceType: mutation.sourceType,
+            tier: mutation.tier,
+            scope: mutation.scope,
+          },
+        });
+        committedMemoryCount += 1;
+      }
+
+      if (shortTermEnabled && input.reflection.summaryChanged !== false) {
+        await client.query(
+          `INSERT INTO conversation_summaries (id, conversation_id, user_id, summary, source_message_id)
+           VALUES ($1, $2, $3, $4, $5)`,
           [
             randomUUID(),
-            input.userId,
             input.conversationId,
+            input.userId,
+            input.reflection.sessionSummary,
             input.sourceMessageId,
-            input.reflection.mood.score,
-            input.reflection.mood.summary,
           ],
         );
       }
-    }
 
-    let profile: ProfileSnapshot | null = null;
-    if (memoryEnabled && input.reflection.profileChanged !== false) {
-      const memoriesResult = await client.query(
-      `SELECT m.id, mv.id AS version_id, mv.category, mv.content, mv.tier,
-              mv.confidence, mv.valid_until, mv.reason, mv.created_at
-       FROM memories m JOIN memory_versions mv ON mv.memory_id = m.id AND mv.is_active = true
-       WHERE m.user_id = $1`,
-      [input.userId],
-    );
-      const memories: MemoryRecord[] = memoriesResult.rows.map((row) => ({
-      id: row.id,
-      versionId: row.version_id,
-      category: row.category,
-      content: row.content,
-      tier: row.tier,
-      confidence: Number(row.confidence),
-      validUntil: row.valid_until,
-      reason: row.reason,
-      createdAt: row.created_at,
-    }));
-      const feedback = await client.query(
-      `SELECT
-        count(DISTINCT message_id) FILTER (WHERE value = 'understood')::int AS positive,
-        count(DISTINCT message_id) FILTER (WHERE value = 'not-me')::int AS negative
-       FROM feedback WHERE user_id = $1`,
-      [input.userId],
-    );
-      const corrected = await client.query(
-      `SELECT count(*)::int AS count FROM memory_versions mv
-       WHERE mv.user_id = $1 AND mv.is_active = false`,
-      [input.userId],
-    );
-      const observations = await client.query(
-        UNDERSTANDING_OBSERVATIONS_SQL,
-        [input.userId],
-      );
-      const components = deriveUnderstandingComponents({
-      memories,
-      dimensionWeights: input.reflection.dimensionWeights,
-      positiveFeedback: feedback.rows[0]?.positive ?? 0,
-      negativeFeedback: feedback.rows[0]?.negative ?? 0,
-      correctedMemories: corrected.rows[0]?.count ?? 0,
-      observationSessions: observations.rows[0]?.sessions ?? 0,
-      observationSpanDays: observations.rows[0]?.span_days ?? 0,
+      if (input.reflection.mood?.meaningful && settings.emotionTrackingEnabled !== false) {
+        await client.query(
+          `INSERT INTO mood_samples (id, user_id, conversation_id, message_id, score, summary)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [randomUUID(), input.userId, input.conversationId, input.sourceMessageId, input.reflection.mood.score, input.reflection.mood.summary],
+        );
+      }
+
+      let profile: ProfileSnapshot | null = null;
+      if (longTermEnabled && input.reflection.profileChanged !== false) {
+        const memoriesResult = await client.query(
+          `SELECT ${MEMORY_SELECT_COLUMNS}
+           FROM memories m JOIN memory_versions mv ON mv.memory_id = m.id
+           WHERE m.user_id = $1 AND mv.status = 'active' AND mv.is_active = true
+             AND mv.tier = 'long' AND mv.scope = 'user' AND mv.scope_key IS NULL`,
+          [input.userId],
+        );
+        const memories: MemoryRecord[] = memoriesResult.rows.map(mapMemoryRow);
+        const feedback = await client.query(
+          `SELECT
+            count(DISTINCT message_id) FILTER (WHERE value = 'understood')::int AS positive,
+            count(DISTINCT message_id) FILTER (WHERE value = 'not-me')::int AS negative
+           FROM feedback WHERE user_id = $1`,
+          [input.userId],
+        );
+        const corrected = await client.query(
+          `SELECT count(*)::int AS count FROM memory_versions
+           WHERE user_id = $1 AND status IN ('superseded', 'rejected', 'withdrawn')`,
+          [input.userId],
+        );
+        const observations = await client.query(UNDERSTANDING_OBSERVATIONS_SQL, [input.userId]);
+        const components = deriveUnderstandingComponents({
+          memories,
+          dimensionWeights: input.reflection.dimensionWeights,
+          positiveFeedback: feedback.rows[0]?.positive ?? 0,
+          negativeFeedback: feedback.rows[0]?.negative ?? 0,
+          correctedMemories: corrected.rows[0]?.count ?? 0,
+          observationSessions: observations.rows[0]?.sessions ?? 0,
+          observationSpanDays: observations.rows[0]?.span_days ?? 0,
+        });
+        const score = calculateUnderstandingScore(components);
+        const profileResult = await client.query(
+          `INSERT INTO profile_snapshots
+            (id, user_id, summary, dimension_weights, understanding_components, understanding_score)
+           VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6) RETURNING *`,
+          [randomUUID(), input.userId, input.reflection.profileSummary, JSON.stringify(input.reflection.dimensionWeights), JSON.stringify(components), score],
+        );
+        const row = profileResult.rows[0];
+        profile = {
+          id: row.id,
+          summary: row.summary,
+          dimensionWeights: row.dimension_weights,
+          understanding: row.understanding_components,
+          score: row.understanding_score,
+          createdAt: row.created_at,
+        };
+      }
+
+      if (input.reflection.returnNote && settings.returnNotesEnabled !== false) {
+        await client.query(
+          `INSERT INTO return_notes
+            (id, user_id, conversation_id, content, valid_after, expires_at)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [randomUUID(), input.userId, input.conversationId, input.reflection.returnNote.content, input.reflection.returnNote.validAfter, input.reflection.returnNote.expiresAt],
+        );
+      }
+      return { memoryCount: committedMemoryCount, profile };
     });
-      const score = calculateUnderstandingScore(components);
-      const profileId = randomUUID();
-      const profileResult = await client.query(
-      `INSERT INTO profile_snapshots
-        (id, user_id, summary, dimension_weights, understanding_components, understanding_score)
-       VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6) RETURNING *`,
-      [
-        profileId,
-        input.userId,
-        input.reflection.profileSummary,
-        JSON.stringify(input.reflection.dimensionWeights),
-        JSON.stringify(components),
-        score,
-      ],
-      );
-      const row = profileResult.rows[0];
-      profile = {
-        id: row.id,
-        summary: row.summary,
-        dimensionWeights: row.dimension_weights,
-        understanding: row.understanding_components,
-        score: row.understanding_score,
-        createdAt: row.created_at,
-      };
-    }
-
-    if (input.reflection.returnNote && settings.returnNotesEnabled !== false) {
-      await client.query(
-        `INSERT INTO return_notes
-          (id, user_id, conversation_id, content, valid_after, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [
-          randomUUID(),
-          input.userId,
-          input.conversationId,
-          input.reflection.returnNote.content,
-          input.reflection.returnNote.validAfter,
-          input.reflection.returnNote.expiresAt,
-        ],
-      );
-    }
-    return {
-      memoryCount: memoryEnabled ? input.reflection.memories.length : 0,
-      profile,
-    };
   });
 }
 
@@ -798,40 +997,270 @@ export async function addFeedback(input: {
   return id;
 }
 
-export async function withdrawMemory(input: {
-  userId: string;
-  memoryId: string;
-  reason?: string;
-}) {
+export async function confirmMemory(input: MemoryConfirmInput & { userId: string; traceId?: string }) {
   return withTransaction(async (client) => {
-    const current = await client.query(
-      `SELECT mv.id, mv.category, mv.content FROM memories m
-       JOIN memory_versions mv ON mv.memory_id = m.id AND mv.is_active = true
-       WHERE m.id = $1 AND m.user_id = $2 FOR UPDATE`,
-      [input.memoryId, input.userId],
-    );
-    if (!current.rowCount) throw new Error("找不到可撤回的活动记忆");
-    const row = current.rows[0];
-    await client.query(
-      `UPDATE memory_versions SET is_active = false, status = 'withdrawn'
-       WHERE id = $1 AND user_id = $2`,
-      [row.id, input.userId],
-    );
-    const withdrawalId = randomUUID();
-    await client.query(
-      `INSERT INTO memory_withdrawals
-        (id, user_id, memory_id, category, content_hash, reason)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [
-        withdrawalId,
-        input.userId,
-        input.memoryId,
-        row.category,
-        createHash("sha256").update(row.content).digest("hex"),
-        input.reason ?? "用户在画像界面主动撤回",
-      ],
-    );
-    return { withdrawalId, memoryId: input.memoryId, category: row.category };
+    return runMemoryOperation(client, {
+      userId: input.userId,
+      idempotencyKey: input.idempotencyKey,
+      operation: "confirm",
+      request: { memoryId: input.memoryId, versionId: input.versionId },
+    }, async () => {
+      const candidateResult = await client.query(
+        `SELECT mv.* FROM memories m
+         JOIN memory_versions mv ON mv.memory_id = m.id
+         WHERE m.id = $1 AND m.user_id = $2 AND mv.id = $3 AND mv.status = 'pending'
+         FOR UPDATE`,
+        [input.memoryId, input.userId, input.versionId],
+      );
+      if (!candidateResult.rowCount) throw new Error("memory_version_conflict");
+      const candidate = candidateResult.rows[0];
+      const activeResult = await client.query(
+        `UPDATE memory_versions
+         SET is_active = false, status = 'superseded'
+         WHERE memory_id = $1 AND user_id = $2 AND status = 'active' AND is_active = true
+         RETURNING id, content`,
+        [input.memoryId, input.userId],
+      );
+      for (const row of activeResult.rows) {
+        await recordMemoryEvent(client, {
+          userId: input.userId,
+          memoryId: input.memoryId,
+          versionId: row.id,
+          eventType: "superseded",
+          actor: "user",
+          traceId: input.traceId,
+          content: row.content,
+          payload: { acceptedCandidateVersionId: input.versionId },
+        });
+      }
+      await client.query(
+        `UPDATE memory_versions SET status = 'accepted'
+         WHERE id = $1 AND user_id = $2 AND status = 'pending'`,
+        [input.versionId, input.userId],
+      );
+      const versionId = randomUUID();
+      const confirmedResult = await client.query(
+        `INSERT INTO memory_versions
+          (id, memory_id, user_id, category, content, tier, confidence, valid_until, reason,
+           embedding, embedding_v2, is_active, status, source_type, scope, scope_key,
+           sensitivity, evidence_quote, confirmed_at, parent_version_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                 $10, $11, true, 'active', $12, $13, $14, $15, $16, now(), $17)
+         RETURNING *`,
+        [
+          versionId,
+          input.memoryId,
+          input.userId,
+          candidate.category,
+          candidate.content,
+          candidate.tier,
+          candidate.confidence,
+          candidate.valid_until,
+          "用户确认了候选认识",
+          candidate.embedding,
+          candidate.embedding_v2,
+          candidate.source_type,
+          candidate.scope,
+          candidate.scope_key,
+          candidate.sensitivity,
+          candidate.evidence_quote,
+          input.versionId,
+        ],
+      );
+      await client.query(
+        `INSERT INTO memory_evidence (memory_version_id, message_id, user_id)
+         SELECT $1, message_id, user_id FROM memory_evidence
+         WHERE memory_version_id = $2
+         ON CONFLICT DO NOTHING`,
+        [versionId, input.versionId],
+      );
+      await recordMemoryEvent(client, {
+        userId: input.userId,
+        memoryId: input.memoryId,
+        versionId,
+        eventType: "confirmed",
+        actor: "user",
+        traceId: input.traceId,
+        content: candidate.content,
+        payload: { candidateVersionId: input.versionId },
+      });
+      return {
+        memory: mapMemoryRow({ ...confirmedResult.rows[0], id: input.memoryId, version_id: versionId }),
+        acceptedVersionId: input.versionId,
+      };
+    });
+  });
+}
+
+export async function rejectMemory(input: MemoryRejectInput & { userId: string; traceId?: string }) {
+  return withTransaction(async (client) => {
+    return runMemoryOperation(client, {
+      userId: input.userId,
+      idempotencyKey: input.idempotencyKey,
+      operation: "reject",
+      request: { memoryId: input.memoryId, versionId: input.versionId, reason: input.reason },
+    }, async () => {
+      const result = await client.query(
+        `UPDATE memory_versions mv
+         SET status = 'rejected'
+         FROM memories m
+         WHERE mv.memory_id = m.id AND m.id = $1 AND m.user_id = $2
+           AND mv.id = $3 AND mv.status = 'pending' AND mv.is_active = false
+         RETURNING mv.id, mv.category, mv.content, mv.tier`,
+        [input.memoryId, input.userId, input.versionId],
+      );
+      if (!result.rowCount) throw new Error("memory_version_conflict");
+      await client.query(
+        `INSERT INTO memory_withdrawals
+          (id, user_id, memory_id, category, content_hash, reason)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          randomUUID(),
+          input.userId,
+          input.memoryId,
+          result.rows[0].category,
+          memoryContentHash(result.rows[0].content),
+          input.reason ?? "用户拒绝了候选认识",
+        ],
+      );
+      await recordMemoryEvent(client, {
+        userId: input.userId,
+        memoryId: input.memoryId,
+        versionId: input.versionId,
+        eventType: "rejected",
+        actor: "user",
+        traceId: input.traceId,
+        content: result.rows[0].content,
+        payload: { reason: input.reason ?? "用户拒绝了候选认识" },
+      });
+      return { rejected: true, memoryId: input.memoryId, versionId: input.versionId };
+    });
+  });
+}
+
+export async function withdrawMemory(input: MemoryWithdrawInput & { userId: string; traceId?: string }) {
+  return withTransaction(async (client) => {
+    return runMemoryOperation(client, {
+      userId: input.userId,
+      idempotencyKey: input.idempotencyKey,
+      operation: "withdraw",
+      request: { memoryId: input.memoryId, versionId: input.versionId, reason: input.reason },
+    }, async () => {
+      const pending = await client.query(
+        `UPDATE memory_versions
+         SET status = 'rejected'
+         WHERE memory_id = $1 AND user_id = $2 AND status = 'pending'
+         RETURNING id, category, content`,
+        [input.memoryId, input.userId],
+      );
+      for (const candidate of pending.rows) {
+        await client.query(
+          `INSERT INTO memory_withdrawals
+            (id, user_id, memory_id, category, content_hash, reason)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            randomUUID(),
+            input.userId,
+            input.memoryId,
+            candidate.category,
+            memoryContentHash(candidate.content),
+            "撤回活动记忆时一并拒绝候选",
+          ],
+        );
+        await recordMemoryEvent(client, {
+          userId: input.userId,
+          memoryId: input.memoryId,
+          versionId: candidate.id,
+          eventType: "rejected",
+          actor: "user",
+          traceId: input.traceId,
+          content: candidate.content,
+          payload: { reason: "撤回活动记忆时一并拒绝候选" },
+        });
+      }
+      const current = await client.query(
+        `UPDATE memory_versions mv
+         SET is_active = false, status = 'withdrawn'
+         FROM memories m
+         WHERE mv.memory_id = m.id AND m.id = $1 AND m.user_id = $2
+           AND mv.id = $3 AND mv.status = 'active' AND mv.is_active = true
+         RETURNING mv.id, mv.category, mv.content, mv.tier`,
+        [input.memoryId, input.userId, input.versionId],
+      );
+      if (!current.rowCount) throw new Error("memory_version_conflict");
+      const row = current.rows[0];
+      const withdrawalId = randomUUID();
+      await client.query(
+        `INSERT INTO memory_withdrawals
+          (id, user_id, memory_id, category, content_hash, reason)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [withdrawalId, input.userId, input.memoryId, row.category, memoryContentHash(row.content), input.reason ?? "用户主动撤回"],
+      );
+      await recordMemoryEvent(client, {
+        userId: input.userId,
+        memoryId: input.memoryId,
+        versionId: input.versionId,
+        eventType: "withdrawn",
+        actor: "user",
+        traceId: input.traceId,
+        content: row.content,
+        payload: { reason: input.reason ?? "用户主动撤回" },
+      });
+      return { withdrawalId, memoryId: input.memoryId, versionId: input.versionId, category: row.category, tier: row.tier };
+    });
+  });
+}
+
+export async function recordMemoryUsage(input: MemoryUsageInput & { userId: string; traceId?: string }) {
+  return withTransaction(async (client) => {
+    return runMemoryOperation(client, {
+      userId: input.userId,
+      idempotencyKey: input.idempotencyKey,
+      operation: "record_usage",
+      request: {
+        conversationId: input.conversationId,
+        versionIds: [...new Set(input.versionIds)].sort(),
+      },
+    }, async () => {
+      const versionIds = [...new Set(input.versionIds)];
+      const used = await client.query(
+        `UPDATE memory_versions mv
+         SET last_used_at = now()
+         FROM memories m
+         WHERE mv.memory_id = m.id
+           AND m.user_id = $1 AND mv.user_id = $1
+           AND mv.id = ANY($2::uuid[])
+           AND mv.status = 'active' AND mv.is_active = true
+           AND (mv.valid_until IS NULL OR mv.valid_until > now())
+           AND (
+             (mv.tier = 'long' AND mv.scope = 'user' AND mv.scope_key IS NULL)
+             OR
+             (mv.tier = 'short' AND mv.scope = 'conversation' AND mv.scope_key = $3)
+           )
+         RETURNING mv.id, mv.memory_id, mv.content`,
+        [input.userId, versionIds, input.conversationId],
+      );
+      if (used.rowCount) {
+        await client.query(
+          `INSERT INTO memory_events
+            (id, user_id, memory_id, version_id, event_type, actor, trace_id, content_hash, payload)
+           SELECT event_id, $1, memory_id, version_id, 'used', 'system', $2, content_hash,
+                  jsonb_build_object('conversationId', $3::text)
+           FROM unnest($4::uuid[], $5::uuid[], $6::uuid[], $7::text[])
+             AS usage_events(event_id, memory_id, version_id, content_hash)`,
+          [
+            input.userId,
+            input.traceId ?? null,
+            input.conversationId,
+            used.rows.map(() => randomUUID()),
+            used.rows.map((row) => row.memory_id),
+            used.rows.map((row) => row.id),
+            used.rows.map((row) => memoryContentHash(row.content)),
+          ],
+        );
+      }
+      return { count: used.rowCount, versionIds: used.rows.map((row) => row.id) };
+    });
   });
 }
 
@@ -844,6 +1273,8 @@ export async function deleteAllUserData(userId: string): Promise<void> {
       "benchmark_outputs",
       "benchmark_runs",
       "risk_events",
+      "memory_operations",
+      "memory_events",
       "memory_withdrawals",
       "mcp_calls",
       "model_runs",
@@ -1197,7 +1628,7 @@ export async function getActivitiesSince(userId: string, since?: string) {
 }
 
 export async function getDeveloperData(userId: string) {
-  const [traces, memories, profiles, skills, mcpCalls, modelRuns] = await Promise.all([
+  const [traces, memories, memoryEvents, profiles, skills, mcpCalls, modelRuns] = await Promise.all([
     getPool().query(
       `SELECT * FROM trace_events WHERE user_id = $1 ORDER BY created_at DESC LIMIT 160`,
       [userId],
@@ -1208,6 +1639,10 @@ export async function getDeveloperData(userId: string) {
        FROM memories m JOIN memory_versions mv ON mv.memory_id = m.id
        LEFT JOIN memory_evidence me ON me.memory_version_id = mv.id
        WHERE m.user_id = $1 GROUP BY m.id, mv.id ORDER BY mv.created_at DESC`,
+      [userId],
+    ),
+    getPool().query(
+      `SELECT * FROM memory_events WHERE user_id = $1 ORDER BY created_at DESC LIMIT 160`,
       [userId],
     ),
     getPool().query(
@@ -1230,6 +1665,7 @@ export async function getDeveloperData(userId: string) {
   return {
     traces: traces.rows,
     memories: memories.rows,
+    memoryEvents: memoryEvents.rows,
     profiles: profiles.rows,
     skills: skills.rows,
     mcpCalls: mcpCalls.rows,
@@ -1261,4 +1697,114 @@ function mapMessage(row: any): ChatMessage {
     createdAt: row.created_at,
     metadata: row.metadata ?? {},
   };
+}
+
+function mapMemoryRow(row: any): MemoryRecord {
+  return {
+    id: row.id,
+    versionId: row.version_id ?? row.id,
+    category: row.category,
+    content: row.content,
+    tier: row.tier,
+    confidence: Number(row.confidence),
+    validUntil: row.valid_until,
+    reason: row.reason,
+    status: row.status,
+    sourceType: row.source_type,
+    scope: row.scope,
+    scopeKey: row.scope_key ?? null,
+    sensitivity: row.sensitivity,
+    evidenceQuote: row.evidence_quote ?? null,
+    confirmedAt: row.confirmed_at ?? null,
+    lastUsedAt: row.last_used_at ?? null,
+    parentVersionId: row.parent_version_id ?? null,
+    createdAt: row.created_at,
+  };
+}
+
+async function recordMemoryEvent(
+  client: Pick<PoolClient, "query">,
+  input: {
+    userId: string;
+    memoryId: string;
+    versionId: string;
+    eventType: "created" | "candidate_created" | "updated" | "confirmed" | "superseded" | "rejected" | "withdrawn" | "expired" | "used" | "embedding_updated";
+    actor: "user" | "model" | "system";
+    traceId?: string;
+    content?: string;
+    payload?: Record<string, unknown>;
+  },
+) {
+  await client.query(
+    `INSERT INTO memory_events
+      (id, user_id, memory_id, version_id, event_type, actor, trace_id, content_hash, payload)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)`,
+    [
+      randomUUID(),
+      input.userId,
+      input.memoryId,
+      input.versionId,
+      input.eventType,
+      input.actor,
+      input.traceId ?? null,
+      input.content ? memoryContentHash(input.content) : null,
+      JSON.stringify(input.payload ?? {}),
+    ],
+  );
+}
+
+async function runMemoryOperation<T extends Record<string, unknown>>(
+  client: Pick<PoolClient, "query">,
+  operation: {
+    userId: string;
+    idempotencyKey: string;
+    operation: string;
+    request: unknown;
+  },
+  execute: () => Promise<T>,
+): Promise<T & { receipt: MemoryOperationReceipt }> {
+  const requestHash = createHash("sha256").update(stableJson(operation.request)).digest("hex");
+  const inserted = await client.query(
+    `INSERT INTO memory_operations (user_id, idempotency_key, operation, request_hash)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (user_id, idempotency_key) DO NOTHING
+     RETURNING idempotency_key`,
+    [operation.userId, operation.idempotencyKey, operation.operation, requestHash],
+  );
+  if (!inserted.rowCount) {
+    const existing = await client.query(
+      `SELECT operation, request_hash, result FROM memory_operations
+       WHERE user_id = $1 AND idempotency_key = $2 FOR UPDATE`,
+      [operation.userId, operation.idempotencyKey],
+    );
+    const row = existing.rows[0];
+    if (!row || row.operation !== operation.operation || row.request_hash !== requestHash) {
+      throw new Error("memory_idempotency_conflict");
+    }
+    if (!row.result) throw new Error("memory_operation_incomplete");
+    return {
+      ...(row.result as T),
+      receipt: { idempotencyKey: operation.idempotencyKey, operation: operation.operation, replayed: true },
+    };
+  }
+  const result = await execute();
+  const withReceipt = {
+    ...result,
+    receipt: { idempotencyKey: operation.idempotencyKey, operation: operation.operation, replayed: false },
+  };
+  await client.query(
+    `UPDATE memory_operations SET result = $3::jsonb
+     WHERE user_id = $1 AND idempotency_key = $2`,
+    [operation.userId, operation.idempotencyKey, JSON.stringify(withReceipt)],
+  );
+  return withReceipt;
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, item]) => item !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right));
+  return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`).join(",")}}`;
 }

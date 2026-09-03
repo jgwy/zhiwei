@@ -69,7 +69,7 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
   const [messages, profileResult, memoryResult, summary, skillResult] = await Promise.all([
     listMessages(userId, conversationId, 24),
     callMemoryMcp<{ profile: ProfileSnapshot | null }>({ tool: "profile_get_current", userId, traceId }),
-    callMemoryMcp<{ memories: MemoryRecord[] }>({ tool: "memory_search", userId, traceId, arguments: { query: input.content, limit: 8, ...(queryEmbedding ? { queryEmbedding } : {}) } }),
+    callMemoryMcp<{ memories: MemoryRecord[] }>({ tool: "memory_search", userId, traceId, arguments: { query: input.content, limit: 8, conversationId, ...(queryEmbedding ? { queryEmbedding } : {}) } }),
     getConversationSummary(userId, conversationId),
     callMemoryMcp<any>({ tool: "personal_skill_get_active", userId, traceId }),
   ]);
@@ -188,6 +188,27 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
           : riskEventId;
         await recordTrace({ userId, traceId, stage: "dialogue.completed", durationMs: completedMeta?.durationMs, payload: { messageId: assistantMessageId, output, jobId, sources, meta: completedMeta, status } });
         send({ type: "message.completed", messageId: assistantMessageId, jobId, sources });
+        if (compiled.memories.length) {
+          try {
+            await callMemoryMcp({
+              tool: "memory_record_usage",
+              userId,
+              traceId,
+              arguments: {
+                conversationId,
+                versionIds: compiled.memories.map((memory) => memory.versionId),
+                idempotencyKey: `memory-usage:${assistantMessageId}`,
+              },
+            });
+          } catch (usageError) {
+            await recordTrace({
+              userId,
+              traceId,
+              stage: "memory.usage_log_deferred",
+              payload: { code: publicErrorCode(usageError) },
+            }).catch(() => undefined);
+          }
+        }
       } catch (error) {
         if (output) {
           await addMessage({ id: assistantMessageId, conversationId, userId, role: "assistant", content: output, metadata: { traceId, gateway: gateway.id, status: request.signal.aborted ? "stopped" : "interrupted", sources } });

@@ -33,11 +33,10 @@ export async function callMemoryMcp<T>(input: {
       },
     }),
   });
+  const payload = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(`Memory MCP ${input.tool} 请求失败：${response.status}`);
+    throw new Error(payload?.error?.message ?? `Memory MCP ${input.tool} 请求失败：${response.status}`);
   }
-  const payload = await response.json();
   if (payload.error) throw new Error(payload.error.message ?? "Memory MCP 返回错误");
   return payload.result as T;
 }
-

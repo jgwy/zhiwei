@@ -1,29 +1,132 @@
 "use client";
 
 import { LineChart, Line, ResponsiveContainer, YAxis, Tooltip } from "recharts";
-import { ChevronRight, Settings2, Undo2, Trash2 } from "lucide-react";
+import { Check, MessageSquareText, Settings2, Trash2, Undo2, X } from "lucide-react";
 import { useState } from "react";
 import type { BootstrapData } from "@/lib/client-types";
 import { categoryLabel } from "@zhiwei/core/client";
 import { Toggle } from "@/components/ui/toggle";
+import { groupVisibleMemories, isMemorySettingEnabled } from "@/lib/memory-view";
+
+type MemoryView = BootstrapData["memories"][number];
+type MemoryAction = "confirm" | "reject" | "withdraw";
 
 export function InsightPanel({
   data,
-  onMemoryClick,
+  activeConversationId,
+  onMemoryCorrect,
+  onMemoryConfirm,
+  onMemoryReject,
   onSettings,
   onWithdraw,
   onDeleteAll,
 }: {
   data: BootstrapData;
-  onMemoryClick: (content: string) => void;
-  onSettings: (settings: Record<string, boolean>) => void;
-  onWithdraw: (memoryId: string) => void;
+  activeConversationId: string | null;
+  onMemoryCorrect: (content: string) => void;
+  onMemoryConfirm: (memoryId: string, versionId: string) => Promise<void>;
+  onMemoryReject: (memoryId: string, versionId: string) => Promise<void>;
+  onSettings: (settings: Record<string, boolean>) => Promise<void>;
+  onWithdraw: (memoryId: string, versionId: string) => Promise<void>;
   onDeleteAll: (confirmation: string) => void;
 }) {
   const score = data.profile?.score ?? 0;
   const components = data.profile?.understanding;
   const settings = data.user.settings;
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [busySetting, setBusySetting] = useState<string | null>(null);
+  const [withdrawTarget, setWithdrawTarget] = useState<string | null>(null);
+  const [panelError, setPanelError] = useState<string | null>(null);
+
+  const { pending: pendingMemories, active: activeMemories, longTerm: longTermMemories, shortTerm: shortTermMemories } = groupVisibleMemories(data.memories, activeConversationId);
+
+  async function runMemoryAction(memory: MemoryView, action: MemoryAction) {
+    const actionKey = `${action}:${memory.versionId}`;
+    if (busyAction) return false;
+    setBusyAction(actionKey);
+    setPanelError(null);
+    try {
+      if (action === "confirm") await onMemoryConfirm(memory.id, memory.versionId);
+      if (action === "reject") await onMemoryReject(memory.id, memory.versionId);
+      if (action === "withdraw") await onWithdraw(memory.id, memory.versionId);
+      return true;
+    } catch (error) {
+      setPanelError(error instanceof Error ? error.message : "这次操作没有完成，请重试。");
+      return false;
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function updateSetting(key: string, checked: boolean) {
+    if (busySetting) return;
+    setBusySetting(key);
+    setPanelError(null);
+    try {
+      await onSettings({ [key]: checked });
+    } catch (error) {
+      setPanelError(error instanceof Error ? error.message : "设置没有保存成功，请重试。");
+    } finally {
+      setBusySetting(null);
+    }
+  }
+
+  function renderMemory(memory: MemoryView, state: "pending" | "active") {
+    const isBusy = busyAction?.endsWith(memory.versionId) ?? false;
+    const source = state === "pending" ? "待你确认" : "已生效";
+    const scope = memory.scope === "conversation" ? "当前对话" : "跨对话";
+    const lifetime = memory.tier === "short" ? shortTermLifetime(memory.validUntil) : scope;
+
+    return (
+      <article className={`memory-card memory-card-${state}`} key={memory.versionId} aria-busy={isBusy} data-memory-id={memory.id} data-version-id={memory.versionId}>
+        <div className="memory-card-meta">
+          <span>{categoryLabel(memory.category)}</span>
+          <small>{source} · {lifetime}</small>
+        </div>
+        <p>{memory.content}</p>
+
+        {state === "pending" ? (
+          <div className="memory-card-actions">
+            <button className="memory-confirm-button" disabled={Boolean(busyAction)} onClick={() => void runMemoryAction(memory, "confirm")} aria-label={`确认这条认识：${memory.content}`}>
+              <Check size={13} />{isBusy && busyAction?.startsWith("confirm") ? "正在确认…" : "确认"}
+            </button>
+            <button disabled={Boolean(busyAction)} onClick={() => void runMemoryAction(memory, "reject")} aria-label={`拒绝这条认识：${memory.content}`}>
+              <X size={13} />{isBusy && busyAction?.startsWith("reject") ? "正在处理…" : "不像我"}
+            </button>
+          </div>
+        ) : withdrawTarget === memory.versionId ? (
+          <div className="memory-withdraw-confirm" role="group" aria-label="确认撤回这条认识">
+            <span>撤回后，知微将不再使用这一版本。</span>
+            <div>
+              <button disabled={isBusy} onClick={() => setWithdrawTarget(null)} aria-label={`继续保留这条认识：${memory.content}`}>继续保留</button>
+              <button className="memory-withdraw-button" disabled={Boolean(busyAction)} onClick={() => void runMemoryAction(memory, "withdraw").then((done) => { if (done) setWithdrawTarget(null); })} aria-label={`确认撤回这条认识：${memory.content}`}>
+                {isBusy ? "正在撤回…" : "确认撤回"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="memory-card-actions">
+            <button onClick={() => onMemoryCorrect(memory.content)} aria-label={`在对话中修正这条认识：${memory.content}`}><MessageSquareText size={13} />在对话中修正</button>
+            <button className="memory-withdraw-trigger" disabled={Boolean(busyAction)} onClick={() => setWithdrawTarget(memory.versionId)} aria-label={`准备撤回这条认识：${memory.content}`}><Undo2 size={13} />撤回</button>
+          </div>
+        )}
+      </article>
+    );
+  }
+
+  function renderMemoryGroup(title: string, description: string, memories: MemoryView[]) {
+    return (
+      <section className="memory-tier-group">
+        <header>
+          <div><strong>{title}</strong><span>{description}</span></div>
+          <em>{memories.length} 条</em>
+        </header>
+        {memories.length ? <div className="memory-card-list">{memories.map((memory) => renderMemory(memory, "active"))}</div> : <p className="memory-empty">还没有这类记忆。</p>}
+      </section>
+    );
+  }
+
   return (
     <aside className="insight-panel">
       <div className="insight-heading">
@@ -80,28 +183,30 @@ export function InsightPanel({
         </div>
       </section>
 
-      <section className="insight-section">
-        <div className="section-title"><h3>知微眼中的你</h3><span>{data.memories.length} 条认识</span></div>
+      <section className="insight-section memory-section">
+        <div className="section-title"><h3>知微眼中的你</h3><span>{activeMemories.length} 条生效</span></div>
         <p className="profile-summary">{data.profile?.summary ?? "我们还在初识阶段。等你多说一点，我会在这里形成一段会持续更新的理解。"}</p>
-        <div className="memory-list">
-          {data.memories.slice(0, 6).map((memory) => (
-            <div className="memory-row" key={memory.versionId}>
-              <button onClick={() => onMemoryClick(memory.content)}>
-                <span><small>{categoryLabel(memory.category)}</small>{memory.content}</span>
-                <ChevronRight size={15} />
-              </button>
-              <button className="withdraw-button" onClick={() => onWithdraw(memory.id)} aria-label={`撤回记忆：${memory.content}`} title="撤回这条认识">
-                <Undo2 size={13} />
-              </button>
-            </div>
-          ))}
+
+        {pendingMemories.length ? (
+          <section className="memory-candidate-box" aria-labelledby="memory-candidate-title">
+            <header><div><strong id="memory-candidate-title">待你确认</strong><span>这些是知微新形成的认识，确认前不会用于之后的回答。</span></div><em>{pendingMemories.length} 条</em></header>
+            <div className="memory-card-list">{pendingMemories.map((memory) => renderMemory(memory, "pending"))}</div>
+          </section>
+        ) : null}
+
+        {panelError ? <p className="memory-panel-error" role="alert">{panelError}</p> : null}
+
+        <div className="memory-tier-list">
+          {renderMemoryGroup("长期记忆", "在你的授权下跨对话使用", longTermMemories)}
+          {renderMemoryGroup("短期记忆", "服务当前对话，到期自动失效", shortTermMemories)}
         </div>
       </section>
 
       <section className="insight-section settings-section" id="memory-settings">
         <div className="section-title"><h3>授权范围</h3></div>
         {([
-          ["memoryEnabled", "长期记忆", "关闭后不再记录或使用画像"],
+          ["shortTermMemoryEnabled", "短期记忆", "仅服务当前对话，并按有效期自动失效"],
+          ["longTermMemoryEnabled", "长期记忆", "跨对话使用已生效的认识"],
           ["emotionTrackingEnabled", "情绪趋势", "关闭后不再生成新的心情样本"],
           ["skillEvolutionEnabled", "相处方式学习", "关闭后保持目前学到的相处方式"],
           ["returnNotesEnabled", "站内回访", "关闭后不再展示未完话题提醒"],
@@ -110,8 +215,9 @@ export function InsightPanel({
             <span><strong>{label}</strong><small>{description}</small></span>
             <Toggle
               label={label}
-              checked={settings[key] !== false}
-              onChange={(checked) => onSettings({ [key]: checked })}
+              checked={key === "shortTermMemoryEnabled" || key === "longTermMemoryEnabled" ? isMemorySettingEnabled(settings, key) : settings[key] !== false}
+              disabled={Boolean(busySetting)}
+              onChange={(checked) => void updateSetting(key, checked)}
             />
           </div>
         ))}
@@ -124,4 +230,11 @@ export function InsightPanel({
       </section>
     </aside>
   );
+}
+
+function shortTermLifetime(validUntil: string | null) {
+  if (!validUntil) return "当前对话";
+  const date = new Date(validUntil);
+  if (Number.isNaN(date.getTime())) return "到期自动失效";
+  return `有效至${new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric" }).format(date)}`;
 }

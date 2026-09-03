@@ -293,6 +293,8 @@ function extractMemories(input: ReflectionInput): MemoryMutation[] {
             : null,
         reason: `来自初次认识问题 ${input.questionId ?? "dynamic"} 的回答。`,
         evidenceMessageIds: [input.messageId],
+        sourceType: "user_stated",
+        evidenceQuote: text.slice(0, 200),
       },
     ];
   }
@@ -305,11 +307,12 @@ function extractMemories(input: ReflectionInput): MemoryMutation[] {
     confidence = 0.78,
   ) => {
     const existing = input.context.memories.find(
-      (memory) => memory.category === category && /其实|不是|改成|记错/.test(text),
+      (memory) => memory.status !== "pending" && memory.category === category && /其实|不是|改成|记错/.test(text),
     );
     results.push({
       operation: existing ? "supersede" : "create",
       memoryId: existing?.id,
+      expectedVersionId: existing?.versionId,
       category,
       content,
       tier,
@@ -320,6 +323,8 @@ function extractMemories(input: ReflectionInput): MemoryMutation[] {
         ? "用户在对话中给出了新的、更高优先级的表述。"
         : "用户在自然对话中提供了对以后交流有价值的信息。",
       evidenceMessageIds: [input.messageId],
+      sourceType: "user_stated",
+      evidenceQuote: text.slice(0, 200),
     });
   };
 

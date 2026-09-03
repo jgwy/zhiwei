@@ -181,6 +181,17 @@ export function ZhiweiApp() {
     setStreaming(true);
     const abort = new AbortController();
     abortRef.current = abort;
+    let completed = false;
+    const finishStreaming = () => {
+      if (abortRef.current !== abort) return;
+      abortRef.current = null;
+      setStreaming(false);
+    };
+    const refreshWhenIdle = () => {
+      window.setTimeout(() => {
+        if (!abortRef.current) void load();
+      }, 500);
+    };
     try {
       const response = await fetch(`/api/conversations/${conversationId}/messages`, {
         method: "POST",
@@ -198,19 +209,21 @@ export function ZhiweiApp() {
           updateConversationMessages(conversationId!, (messages) => messages.map((message) => message.id === assistantTemp.id ? { ...message, content: message.content + event.delta } : message));
         }
         if (event.type === "message.completed") {
+          completed = true;
           updateConversationMessages(conversationId!, (messages) => messages.map((message) => message.id === event.messageId ? { ...message, metadata: { ...message.metadata, streaming: false, status: "completed", sources: event.sources ?? [] } } : message));
+          finishStreaming();
+          refreshWhenIdle();
         }
         if (event.type === "error") {
           updateConversationMessages(conversationId!, (messages) => messages.map((message) => message.id === assistantTemp.id ? { ...message, metadata: { ...message.metadata, streaming: false, status: abort.signal.aborted ? "stopped" : "interrupted" } } : message));
           throw new Error(event.message);
         }
       });
-      window.setTimeout(() => void load(), 500);
     } catch (error) {
       if (!abort.signal.aborted) setToast(error instanceof Error ? error.message : "回复中断了，可以重试。");
     } finally {
-      setStreaming(false);
-      abortRef.current = null;
+      finishStreaming();
+      if (!completed) refreshWhenIdle();
     }
   }
 
@@ -231,15 +244,45 @@ export function ZhiweiApp() {
     setData((current) => current ? { ...current, user: { ...current.user, settings: { ...current.user.settings, ...settings } } } : current);
   }
 
-  async function withdrawMemory(memoryId: string) {
+  async function finishMemoryAction(response: Response, fallback: string, success: string) {
+    if (response.status === 409) {
+      const message = "这条认识刚刚发生了变化，已为你刷新。";
+      setToast(message);
+      window.setTimeout(() => setToast((current) => current === message ? null : current), 2_800);
+      await load();
+      return;
+    }
+    if (!response.ok) throw new Error(await responseMessage(response, fallback));
+    setToast(success);
+    window.setTimeout(() => setToast((current) => current === success ? null : current), 2_800);
+    await load();
+  }
+
+  async function confirmMemory(memoryId: string, versionId: string) {
+    const response = await fetch(`/api/memories/${memoryId}/confirm`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ versionId }),
+    });
+    await finishMemoryAction(response, "这条认识没有确认成功，请重试。", "已确认，这条认识现在可以用于之后的对话。");
+  }
+
+  async function rejectMemory(memoryId: string, versionId: string) {
+    const response = await fetch(`/api/memories/${memoryId}/reject`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ versionId }),
+    });
+    await finishMemoryAction(response, "这条认识没有成功放下，请重试。", "已放下这条认识，之后不会使用它。");
+  }
+
+  async function withdrawMemory(memoryId: string, versionId: string) {
     const response = await fetch(`/api/memories/${memoryId}/withdraw`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ reason: "用户在画像界面主动撤回" }),
+      body: JSON.stringify({ versionId, reason: "用户在画像界面主动撤回" }),
     });
-    if (!response.ok) throw new Error(await responseMessage(response, "这条认识没有撤回成功，请重试。"));
-    setToast("这条认识已撤回，之后不会再用于回答。");
-    await load();
+    await finishMemoryAction(response, "这条认识没有撤回成功，请重试。", "这条认识已撤回，之后不会再用于回答。");
   }
 
   async function deleteAllData(confirmation: string) {
@@ -350,9 +393,12 @@ export function ZhiweiApp() {
         <button className="mobile-insight-close" onClick={() => setMobileMenu(null)}><ChevronLeft size={18} /> 返回对话</button>
         <InsightPanel
           data={data}
-          onMemoryClick={startMemoryCorrection}
-          onSettings={(settings) => void updateSettings(settings)}
-          onWithdraw={(memoryId) => void withdrawMemory(memoryId)}
+          activeConversationId={activeId}
+          onMemoryCorrect={startMemoryCorrection}
+          onMemoryConfirm={confirmMemory}
+          onMemoryReject={rejectMemory}
+          onSettings={updateSettings}
+          onWithdraw={withdrawMemory}
           onDeleteAll={(confirmation) => void deleteAllData(confirmation)}
         />
       </div>

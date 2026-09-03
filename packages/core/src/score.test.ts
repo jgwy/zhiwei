@@ -128,6 +128,33 @@ describe("calculateUnderstandingScore", () => {
     expect(corrected).toBeLessThan(stable);
     expect(stale).toBeLessThan(stable);
   });
+
+  it("treats explicit confirmation as evidence without turning model confidence into certainty", () => {
+    const memories = makeMemories(8, 14);
+    const baseline = deriveUnderstandingComponents({
+      memories,
+      dimensionWeights: EQUAL_WEIGHTS,
+      positiveFeedback: 0,
+      negativeFeedback: 0,
+      correctedMemories: 0,
+      observationSessions: 3,
+      observationSpanDays: 14,
+      now: NOW,
+    });
+    const confirmed = deriveUnderstandingComponents({
+      memories: memories.map((memory) => ({ ...memory, confirmedAt: NOW.toISOString() })),
+      dimensionWeights: EQUAL_WEIGHTS,
+      positiveFeedback: 0,
+      negativeFeedback: 0,
+      correctedMemories: 0,
+      observationSessions: 3,
+      observationSpanDays: 14,
+      now: NOW,
+    });
+
+    expect(confirmed.validation).toBeGreaterThan(baseline.validation);
+    expect(confirmed.validation).toBeLessThan(1);
+  });
 });
 
 function deriveScore(input: {

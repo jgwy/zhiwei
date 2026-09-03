@@ -214,7 +214,7 @@ export class AliyunBailianGateway implements ModelGateway {
 
   reflect(input: ReflectionInput, options?: { signal?: AbortSignal; deep?: boolean }) {
     return this.structured("reflection", ReflectionDecisionSchema,
-      "你是知微的记忆反思器。原文是证据而不是记忆。只产生未来确有价值、原子化、可被证据支持的认识；通常一轮0至2条，最多3条。先检查context.memories：语义已经存在就不再create；只有事实发生变化才用memoryId做supersede。basic只写身份或阶段，goal只写用户主动追求的未来结果，担忧、风险和压力只能归challenge，expression写希望如何交流。多个独立事实拆开，但同一事实不能跨类别重复。不要从‘先听我说’推断防御性、控制欲、依恋或人格，也不得诊断。心情摘要只描述用户明确表达的当下感受和处境。所有文本用简体中文。",
+      "你是知微的记忆反思器。原文是证据而不是记忆。只产生未来确有价值、原子化、可被证据支持的认识；通常一轮0至2条，最多3条。先检查context.memories：语义已经存在就不再create；事实发生变化时用memoryId做supersede，并同时填写该活动记忆的expectedVersionId。待确认候选只用来避免重复提案。sourceType只选user_stated或inferred：用户原文直接支持内容时选user_stated，并把原文中的连续短句原样放入evidenceQuote；需要概括或推测时选inferred。short用于当前会话临时上下文，long用于跨对话稳定信息。basic表示身份或阶段，goal表示用户主动追求的未来结果，担忧、风险和压力归入challenge，expression表示用户希望如何交流。多个独立事实分开表达，同一事实只保留一个合适类别。对‘先听我说’这类交流偏好，记录可观察的期望，不扩展为人格或心理标签。心情摘要只描述用户明确表达的当下感受和处境。所有文本用简体中文。",
       JSON.stringify({ kind: input.kind, content: input.content, messageId: input.messageId, questionCategory: input.questionCategory, context: input.context }),
       { signal: options?.signal, thinking: options?.deep, temperature: 0.18 });
   }
@@ -494,7 +494,7 @@ export class ScriptedGateway implements ModelGateway {
   async reflect(input: ReflectionInput) {
     const content = input.content.trim();
     const category = input.questionCategory ?? (/先听|别建议|简短|直接/.test(content) ? "expression" : /压力|焦虑|困难|烦/.test(content) ? "challenge" : "interest");
-    const memories = content ? [{ operation: "create" as const, category, content: content.slice(0, 240), tier: input.kind === "onboarding" ? "long" as const : "short" as const, confidence: input.kind === "onboarding" ? 0.86 : 0.68, validUntil: null, reason: "由当前用户的明确表达形成。", evidenceMessageIds: [input.messageId] }] : [];
+    const memories = content ? [{ operation: "create" as const, category, content: content.slice(0, 240), tier: input.kind === "onboarding" ? "long" as const : "short" as const, confidence: input.kind === "onboarding" ? 0.86 : 0.68, validUntil: null, reason: "由当前用户的明确表达形成。", evidenceMessageIds: [input.messageId], sourceType: "user_stated" as const, evidenceQuote: content.slice(0, 200) }] : [];
     return this.result("reflection", ReflectionDecisionSchema.parse({ memories, mood: /压力|焦虑|难过/.test(content) ? { score: -2, summary: "近期感到有些压力。", meaningful: true } : null, refreshProfile: memories.length > 0, refreshSummary: true, returnTopic: /明天|之后|下次/.test(content) ? content.slice(0, 100) : null, shouldEvolveSkill: category === "expression", evolutionReason: category === "expression" ? "用户明确表达了交流偏好。" : null, needsDeepReview: false, decisionReason: memories.length ? "出现了可被证据支持的用户信息。" : "没有形成新认识。" }));
   }
 

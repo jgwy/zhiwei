@@ -76,9 +76,10 @@ test("记忆可撤回且当前匿名档案可全量删除", async ({ page }, tes
   await page.getByRole("button", { name: "学习或工作" }).click();
   await page.getByRole("button", { name: "先听我说" }).click();
   await page.getByRole("button", { name: "先聊到这里，开始聊天" }).click();
-  const withdraw = page.getByRole("button", { name: /撤回记忆/ }).first();
+  const withdraw = page.getByRole("button", { name: /准备撤回这条认识/ }).first();
   await expect(withdraw).toBeVisible({ timeout: 10_000 });
   await withdraw.click();
+  await page.getByRole("button", { name: /确认撤回这条认识/ }).click();
   await expect(page.getByText("这条认识已撤回", { exact: false })).toBeVisible();
   await page.getByPlaceholder("删除知微中的全部数据").fill("删除知微中的全部数据");
   await page.getByRole("button", { name: "永久删除全部数据" }).click();

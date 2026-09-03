@@ -11,10 +11,14 @@ import {
   getConversationSummary,
   getUserSettings,
   listMessages,
+  memoryIsRecallable,
   normalizeDimensionWeights,
+  normalizeMemoryMutation,
   recordModelCallMeta,
   recordTrace,
+  shouldPersistMemory,
   updateConversationTitle,
+  validatedMemorySourceType,
   type MemoryRecord,
   type PersonalSkill,
   type ProfileSnapshot,
@@ -77,20 +81,21 @@ async function handleReflection(job: any) {
     getConversationSummary(job.user_id, payload.conversationId),
     getUserSettings(job.user_id),
   ]);
-  const queryEmbedding = await tryEmbedding(job.user_id, traceId, payload.conversationId, [payload.content]);
   const [profileResult, skillResult, memoryResult] = await Promise.all([
     callMemoryMcp<{ profile: ProfileSnapshot | null }>({ tool: "profile_get_current", userId: job.user_id, traceId }),
     callMemoryMcp<any>({ tool: "personal_skill_get_active", userId: job.user_id, traceId }),
     callMemoryMcp<{ memories: MemoryRecord[] }>({
-      tool: "memory_search",
+      tool: "memory_list",
       userId: job.user_id,
       traceId,
-      arguments: { query: payload.content, limit: 8, ...(queryEmbedding?.[0] ? { queryEmbedding: queryEmbedding[0] } : {}) },
+      arguments: {},
     }),
   ]);
   const personalSkill = PersonalSkillSchema.parse(skillResult.skill.content) as PersonalSkill;
   const profile = profileResult.profile;
-  const memories = memoryResult.memories;
+  const memories = memoryResult.memories
+    .filter((memory) => memory.status === "pending" || memoryIsRecallable(memory, { conversationId: payload.conversationId }))
+    .slice(0, 12);
   const context = compileContext({
     foundationInstructions: composeFoundationInstructions([
       "zhiwei-persona",
@@ -140,15 +145,35 @@ async function handleReflection(job: any) {
   }
   const decision = {
     ...reflectionResult.data,
-    memories: filterMemoryMutations(reflectionResult.data.memories, memories),
+    memories: filterMemoryMutations(reflectionResult.data.memories, memories, payload.content),
   };
 
   let profileSummary = profile?.summary ?? "仍在形成第一轮认识。";
   let dimensionWeights = normalizeDimensionWeights(profile?.dimensionWeights ?? equalWeights());
-  const shouldRefreshProfile = settings.memoryEnabled !== false && (decision.refreshProfile || decision.memories.length > 0 || !profile);
+  const activeLongMemories = memories.filter((memory) => memory.status === "active" && memory.tier === "long" && memory.scope === "user");
+  const activatingLongMutations = decision.memories.filter((memory) => {
+    if (memory.operation !== "create" || memory.tier !== "long") return false;
+    const sourceType = validatedMemorySourceType(memory.sourceType, memory.evidenceQuote, [payload.content], payload.kind);
+    const normalized = normalizeMemoryMutation(memory, {
+      conversationId: payload.conversationId,
+      sourceText: payload.content,
+      sourceType,
+    });
+    return normalized.status === "active"
+      && shouldPersistMemory(
+        normalized.content,
+        payload.content,
+        normalized.sourceType,
+        normalized.category,
+        normalized.evidenceQuote,
+      );
+  });
+  const shouldRefreshProfile = settings.memoryEnabled !== false
+    && settings.longTermMemoryEnabled !== false
+    && (activatingLongMutations.length > 0 || (!profile && activeLongMemories.length > 0));
   if (shouldRefreshProfile) {
     const result = await gateway.synthesizeProfile({
-      memories: [...memories.map((memory) => memory.content), ...decision.memories.map((memory) => memory.content)],
+      memories: [...activeLongMemories.map((memory) => memory.content), ...activatingLongMutations.map((memory) => memory.content)],
       currentSummary: profile?.summary,
       latestMessage: payload.content,
     });
@@ -158,7 +183,9 @@ async function handleReflection(job: any) {
   }
 
   let sessionSummary = summary ?? "这段对话刚刚开始。";
-  const shouldRefreshSummary = decision.refreshSummary || !summary || messages.length >= 12;
+  const shouldRefreshSummary = settings.memoryEnabled !== false
+    && settings.shortTermMemoryEnabled !== false
+    && (decision.refreshSummary || !summary || messages.length >= 12);
   if (shouldRefreshSummary) {
     const result = await gateway.summarizeSession({ messages, previousSummary: summary ?? undefined });
     sessionSummary = result.data.summary;
@@ -192,7 +219,13 @@ async function handleReflection(job: any) {
     tool: "memory_commit_reflection",
     userId: job.user_id,
     traceId,
-    arguments: { conversationId: payload.conversationId, sourceMessageId: payload.messageId, reflection, embeddings: embeddings?.map((vector) => vector ?? null) },
+    arguments: {
+      conversationId: payload.conversationId,
+      sourceMessageId: payload.messageId,
+      reflection,
+      embeddings: embeddings?.map((vector) => vector ?? null),
+      idempotencyKey: `reflection:${payload.messageId}:memory-v2`,
+    },
   });
   await recordTrace({ userId: job.user_id, traceId, stage: "reflection.completed", durationMs: Date.now() - started, payload: { gateway: gateway.id, decision, reflection, committed } });
   await addActivity({ userId: job.user_id, type: "memory.updated", payload: { sourceMessageId: payload.messageId, memoryCount: committed.memoryCount, score: committed.profile?.score, profile: committed.profile, mood: reflection.mood } });
@@ -239,7 +272,7 @@ async function tryEmbedding(userId: string, traceId: string, conversationId: str
 }
 
 function equalWeights() { return { basic: 1, goal: 1, interest: 1, expression: 1, emotion: 1, experience: 1, challenge: 1, boundary: 1 }; }
-function filterMemoryMutations(mutations: any[], active: MemoryRecord[]) {
+export function filterMemoryMutations(mutations: any[], active: MemoryRecord[], sourceText: string) {
   const accepted: any[] = [];
   for (const mutation of mutations) {
     if (accepted.length >= 2) break;
@@ -249,6 +282,13 @@ function filterMemoryMutations(mutations: any[], active: MemoryRecord[]) {
       ...accepted.filter((memory) => memory.category === mutation.category).map((memory) => memory.content),
     ];
     if (mutation.operation === "create" && sameCategory.some((content) => semanticOverlap(content, mutation.content) >= 0.72)) continue;
+    if (!shouldPersistMemory(
+      mutation.content,
+      sourceText,
+      mutation.sourceType ?? "inferred",
+      mutation.category,
+      mutation.evidenceQuote,
+    )) continue;
     accepted.push(mutation);
   }
   return accepted;

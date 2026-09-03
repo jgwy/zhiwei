@@ -12,9 +12,31 @@ export const MemoryCategorySchema = z.enum([
 ]);
 export type MemoryCategory = z.infer<typeof MemoryCategorySchema>;
 
+export const MemorySourceTypeSchema = z.enum(["user_stated", "inferred", "system"]);
+export type MemorySourceType = z.infer<typeof MemorySourceTypeSchema>;
+export const MemoryProposalSourceTypeSchema = z.enum(["user_stated", "inferred"]);
+
+export const MemoryScopeSchema = z.enum(["user", "conversation"]);
+export type MemoryScope = z.infer<typeof MemoryScopeSchema>;
+
+export const MemorySensitivitySchema = z.enum(["normal", "sensitive"]);
+export type MemorySensitivity = z.infer<typeof MemorySensitivitySchema>;
+
+export const MemoryStatusSchema = z.enum([
+  "pending",
+  "accepted",
+  "active",
+  "superseded",
+  "rejected",
+  "withdrawn",
+  "expired",
+]);
+export type MemoryStatus = z.infer<typeof MemoryStatusSchema>;
+
 export const MemoryMutationSchema = z.object({
   operation: z.enum(["create", "supersede", "promote"]),
   memoryId: z.string().uuid().optional(),
+  expectedVersionId: z.string().uuid().optional(),
   category: MemoryCategorySchema,
   content: z.string().min(1).max(600),
   tier: z.enum(["short", "long"]),
@@ -22,8 +44,55 @@ export const MemoryMutationSchema = z.object({
   validUntil: z.string().datetime().nullable(),
   reason: z.string().min(1).max(500),
   evidenceMessageIds: z.array(z.string().uuid()).min(1).max(12),
+  sourceType: MemoryProposalSourceTypeSchema.optional(),
+  evidenceQuote: z.string().trim().min(1).max(500).optional(),
+}).superRefine((mutation, context) => {
+  if (mutation.operation === "create" && (mutation.memoryId || mutation.expectedVersionId)) {
+    context.addIssue({ code: "custom", path: ["memoryId"], message: "create 操作不能指定已有记忆或版本" });
+  }
+  if (mutation.operation !== "create" && (!mutation.memoryId || !mutation.expectedVersionId)) {
+    context.addIssue({ code: "custom", path: ["expectedVersionId"], message: `${mutation.operation} 操作必须指定 memoryId 和 expectedVersionId` });
+  }
 });
 export type MemoryMutation = z.infer<typeof MemoryMutationSchema>;
+
+export const MemorySearchInputSchema = z.object({
+  query: z.string().max(1_000),
+  limit: z.number().int().min(1).max(20).default(8),
+  queryEmbedding: z.array(z.number()).length(1024).optional(),
+  conversationId: z.string().uuid().optional(),
+});
+export type MemorySearchInput = z.infer<typeof MemorySearchInputSchema>;
+
+export const MemoryConfirmInputSchema = z.object({
+  memoryId: z.string().uuid(),
+  versionId: z.string().uuid(),
+  idempotencyKey: z.string().trim().min(8).max(200),
+});
+export type MemoryConfirmInput = z.infer<typeof MemoryConfirmInputSchema>;
+
+export const MemoryWithdrawInputSchema = z.object({
+  memoryId: z.string().uuid(),
+  versionId: z.string().uuid(),
+  reason: z.string().max(300).optional(),
+  idempotencyKey: z.string().trim().min(8).max(200),
+});
+export type MemoryWithdrawInput = z.infer<typeof MemoryWithdrawInputSchema>;
+
+export const MemoryRejectInputSchema = z.object({
+  memoryId: z.string().uuid(),
+  versionId: z.string().uuid(),
+  reason: z.string().trim().max(300).optional(),
+  idempotencyKey: z.string().trim().min(8).max(200),
+});
+export type MemoryRejectInput = z.infer<typeof MemoryRejectInputSchema>;
+
+export const MemoryUsageInputSchema = z.object({
+  versionIds: z.array(z.string().uuid()).min(1).max(8),
+  conversationId: z.string().uuid(),
+  idempotencyKey: z.string().trim().min(8).max(200),
+});
+export type MemoryUsageInput = z.infer<typeof MemoryUsageInputSchema>;
 
 export const DimensionWeightsSchema = z
   .record(MemoryCategorySchema, z.number().min(0).max(1))
@@ -279,7 +348,15 @@ export type MemoryRecord = {
   confidence: number;
   validUntil: string | null;
   reason: string;
-  status?: "active" | "superseded" | "withdrawn";
+  status?: MemoryStatus;
+  sourceType?: MemorySourceType;
+  scope?: MemoryScope;
+  scopeKey?: string | null;
+  sensitivity?: MemorySensitivity;
+  evidenceQuote?: string | null;
+  confirmedAt?: string | null;
+  lastUsedAt?: string | null;
+  parentVersionId?: string | null;
   createdAt: string;
 };
 
