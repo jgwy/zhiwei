@@ -20,7 +20,7 @@
 
 真实模式按任务使用三种协议：普通陪伴回复走 Character Responses API 且不启用供应商长期记忆；高情绪浓度或身体不适与现实压力并存的回合由既有路由器识别，走 3.8 Flash 严格结构输出；其他结构化任务走 Chat Completions JSON Schema；事实查证走 DashScope 原生多模态接口以保留完整来源。向量仍使用 OpenAI 兼容 Embeddings。所有协议在上层统一为任务、流事件、usage、费用、延迟、来源与标准错误。
 
-科学问题会额外加载只读的 `scientific-answering` 基底 Skill，并经过独立 Science MCP：先审查来源等级和原子主张，再把通过审查的主张交给回答模型。它提供 `science_source_assess` 与 `science_claim_audit`，不联网、不调用模型、不读写用户记忆；高影响主张缺少权威一手证据时会转为需要人工复核。项目当前包含 11 个带版本与 SHA-256 清单的不可变基底 Skills。
+所有联网事实先经过独立 Check MCP 的 `check_claims` 工具，检查来源索引、来源质量，以及人物姓名与机构来源是否匹配；未通过的主张不会进入最终回答。科学问题还会额外加载只读的 `scientific-answering` 基底 Skill，并经过 Science MCP 进行更严格的科学来源与高影响主张审计。两个核验 MCP 都不调用生成模型，也不读写用户记忆。项目当前包含 11 个带版本与 SHA-256 清单的不可变基底 Skills。
 
 ## 验证
 

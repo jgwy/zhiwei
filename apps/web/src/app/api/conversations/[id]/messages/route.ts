@@ -3,6 +3,7 @@ import {
   addUserMessageWithReflectionJob,
   assessRisk,
   callMemoryMcp,
+  callCheckMcp,
   callScienceMcp,
   compileContext,
   enqueueJob,
@@ -26,6 +27,13 @@ import { z } from "zod";
 import { getSessionUserId } from "@/lib/session";
 import { addNoDbMessage, commitNoDbMemories, isNoDbMode, listNoDbConversations, listNoDbMemories, recallNoDbMemories } from "@/lib/no-db-store";
 import { isPersonalDisclosure, isPotentialMemoryQuery, resolveMemoryQuery } from "@/lib/message-routing";
+import {
+  buildVerificationRequest,
+  keepOnlyGroundedFacts,
+  renderGroundedFactReply,
+  requiresVerifiedFacts,
+  verificationUnavailableReply,
+} from "@/lib/fact-grounding";
 
 const InputSchema = z.object({ content: z.string().trim().min(1).max(8_000) });
 const encoder = new TextEncoder();
@@ -80,7 +88,7 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
 
   const potentialMemoryQuery = isPotentialMemoryQuery(input.content);
   const [messages, profileResult, memoryResult, summary, skillResult] = await Promise.all([
-    listMessages(userId, conversationId, 24),
+    listMessages(userId, conversationId, 48),
     callMemoryMcp<{ profile: ProfileSnapshot | null }>({ tool: "profile_get_current", userId, traceId }),
     callMemoryMcp<{ memories: MemoryRecord[] }>({
       tool: "memory_search",
@@ -109,58 +117,38 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
     memories,
     sessionSummary: summary,
     messages,
-    maxInputTokens: Math.min(18_000, gateway.capabilities.maxContextTokens - 2_000),
+    maxInputTokens: Math.min(36_000, gateway.capabilities.maxContextTokens - 2_000),
   });
 
   let factBrief: FactBriefOutput | null = null;
+  let factRoute: FactRoutingOutput | null = null;
   let scienceMode = false;
   let responsePlan: Pick<FactRoutingOutput, "responseMode" | "depth" | "physicalSymptom" | "reason"> | undefined;
   let verifiedSources: Array<{ title: string; url: string; siteName?: string }> = [];
+  const verificationRequest = buildVerificationRequest(input.content, messages);
+  let verificationRequired = requiresVerifiedFacts(input.content, messages);
+  let verificationUnavailable = false;
   if (riskAssessment.level === "ordinary" && !memoryResolution && !isPersonalDisclosure(input.content)) {
     try {
-      const route = await gateway.routeFacts(input.content, { signal: request.signal });
-      scienceMode = route.data.scientific;
+      const route = await gateway.routeFacts(verificationRequest, { signal: request.signal });
+      const shouldSearch = verificationRequired || route.data.needsSearch;
+      const normalizedRoute = shouldSearch
+        ? { ...route.data, needsSearch: true, query: route.data.query.trim() || verificationRequest.slice(0, 300) }
+        : route.data;
+      factRoute = normalizedRoute;
+      scienceMode = normalizedRoute.scientific;
       responsePlan = {
-        responseMode: route.data.responseMode,
-        depth: route.data.depth,
-        physicalSymptom: route.data.physicalSymptom,
-        reason: route.data.reason,
+        responseMode: normalizedRoute.responseMode,
+        depth: normalizedRoute.depth,
+        physicalSymptom: normalizedRoute.physicalSymptom,
+        reason: normalizedRoute.reason,
       };
       await recordModelCallMeta({ userId, traceId, conversationId, adapterId: gateway.id, meta: route.meta });
-      if (route.data.needsSearch) {
-        const brief = await gateway.buildFactBrief({ content: input.content, route: route.data }, { signal: request.signal });
-        factBrief = brief.data;
-        verifiedSources = brief.meta.sources;
-        await recordModelCallMeta({ userId, traceId, conversationId, adapterId: gateway.id, meta: brief.meta });
-        if (route.data.scientific && factBrief.claims.length) {
-          try {
-            const audit = await callScienceMcp<any>({
-              tool: "science_claim_audit",
-              userId,
-              traceId,
-              arguments: {
-                impact: route.data.impact === "high" ? "high" : "medium",
-                sources: verifiedSources.map((source) => ({ title: source.title, url: source.url, publisher: source.siteName, kind: "unknown" })),
-                claims: factBrief.claims.map((claim) => ({ ...claim, sourceIndices: claim.sourceIndices.map((index) => index - 1) })),
-              },
-            });
-            factBrief = {
-              ...factBrief,
-              claims: audit.auditedClaims.map((claim: any) => ({
-                text: claim.text,
-                status: claim.status,
-                sourceIndices: claim.sourceIndices.map((index: number) => index + 1),
-                note: claim.auditReason ?? claim.note,
-              })),
-            };
-            await recordTrace({ userId, traceId, stage: "science.claims_audited", payload: audit });
-          } catch (error) {
-            factBrief = { ...factBrief, claims: factBrief.claims.map((claim) => ({ ...claim, status: claim.status === "supported" ? "human_review" as const : claim.status, note: "科学审计工具暂时不可用，未将该主张视为已核实。" })) };
-            await recordTrace({ userId, traceId, stage: "science.audit_unavailable", payload: { code: publicErrorCode(error) } });
-          }
-        }
+      if (normalizedRoute.needsSearch) {
+        verificationRequired = true;
       }
     } catch (error) {
+      verificationUnavailable = verificationRequired;
       await recordTrace({ userId, traceId, stage: "fact.verification_unavailable", payload: { code: publicErrorCode(error) } });
     }
   }
@@ -196,8 +184,94 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
           send({ type: "tool.started", name: "memory_search" });
           send({ type: "tool.completed", name: "memory_search" });
         }
+        if (factRoute?.needsSearch) {
+          let searchCompleted = false;
+          send({ type: "tool.started", name: "web_search" });
+          try {
+            const brief = await gateway.buildFactBrief({ content: verificationRequest, route: factRoute }, { signal: request.signal });
+            send({ type: "tool.completed", name: "web_search" });
+            searchCompleted = true;
+            await recordModelCallMeta({ userId, traceId, conversationId, adapterId: gateway.id, meta: brief.meta });
+
+            let checkedBrief = brief.data;
+            send({ type: "tool.started", name: "check_claims" });
+            try {
+              const check = await callCheckMcp<any>({
+                tool: "check_claims",
+                userId,
+                traceId,
+                arguments: {
+                  query: verificationRequest,
+                  impact: factRoute.impact,
+                  sources: brief.meta.sources.map((source) => ({ title: source.title, url: source.url, publisher: source.siteName, kind: "unknown" })),
+                  claims: brief.data.claims.map((claim) => ({ ...claim, sourceIndices: claim.sourceIndices.map((index) => index - 1) })),
+                },
+              });
+              checkedBrief = {
+                ...brief.data,
+                claims: check.checkedClaims.map((claim: any) => ({
+                  text: claim.text,
+                  status: claim.status,
+                  sourceIndices: claim.sourceIndices.map((index: number) => index + 1),
+                  note: claim.checkReason ?? claim.note,
+                })),
+              };
+              await recordTrace({ userId, traceId, stage: "check.claims_audited", payload: check });
+            } catch (error) {
+              checkedBrief = { ...brief.data, claims: brief.data.claims.map((claim) => ({ ...claim, status: claim.status === "supported" ? "human_review" as const : claim.status, note: "事实核验工具暂时不可用，未将该主张视为已核实。" })) };
+              await recordTrace({ userId, traceId, stage: "check.unavailable", payload: { code: publicErrorCode(error) } });
+            } finally {
+              send({ type: "tool.completed", name: "check_claims" });
+            }
+
+            const grounded = keepOnlyGroundedFacts(checkedBrief, brief.meta.sources);
+            factBrief = grounded?.brief ?? null;
+            verifiedSources = grounded?.sources ?? [];
+            if (factRoute.scientific && factBrief?.claims.length) {
+              const briefForAudit = factBrief;
+              try {
+                const audit = await callScienceMcp<any>({
+                  tool: "science_claim_audit",
+                  userId,
+                  traceId,
+                  arguments: {
+                    impact: factRoute.impact === "high" ? "high" : "medium",
+                    sources: verifiedSources.map((source) => ({ title: source.title, url: source.url, publisher: source.siteName, kind: "unknown" })),
+                    claims: briefForAudit.claims.map((claim) => ({ ...claim, sourceIndices: claim.sourceIndices.map((index) => index - 1) })),
+                  },
+                });
+                factBrief = { ...briefForAudit, claims: audit.auditedClaims.map((claim: any) => ({ text: claim.text, status: claim.status, sourceIndices: claim.sourceIndices.map((index: number) => index + 1), note: claim.auditReason ?? claim.note })) };
+                await recordTrace({ userId, traceId, stage: "science.claims_audited", payload: audit });
+              } catch (error) {
+                factBrief = { ...briefForAudit, claims: briefForAudit.claims.map((claim) => ({ ...claim, status: claim.status === "supported" ? "human_review" as const : claim.status, note: "科学审计工具暂时不可用，未将该主张视为已核实。" })) };
+                await recordTrace({ userId, traceId, stage: "science.audit_unavailable", payload: { code: publicErrorCode(error) } });
+              }
+            }
+            const auditedGrounding = factBrief ? keepOnlyGroundedFacts(factBrief, verifiedSources) : null;
+            factBrief = auditedGrounding?.brief ?? null;
+            verifiedSources = auditedGrounding?.sources ?? [];
+            verificationUnavailable = !factBrief?.claims.length || !verifiedSources.length;
+            if (verificationUnavailable) {
+              factBrief = null;
+              verifiedSources = [];
+            }
+          } catch (error) {
+            if (!searchCompleted) send({ type: "tool.completed", name: "web_search" });
+            verificationUnavailable = verificationRequired;
+            await recordTrace({ userId, traceId, stage: "fact.verification_unavailable", payload: { code: publicErrorCode(error) } });
+          }
+          sources = [...verifiedSources];
+        }
         if (memoryResolution) {
           output = memoryResolution.answer;
+          send({ type: "text.delta", delta: output });
+        } else if (verificationRequired && factBrief?.claims.length && verifiedSources.length) {
+          // Verified-fact turns never enter the free-form character model. The
+          // response is rendered only from the accepted claims and their sources.
+          output = renderGroundedFactReply(factBrief, verifiedSources);
+          send({ type: "text.delta", delta: output });
+        } else if (verificationUnavailable) {
+          output = verificationUnavailableReply(input.content);
           send({ type: "text.delta", delta: output });
         } else {
           for await (const event of gateway.streamDialogue({
@@ -263,7 +337,7 @@ async function handleNoDbPost(request: Request, context: { params: Promise<{ id:
     memories: recalledMemories,
     sessionSummary: null,
     messages: conversation.messages,
-    maxInputTokens: Math.min(18_000, gateway.capabilities.maxContextTokens - 2_000),
+    maxInputTokens: Math.min(36_000, gateway.capabilities.maxContextTokens - 2_000),
   });
   const assistantMessageId = crypto.randomUUID();
   const reflectionPromise = gateway.reflect({

@@ -263,14 +263,15 @@ export class AliyunBailianGateway implements ModelGateway {
 
   routeFacts(content: string, options?: { signal?: AbortSignal }) {
     return this.structured("fact-routing", FactRoutingOutputSchema,
-      "同时完成事实与回复深度路由，不增加后续规划调用。判断消息是否需要实时联网查证，并识别是否属于科学解释。价格、新闻、法律、政策、人物职位、最新产品和具体科学事实倾向查证；纯情绪陪伴不查。scientific只在自然科学、工程、医学机制或科学传播问题中为true。depth表示用户此刻表达的情绪浓度与处境复杂度；physicalSymptom只在用户本人正描述身体疼痛、不适、睡眠或明显生理反应时为true，不把知识提问或他人经历算作本人症状。高情绪浓度，或身体不适与现实压力、关系、学业、工作等困扰并存时，responseMode必须为emotional-deep；其余普通陪伴为character。理由要说明判定依据，使用简体中文。",
+      "同时完成事实与回复深度路由，不增加后续规划调用。只要回答依赖外部世界中可验证的信息，或模型不能仅凭当前用户原话确定答案，就优先联网查证；人物、机构、地点、历史、作品、术语、产品、数据、价格、新闻、法律、政策、版本、日期和具体科学事实都应倾向查证。只有纯情绪陪伴、主观交流、创作请求、用户个人信息或完全由当前消息即可回答的任务不查。scientific只在自然科学、工程、医学机制或科学传播问题中为true。depth表示用户此刻表达的情绪浓度与处境复杂度；physicalSymptom只在用户本人正描述身体疼痛、不适、睡眠或明显生理反应时为true，不把知识提问或他人经历算作本人症状。高情绪浓度，或身体不适与现实压力、关系、学业、工作等困扰并存时，responseMode必须为emotional-deep；其余普通陪伴为character。理由要说明判定依据，使用简体中文。",
       content, { signal: options?.signal, temperature: 0.05 });
   }
 
   async buildFactBrief(input: FactBriefRequest, options?: { signal?: AbortSignal }) {
     const started = Date.now();
     const strategy = input.route.impact === "high" ? "max" : "turbo";
-    const response = await this.dashScopeSearch(input.route.query, strategy, input.route.impact === "high", options?.signal);
+    const query = input.route.query.trim() || input.content.trim().slice(0, 300);
+    const response = await this.dashScopeSearch(query, strategy, input.route.impact === "high", options?.signal);
     const sources = parseSources(response.output?.search_info);
     const rawContent = response.output?.choices?.[0]?.message?.content;
     const rawAnswer = Array.isArray(rawContent)
@@ -317,10 +318,10 @@ export class AliyunBailianGateway implements ModelGateway {
   private async dashScopeSearch(query: string, strategy: "turbo" | "max", thinking: boolean, signal?: AbortSignal) {
     const base = new URL(process.env.MODEL_BASE_URL!);
     const url = new URL("/api/v1/services/aigc/multimodal-generation/generation", base.origin);
-    const configuredTimeout = Number(process.env.MODEL_SEARCH_TIMEOUT_MS ?? 10_000);
+    const configuredTimeout = Number(process.env.MODEL_SEARCH_TIMEOUT_MS ?? 30_000);
     const timeoutMs = Number.isFinite(configuredTimeout)
       ? Math.min(60_000, Math.max(100, configuredTimeout))
-      : 10_000;
+      : 30_000;
     const timeoutSignal = AbortSignal.timeout(timeoutMs);
     const searchSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
     let response: Response;
