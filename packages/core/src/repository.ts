@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { diffJson } from "diff";
 import type { PoolClient } from "pg";
 import { getPool, withTransaction } from "./db";
+import { REFLECTION_JOB_ORDER } from "./job-lifecycle";
 import { defaultPersonalSkill } from "./personal-skill";
 import {
   containsForbiddenMemorySecret,
@@ -205,8 +206,10 @@ export async function attachMemoryReceipt(input: {
        SELECT assistant.id
        FROM messages assistant, source
        WHERE assistant.user_id = $2 AND assistant.conversation_id = $3
-         AND assistant.role = 'assistant' AND assistant.created_at >= source.created_at
-       ORDER BY CASE WHEN source.trace_id IS NOT NULL
+         AND assistant.role = 'assistant' AND assistant.is_current_reply AND assistant.created_at >= source.created_at
+         AND (assistant.reply_to_message_id=$1 OR assistant.reply_to_message_id IS NULL)
+       ORDER BY CASE WHEN assistant.reply_to_message_id=$1 THEN 0 ELSE 1 END,
+                CASE WHEN source.trace_id IS NOT NULL
                           AND assistant.metadata->>'traceId' = source.trace_id THEN 0 ELSE 1 END,
                 assistant.created_at
        LIMIT 1
@@ -350,9 +353,10 @@ export async function claimJob(
 ): Promise<any | null> {
   return withTransaction(async (client) => {
     const result = await client.query(
-      `SELECT * FROM jobs
+      `SELECT * FROM jobs job
        WHERE status = 'pending' AND run_after <= now()
          AND ($1::text IS NULL OR (CASE WHEN type IN ('onboarding_plan','conversation_title') THEN 'planning' ELSE 'memory' END) = $1)
+         AND ${REFLECTION_JOB_ORDER}
        ORDER BY created_at
        FOR UPDATE SKIP LOCKED LIMIT 1`,
       [lane ?? null],
@@ -2560,7 +2564,7 @@ export function mapMessage(row: any): ChatMessage {
     id: row.id,
     role: row.role,
     content: row.content,
-    createdAt: row.created_at,
-    metadata: row.metadata ?? {},
+    createdAt: new Date(row.created_at).toISOString(),
+    metadata: { ...row.metadata, ...(row.client_request_id ? { clientRequestId: row.client_request_id } : {}) },
   };
 }

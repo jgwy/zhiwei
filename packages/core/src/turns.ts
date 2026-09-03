@@ -9,7 +9,7 @@ export const REFLECTION_BATCH_SIZE = 3;
 export const REFLECTION_IDLE_MS = 10 * 60_000;
 
 export function isMemoryControl(content: string): boolean {
-  return /(?:请|帮我|以后)?(?:记住|记下来|别再提|忘掉|不要记|别记|撤回)|(?:你)?记错了|我想修正|更正一下|纠正一下/u.test(
+  return /(?:请|帮我|以后)?(?:记住|记下来|别再提|忘掉|忘记|不再引用|不要记|别记|撤回)|(?:你)?记错了|我想修正|更正一下|纠正一下/u.test(
     content,
   );
 }
@@ -349,7 +349,7 @@ export async function finishReplyAttempt(input: {
   metadata: Record<string, unknown>;
 }) {
   await getPool().query(
-    `UPDATE messages SET content=$3,metadata=$4::jsonb WHERE id=$1 AND user_id=$2 AND role='assistant'`,
+    `UPDATE messages SET content=$3,metadata=metadata || $4::jsonb WHERE id=$1 AND user_id=$2 AND role='assistant'`,
     [
       input.messageId,
       input.userId,
