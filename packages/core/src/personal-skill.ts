@@ -33,10 +33,11 @@ export function normalizeDimensionWeights(
   weights: Record<string, number>,
 ): Record<string, number> {
   const entries = Object.entries(weights)
-    .filter(([key, value]) => MemoryCategorySchema.options.includes(key as any) && Number.isFinite(value) && value > 0)
-    .map(([key, value]) => [key, Math.min(0.35, Math.max(0.04, value))] as const);
+    .filter(([key, value]) => MemoryCategorySchema.options.includes(key as any) && Number.isFinite(value) && value >= 0)
+    .map(([key, value]) => [key, value === 0 ? 0 : Math.min(0.35, Math.max(0.04, value))] as const);
   const total = entries.reduce((sum, [, value]) => sum + value, 0);
   if (!total) {
+    if (entries.length) return Object.fromEntries(entries.map(([key]) => [key, 1 / entries.length]));
     return {
       basic: 0.125,
       goal: 0.125,
