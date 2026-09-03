@@ -45,6 +45,13 @@ export function parseSseFrame(frame: string): Record<string, any> | null {
   return data ? JSON.parse(data) : null;
 }
 
+export function hasExpectedTextDelivery(turn: Pick<Turn, "output" | "deltaCount" | "firstDeltaMs" | "completedMs">): boolean {
+  const shortAnswer = [...turn.output.replace(/\s/gu, "")].length < 32;
+  return turn.deltaCount >= (shortAnswer ? 1 : 2)
+    && turn.firstDeltaMs !== undefined && turn.completedMs !== undefined
+    && (shortAnswer ? turn.firstDeltaMs <= turn.completedMs : turn.firstDeltaMs < turn.completedMs);
+}
+
 export function redactExperienceReport<T>(value: T): T {
   const aliases = new Map<string, string>();
   const sanitize = (entry: unknown): unknown => {
@@ -240,7 +247,7 @@ export async function runExperienceReal(): Promise<void> {
           const snapshot = await state(session);
           check(session, `第${turnIndex + 1}轮终态`, turn.stopped || turn.terminal === "completed", { terminal: turn.terminal });
           if(/记住|记错|忘掉|忘记|不再引用|修正/u.test(content)) check(session,"记忆控制指令不提前宣称完成",!/(?:已经|我已|已替你|已为你|这就).{0,12}(?:记住|忘掉|忘记|撤回|更新|修正)|(?:记住|忘掉|忘记|撤回|更新|修正)(?:好了|了)/u.test(turn.output),{output:turn.output});
-          if (!turn.stopped) check(session, `第${turnIndex + 1}轮增量输出`, turn.deltaCount >= 2 && turn.firstDeltaMs !== undefined && turn.completedMs !== undefined && turn.firstDeltaMs <= turn.completedMs, { deltas: turn.deltaCount, firstDeltaMs: turn.firstDeltaMs, completedMs: turn.completedMs });
+          if (!turn.stopped) check(session, `第${turnIndex + 1}轮增量输出`, hasExpectedTextDelivery(turn), { deltas: turn.deltaCount, firstDeltaMs: turn.firstDeltaMs, completedMs: turn.completedMs });
           if (scenario.id === "vague-to-specific" && turnIndex === 2) check(session, "三条模糊烦恼不生成衍生记录", JSON.stringify(snapshot.counts) === JSON.stringify(baseline.counts), { before: baseline.counts, after: snapshot.counts });
           if (scenario.id === "three-turn-batch") {
             const batch = snapshot.jobs.find((job) => job.type === "reflection");

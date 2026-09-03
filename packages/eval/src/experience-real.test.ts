@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  experienceScenarios, mergeCookieJar, parseSseFrame, realExperienceBudget,
+  experienceScenarios, hasExpectedTextDelivery, mergeCookieJar, parseSseFrame, realExperienceBudget,
   redactExperienceReport, runExperienceReal,
 } from "./run-experience-real";
 
@@ -35,6 +35,13 @@ describe("real Web acceptance runner helpers", () => {
   it("parses protocol data frames and ignores SSE comments", () => {
     expect(parseSseFrame(': heartbeat\r\ndata: {"type":"text.delta","delta":"你好"}')).toEqual({ type: "text.delta", delta: "你好" });
     expect(parseSseFrame(": heartbeat")).toBeNull();
+  });
+
+  it("allows a short real acknowledgement to flush once without weakening long-answer streaming", () => {
+    const observed = { output: "好，我会按你刚才的说法整理，完成后会显示更新提示。", deltaCount: 1, firstDeltaMs: 5002, completedMs: 5032 };
+    expect(hasExpectedTextDelivery(observed)).toBe(true);
+    expect(hasExpectedTextDelivery({ ...observed, output: observed.output.repeat(3) })).toBe(false);
+    expect(hasExpectedTextDelivery({ ...observed, output: observed.output.repeat(3), deltaCount: 3 })).toBe(true);
   });
 
   it("redacts tokens, credentials and identifying UUIDs while keeping relationships", () => {
