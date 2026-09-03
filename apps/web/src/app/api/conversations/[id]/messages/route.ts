@@ -257,24 +257,22 @@ async function handleNoDbPost(request: Request, context: { params: Promise<{ id:
           }
         }
         addNoDbMessage(conversationId, "assistant", output, { traceId, gateway: gateway.id, status: "completed" }, assistantMessageId);
-        try {
-          const reflection = await gateway.reflect({
-            userId,
-            conversationId,
-            messageId: userMessage.id,
-            content: input.content,
-            context: compiled,
-            riskAssessment,
-            kind: "chat",
-          });
+        // Local demo memory reflection should not keep the visible reply stream open.
+        void gateway.reflect({
+          userId,
+          conversationId,
+          messageId: userMessage.id,
+          content: input.content,
+          context: compiled,
+          riskAssessment,
+          kind: "chat",
+        }).then((reflection) => {
           commitNoDbMemories({
             mutations: reflection.data.memories,
             sourceText: input.content,
             conversationId,
           });
-        } catch {
-          // 对话回复不依赖记忆反思；无数据库演示模式下反思失败时保留当前对话即可。
-        }
+        }).catch(() => undefined);
         send({ type: "message.completed", messageId: assistantMessageId, jobId: `no-db:${assistantMessageId}`, sources: [] });
       } catch (error) {
         send({ type: "error", code: publicErrorCode(error), message: publicErrorMessage(error) });
