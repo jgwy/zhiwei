@@ -422,7 +422,7 @@ export class AliyunBailianGateway implements ModelGateway {
           } : undefined,
         } as any, { signal: options.signal });
         const content = response.choices[0]?.message?.content ?? "";
-        const data = schema.parse(JSON.parse(content));
+        const data = schema.parse(repairStructuredShape(task, JSON.parse(content)));
         assertTaskQuality(task, data);
         const usage = parseUsage(response.usage, zeroUsage());
         const sources = parseSources((response as any).search_info);
@@ -646,6 +646,39 @@ function scriptedResult<T>(task: ModelTask, data: T, model: string, provider: "s
 function stripJsonSchema(schema: any) {
   const { $schema: _schema, ...rest } = schema;
   return rest;
+}
+
+const profileDimensions = [
+  "basic",
+  "goal",
+  "interest",
+  "expression",
+  "emotion",
+  "experience",
+  "challenge",
+  "boundary",
+] as const;
+
+function repairStructuredShape(task: ModelTask, value: unknown): unknown {
+  if (task !== "profile-synthesis" || !value || typeof value !== "object") return value;
+  const profile = value as Record<string, unknown>;
+  const current = profile.dimensionWeights && typeof profile.dimensionWeights === "object"
+    ? profile.dimensionWeights as Record<string, unknown>
+    : {};
+  const supplied = profileDimensions
+    .map((dimension) => current[dimension])
+    .filter((weight): weight is number => typeof weight === "number" && Number.isFinite(weight));
+  const rawFallback = supplied.length
+    ? supplied.reduce((sum, weight) => sum + weight, 0) / supplied.length
+    : 1;
+  const fallback = Math.round(rawFallback * 1_000_000) / 1_000_000;
+
+  return {
+    ...profile,
+    dimensionWeights: Object.fromEntries(
+      profileDimensions.map((dimension) => [dimension, current[dimension] ?? fallback]),
+    ),
+  };
 }
 
 function sanitizeTitle(content: string) {

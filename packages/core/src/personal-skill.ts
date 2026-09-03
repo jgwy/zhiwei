@@ -32,12 +32,26 @@ export const defaultPersonalSkill: PersonalSkill = PersonalSkillSchema.parse({
 export function normalizeDimensionWeights(
   weights: Record<string, number>,
 ): Record<string, number> {
-  const entries = Object.entries(weights)
-    .filter(([, value]) => Number.isFinite(value) && value > 0)
-    .map(([key, value]) => [key, Math.min(0.35, Math.max(0.04, value))] as const);
+  const dimensions = [
+    "basic",
+    "goal",
+    "interest",
+    "expression",
+    "emotion",
+    "experience",
+    "challenge",
+    "boundary",
+  ] as const;
+  const entries = dimensions.map((key) => {
+    const value = weights[key];
+    const normalized = typeof value === "number" && Number.isFinite(value)
+      ? value === 0 ? 0 : Math.min(0.35, Math.max(0.04, value))
+      : 0;
+    return [key, normalized] as const;
+  });
   const total = entries.reduce((sum, [, value]) => sum + value, 0);
   if (!total) {
-    return {
+    return normalizeDimensionWeights({
       basic: 0.12,
       goal: 0.18,
       interest: 0.12,
@@ -45,7 +59,8 @@ export function normalizeDimensionWeights(
       emotion: 0.12,
       experience: 0.12,
       challenge: 0.18,
-    };
+      boundary: 0.08,
+    });
   }
   return Object.fromEntries(entries.map(([key, value]) => [key, value / total]));
 }

@@ -87,6 +87,30 @@ describe("Aliyun structured-output quality retry contract", () => {
     expect(repairedRequest.messages[0].content).toContain("不得补写抽象能力、人格或心理动机");
   });
 
+  it("fills omitted profile dimensions without retrying the model call", async () => {
+    openAiMock.completionCreate.mockResolvedValueOnce(completion({
+      summary: "你正在准备毕业论文。",
+      dimensionWeights: { basic: 0.4, goal: 0.2 },
+    }));
+
+    const result = await new AliyunBailianGateway().synthesizeProfile({
+      memories: ["正在准备毕业论文"],
+      latestMessage: "这段时间主要在写毕业论文",
+    });
+
+    expect(openAiMock.completionCreate).toHaveBeenCalledTimes(1);
+    expect(result.data.dimensionWeights).toEqual({
+      basic: 0.4,
+      goal: 0.2,
+      interest: 0.3,
+      expression: 0.3,
+      emotion: 0.3,
+      experience: 0.3,
+      challenge: 0.3,
+      boundary: 0.3,
+    });
+  });
+
   it("retries a schema-valid question plan that uses research-style wording", async () => {
     const invalid = {
       gapCandidates: [
