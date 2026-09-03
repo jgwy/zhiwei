@@ -81,6 +81,50 @@ test("思考图标随首段文本和停止操作正确清理", async ({ page }, 
   releaseResponse?.();
 });
 
+test("不完整生成提示会自动消失", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-desktop", "错误提示生命周期只需在桌面 Chromium 验证一次");
+  const conversationId = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await page.route("**/api/bootstrap", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        user: { id: crypto.randomUUID(), onboarding_complete: true, settings: {} },
+        conversations: [{ id: conversationId, title: "错误提示测试", titleSource: "default", titleLocked: false, createdAt: now, updatedAt: now, messages: [] }],
+        profile: null,
+        memories: [],
+        mood: [],
+        skill: null,
+        onboarding: { complete: true, answeredCount: 0, canFinish: true, question: null },
+        returnNote: null,
+        developerModeAvailable: true,
+        adapter: "scripted",
+        modelModeLabel: "仿真模式",
+        modelCapabilities: { streaming: true, structuredOutput: true, toolCalls: true, nativeWebSearch: false, usage: true, maxContextTokens: 24_000 },
+      }),
+    });
+  });
+  await page.route("**/api/activity/stream", async (route) => {
+    await route.fulfill({ contentType: "text/event-stream; charset=utf-8", body: "" });
+  });
+  await page.route("**/api/conversations/*/messages", async (route) => {
+    await route.fulfill({
+      contentType: "text/event-stream; charset=utf-8",
+      body: `data: ${JSON.stringify({ type: "error", code: "invalid_response", message: "这次回复没有完整生成，可以重试。" })}\n\n`,
+    });
+  });
+
+  await page.goto("/");
+  const composer = page.getByLabel("消息内容");
+  await composer.fill("触发不完整生成");
+  await page.getByRole("button", { name: "发送消息" }).click();
+
+  const toast = page.getByText("这次回复没有完整生成，可以重试。", { exact: true });
+  await expect(toast).toBeVisible();
+  await expect(page.getByRole("button", { name: "发送消息" })).toBeVisible();
+  await expect(toast).toBeHidden({ timeout: 6_000 });
+});
+
 test("从空白问卷进入聊天并生成画像、memory 与 Skill 证据", async ({ page }, testInfo) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "先让我认识一下此刻的你" })).toBeVisible();

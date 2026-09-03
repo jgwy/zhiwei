@@ -55,6 +55,20 @@ export function ZhiweiApp() {
   const dataRef = useRef<BootstrapData | null>(null);
   const activeIdRef = useRef<string | null>(null);
   const pendingAssistantRef = useRef<{ conversationId: string; messageId: string } | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
+
+  function showToast(message: string, duration = 3_500) {
+    if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+    setToast(message);
+    toastTimerRef.current = window.setTimeout(() => {
+      toastTimerRef.current = null;
+      setToast(null);
+    }, duration);
+  }
+
+  useEffect(() => () => {
+    if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+  }, []);
 
   async function load() {
     try {
@@ -131,8 +145,7 @@ export function ZhiweiApp() {
     });
     source.addEventListener("skill.evolved", (raw) => {
       const event = JSON.parse((raw as MessageEvent).data);
-      setToast(event.payload.message ?? "知微又更了解你一点。");
-      window.setTimeout(() => setToast(null), 3_500);
+      showToast(event.payload.message ?? "知微又更了解你一点。");
       void load();
     });
     source.addEventListener("conversation.title.updated", (raw) => {
@@ -169,7 +182,7 @@ export function ZhiweiApp() {
       body: JSON.stringify({ title }),
     });
     if (!response.ok) {
-      setToast(await responseMessage(response, "标题没有修改成功，请重试。"));
+      showToast(await responseMessage(response, "标题没有修改成功，请重试。"));
       return;
     }
     setData((current) => current ? { ...current, conversations: current.conversations.map((item) => item.id === conversation.id ? { ...item, title, titleSource: "manual", titleLocked: true } : item) } : current);
@@ -224,7 +237,7 @@ export function ZhiweiApp() {
       });
       window.setTimeout(() => void load(), 500);
     } catch (error) {
-      if (!abort.signal.aborted) setToast(error instanceof Error ? error.message : "回复中断了，可以重试。");
+      if (!abort.signal.aborted) showToast(error instanceof Error ? error.message : "回复中断了，可以重试。");
     } finally {
       if (pendingAssistantRef.current?.conversationId === conversationId) {
         settlePendingAssistant(abort.signal.aborted ? "stopped" : "interrupted");
@@ -258,8 +271,7 @@ export function ZhiweiApp() {
   async function feedback(messageId: string, value: "understood" | "not-me", reason?: string) {
     const response = await fetch("/api/feedback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messageId, value, reason }) });
     if (!response.ok) throw new Error(await responseMessage(response, "这次反馈没有保存成功，请重试。"));
-    setToast(value === "understood" ? "我记住这种相处方式了。" : "谢谢你纠正我，我会重新调整。");
-    window.setTimeout(() => setToast(null), 2_800);
+    showToast(value === "understood" ? "我记住这种相处方式了。" : "谢谢你纠正我，我会重新调整。", 2_800);
   }
 
   async function updateSettings(settings: Record<string, boolean>) {
@@ -276,7 +288,7 @@ export function ZhiweiApp() {
       body: JSON.stringify({ reason: "用户在画像界面主动撤回" }),
     });
     if (!response.ok) throw new Error(await responseMessage(response, "这条认识没有撤回成功，请重试。"));
-    setToast("这条认识已撤回，之后不会再用于回答。");
+    showToast("这条认识已撤回，之后不会再用于回答。");
     await load();
   }
 
@@ -287,14 +299,14 @@ export function ZhiweiApp() {
       body: JSON.stringify(input),
     });
     if (!response.ok) throw new Error(await responseMessage(response, "这条认识没有修改成功，请重试。"));
-    setToast("这条认识已更新，并标记为你确认的内容。");
+    showToast("这条认识已更新，并标记为你确认的内容。");
     await load();
   }
 
   async function confirmMemory(memoryId: string) {
     const response = await fetch(`/api/memories/${memoryId}/confirm`, { method: "POST" });
     if (!response.ok) throw new Error(await responseMessage(response, "这条认识没有确认成功，请重试。"));
-    setToast("已确认这条认识，之后会更稳定地用于回答。");
+    showToast("已确认这条认识，之后会更稳定地用于回答。");
     await load();
   }
 
