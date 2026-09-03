@@ -12,9 +12,12 @@
     "dev:worker": "npm run dev --workspace @zhiwei/worker",
     "dev:mcp": "npm run dev --workspace @zhiwei/memory-mcp",
     "dev:science-mcp": "npm run dev --workspace @zhiwei/science-mcp",
-    "build": "npm run generate:skills && npm run build --workspaces --if-present",
+    "build": "npm run generate:skills && npm run build:server && npm run build --workspace @zhiwei/web",
+    "build:server": "node scripts/build-server.mjs",
+    "setup:env": "node scripts/setup-env.mjs",
+    "test:scripts": "node --test scripts/*.test.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present",
+    "test": "npm run test:scripts && npm run test --workspaces --if-present",
     "test:e2e": "npm run test:e2e --workspace @zhiwei/web",
     "eval": "npm run eval --workspace @zhiwei/eval",
     "eval:real-memory": "npm run eval:real-memory --workspace @zhiwei/eval",
@@ -26,6 +29,9 @@
     "package:source": "node scripts/package-source.mjs"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=24.20.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
   }
 }

@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
-    "target": "ES2023",
-    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "target": "ES2024",
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "strict": true,
@@ -11,12 +11,11 @@
     "forceConsistentCasingInFileNames": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": false,
-    "baseUrl": ".",
     "paths": {
-      "@zhiwei/core": ["packages/core/src/index.ts"],
-      "@zhiwei/core/client": ["packages/core/src/client.ts"],
-      "@zhiwei/model-gateway": ["packages/model-gateway/src/index.ts"],
-      "@zhiwei/skills": ["packages/skills/src/index.ts"]
+      "@zhiwei/core": ["./packages/core/src/index.ts"],
+      "@zhiwei/core/client": ["./packages/core/src/client.ts"],
+      "@zhiwei/model-gateway": ["./packages/model-gateway/src/index.ts"],
+      "@zhiwei/skills": ["./packages/skills/src/index.ts"]
     }
   }
 }

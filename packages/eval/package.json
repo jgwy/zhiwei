@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "eval": "node --import tsx src/run.ts",
-    "eval:real-memory": "node --import tsx src/run-real-memory-lifecycle.ts",
+    "eval:real-memory": "node --env-file-if-exists=../../.env --import tsx src/run-real-memory-lifecycle.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
@@ -16,7 +16,7 @@
   "devDependencies": {
     "@types/node": "^24.10.0",
     "tsx": "4.23.13",
-    "typescript": "^5.9.3",
+    "typescript": "7.0.2",
     "vitest": "4.1.11"
   }
 }

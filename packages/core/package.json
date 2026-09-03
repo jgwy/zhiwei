@@ -8,7 +8,8 @@
     "./client": "./src/client.ts"
   },
   "scripts": {
-    "migrate": "node --import tsx scripts/migrate.ts",
+    "migrate": "node --env-file-if-exists=../../.env --import tsx scripts/migrate.ts",
+    "migrate:production": "node --env-file-if-exists=../../.env ../../dist/packages/core/scripts/migrate.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
@@ -21,7 +22,7 @@
     "@types/node": "^24.10.0",
     "@types/pg": "^8.15.5",
     "tsx": "4.23.13",
-    "typescript": "^5.9.3",
+    "typescript": "7.0.2",
     "vitest": "4.1.11"
   }
 }
