@@ -1,5 +1,6 @@
 export * from "./context";
 export * from "./claims";
+export * from "./check-mcp-client";
 export * from "./db";
 export * from "./mcp-client";
 export * from "./memory-policy";
