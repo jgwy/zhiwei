@@ -33,4 +33,3 @@ for (const file of (await readdir(migrationDir)).filter((name) => name.endsWith(
 }
 
 await pool.end();
-

@@ -37,12 +37,7 @@ export function deriveUnderstandingComponents(input: {
   for (const [category, weight] of Object.entries(weights)) {
     const categoryMemories = byCategory.get(category) ?? [];
     if (!categoryMemories.length) continue;
-    const quality = Math.min(
-      1,
-      categoryMemories.reduce((sum, memory) => sum + memory.confidence, 0) /
-        (categoryMemories.length * 0.8),
-    );
-    weightedBreadth += weight * quality;
+    weightedBreadth += weight;
   }
 
   const total = input.memories.length;
@@ -64,13 +59,9 @@ export function deriveUnderstandingComponents(input: {
 
   // Breadth is useful immediately, but depth must be earned across independent
   // conversations. More facts from one conversation therefore have a limited effect.
-  const evidenceDepth = 0.48 + 0.22 * volumeMaturity + 0.3 * sessionMaturity;
+  const evidenceDepth = 0.43 + 0.19 * volumeMaturity + 0.38 * sessionMaturity;
   const coverage = clamp(weightedBreadth * evidenceDepth);
 
-  const confidence = input.memories.reduce(
-    (sum, memory) => sum + memory.confidence,
-    0,
-  ) / total;
   const representedCategories = byCategory.size;
   const corroborationMaturity = saturate(
     Math.max(0, total - representedCategories),
@@ -85,20 +76,15 @@ export function deriveUnderstandingComponents(input: {
   const negativeShare = feedbackTotal
     ? input.negativeFeedback / feedbackTotal
     : 0;
-  const correctionRate = input.correctedMemories /
-    Math.max(1, total + input.correctedMemories);
-
-  // Model confidence is only a weak prior. Stability across conversations and
-  // explicit user confirmation provide the stronger validation signals.
+  // Model confidence and ordinary version replacement are diagnostic data. They
+  // do not make the product claim greater familiarity with the user.
   const validationSupport =
     0.14 +
     0.34 * sessionMaturity +
     0.18 * corroborationMaturity * sessionMaturity +
-    0.34 * feedbackMaturity * positiveShare;
+    0.34 * feedbackMaturity * positiveShare * sessionMaturity;
   const validation = clamp(
-    confidence * validationSupport -
-      0.45 * correctionRate -
-      0.25 * feedbackMaturity * negativeShare,
+    validationSupport - 0.25 * feedbackMaturity * negativeShare,
   );
 
   // No feedback is unknown rather than a neutral 50%. Repeated successful
@@ -107,7 +93,7 @@ export function deriveUnderstandingComponents(input: {
     0.06 +
       0.22 * sessionMaturity +
       0.14 * corroborationMaturity * sessionMaturity +
-      0.6 * feedbackMaturity * positiveShare -
+      0.6 * feedbackMaturity * positiveShare * sessionMaturity -
       0.45 * feedbackMaturity * negativeShare,
   );
 

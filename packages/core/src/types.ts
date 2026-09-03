@@ -12,18 +12,147 @@ export const MemoryCategorySchema = z.enum([
 ]);
 export type MemoryCategory = z.infer<typeof MemoryCategorySchema>;
 
-export const MemoryMutationSchema = z.object({
-  operation: z.enum(["create", "supersede", "promote"]),
-  memoryId: z.string().uuid().optional(),
-  category: MemoryCategorySchema,
-  content: z.string().min(1).max(600),
-  tier: z.enum(["short", "long"]),
-  confidence: z.number().min(0).max(1),
-  validUntil: z.string().datetime().nullable(),
+export const MemoryTierSchema = z.enum(["short", "long"]);
+export type MemoryTier = z.infer<typeof MemoryTierSchema>;
+
+// The legacy values remain readable because migration 007 may already have
+// produced them. New model proposals are committed directly as active versions.
+export const MemoryStatusSchema = z.enum([
+  "pending",
+  "accepted",
+  "active",
+  "superseded",
+  "rejected",
+  "withdrawn",
+  "expired",
+]);
+export type MemoryStatus = z.infer<typeof MemoryStatusSchema>;
+
+const MemoryEvidenceSchema = z.object({
   reason: z.string().min(1).max(500),
   evidenceMessageIds: z.array(z.string().uuid()).min(1).max(12),
 });
+
+const MemoryContentSchema = MemoryEvidenceSchema.extend({
+  category: MemoryCategorySchema,
+  content: z.string().min(1).max(600),
+  tier: MemoryTierSchema,
+  confidence: z.number().min(0).max(1),
+  validUntil: z.string().datetime().nullable().optional(),
+});
+
+export const MemoryMutationSchema = z.discriminatedUnion("operation", [
+  MemoryContentSchema.extend({ operation: z.literal("create") }),
+  MemoryContentSchema.extend({
+    operation: z.literal("supersede"),
+    memoryId: z.string().uuid(),
+    expectedVersionId: z.string().uuid(),
+  }),
+  MemoryContentSchema.extend({
+    operation: z.literal("promote"),
+    memoryId: z.string().uuid(),
+    expectedVersionId: z.string().uuid(),
+    tier: z.literal("long"),
+  }),
+  MemoryEvidenceSchema.extend({
+    operation: z.literal("withdraw"),
+    memoryId: z.string().uuid(),
+    expectedVersionId: z.string().uuid(),
+  }),
+]);
 export type MemoryMutation = z.infer<typeof MemoryMutationSchema>;
+
+export const MemorySearchInputSchema = z.object({
+  query: z.string().max(1_000),
+  limit: z.number().int().min(1).max(8).default(8),
+  queryEmbedding: z.array(z.number()).length(1024).optional(),
+});
+export type MemorySearchInput = z.infer<typeof MemorySearchInputSchema>;
+
+export const MemoryListInputSchema = z.object({
+  tiers: z.array(MemoryTierSchema).min(1).max(2).optional(),
+  statuses: z.array(MemoryStatusSchema).min(1).max(7).optional(),
+  limit: z.number().int().min(1).max(1_000).default(100),
+});
+export type MemoryListInput = z.infer<typeof MemoryListInputSchema>;
+
+const IdempotencyKeySchema = z.string().trim().min(8).max(200);
+
+export const MemoryWithdrawInputSchema = z.object({
+  memoryId: z.string().uuid(),
+  versionId: z.string().uuid(),
+  reason: z.string().trim().max(300).optional(),
+  idempotencyKey: IdempotencyKeySchema,
+});
+export type MemoryWithdrawInput = z.infer<typeof MemoryWithdrawInputSchema>;
+
+export const MemoryUsageInputSchema = z.object({
+  versionIds: z.array(z.string().uuid()).min(1).max(8),
+  conversationId: z.string().uuid(),
+  idempotencyKey: IdempotencyKeySchema,
+});
+export type MemoryUsageInput = z.infer<typeof MemoryUsageInputSchema>;
+
+export const MemoryEmbeddingInputSchema = z.object({
+  memoryId: z.string().uuid(),
+  versionId: z.string().uuid(),
+  embedding: z.array(z.number().finite()).length(1024),
+  idempotencyKey: IdempotencyKeySchema,
+});
+export type MemoryEmbeddingInput = z.infer<typeof MemoryEmbeddingInputSchema>;
+
+export const MemoryConsolidationRewriteSchema = z.object({
+  sourceVersionIds: z.array(z.string().uuid()).min(2).max(24),
+  category: MemoryCategorySchema,
+  content: z.string().min(1).max(600),
+  confidence: z.number().min(0).max(1),
+  reason: z.string().min(1).max(500),
+});
+export type MemoryConsolidationRewrite = z.infer<typeof MemoryConsolidationRewriteSchema>;
+
+export const MemoryConsolidationInputSchema = z.object({
+  rewrites: z.array(MemoryConsolidationRewriteSchema).min(1).max(16),
+  verification: z.object({
+    approved: z.boolean(),
+    checkedSourceVersionIds: z.array(z.string().uuid()).max(1_000),
+    omittedFacts: z.array(z.string().max(300)).max(24),
+    contradictions: z.array(z.string().max(300)).max(24),
+    overInferences: z.array(z.string().max(300)).max(24),
+  }),
+  idempotencyKey: IdempotencyKeySchema,
+});
+export type MemoryConsolidationInput = z.infer<typeof MemoryConsolidationInputSchema>;
+
+export const MemoryRestoreInputSchema = z.object({
+  memoryId: z.string().uuid(),
+  versionId: z.string().uuid(),
+  expectedActiveVersionId: z.string().uuid().nullable(),
+  idempotencyKey: IdempotencyKeySchema,
+});
+export type MemoryRestoreInput = z.infer<typeof MemoryRestoreInputSchema>;
+
+export type MemoryOperationReceipt = {
+  idempotencyKey: string;
+  operation: string;
+  replayed: boolean;
+};
+
+export const MemoryReflectionCommitSchema = z.object({
+  memories: z.array(MemoryMutationSchema).max(3),
+  mood: z.object({
+    score: z.number().int().min(-5).max(5),
+    summary: z.string().min(1).max(240),
+    meaningful: z.boolean(),
+  }).nullable().optional(),
+  sessionSummary: z.string().min(1).max(1_200).optional(),
+  summaryChanged: z.boolean().optional(),
+  returnNote: z.object({
+    content: z.string().min(1).max(300),
+    validAfter: z.string().datetime(),
+    expiresAt: z.string().datetime(),
+  }).nullable().optional(),
+});
+export type MemoryReflectionCommit = z.infer<typeof MemoryReflectionCommitSchema>;
 
 export const DimensionWeightsSchema = z
   .record(MemoryCategorySchema, z.number().min(0).max(1))
@@ -32,7 +161,7 @@ export const DimensionWeightsSchema = z
   });
 
 export const ReflectionOutputSchema = z.object({
-  memories: z.array(MemoryMutationSchema).max(12),
+  memories: z.array(MemoryMutationSchema).max(3),
   profileSummary: z.string().min(1).max(1600),
   dimensionWeights: DimensionWeightsSchema,
   mood: z
@@ -111,6 +240,8 @@ export const ModelTaskSchema = z.enum([
   "fact-routing",
   "fact-brief",
   "embedding",
+  "memory-consolidation-plan",
+  "memory-consolidation-review",
 ]);
 export type ModelTask = z.infer<typeof ModelTaskSchema>;
 
@@ -128,11 +259,24 @@ export type ModelUsage = {
   searchCalls: number;
 };
 
+export type ModelTransport = "openai-responses" | "openai-chat-completions" | "dashscope-multimodal+openai-chat" | "openai-embeddings" | "scripted" | "replay" | "fault";
+
+export type ModelAttemptMeta = {
+  model: string;
+  transport: ModelTransport;
+  requestId?: string;
+  usage: ModelUsage;
+  durationMs: number;
+  finishReason: string;
+  outcome: "completed" | "quality-rejected" | "failed";
+  errorCode?: string;
+};
+
 export type ModelCallMeta = {
   task: ModelTask;
   provider: string;
   model: string;
-  transport: "openai-responses" | "openai-chat-completions" | "dashscope-multimodal+openai-chat" | "openai-embeddings" | "scripted" | "replay" | "fault";
+  transport: ModelTransport;
   requestId?: string;
   usage: ModelUsage;
   estimatedCostCny: number;
@@ -143,6 +287,7 @@ export type ModelCallMeta = {
   fallbackFrom?: string;
   sources: ModelSource[];
   thinking: boolean;
+  attempts?: ModelAttemptMeta[];
 };
 
 export type ModelStreamEvent =
@@ -172,7 +317,7 @@ export const QuestionPlannerOutputSchema = z.object({
 export type QuestionPlannerOutput = z.infer<typeof QuestionPlannerOutputSchema>;
 
 export const ReflectionDecisionSchema = z.object({
-  memories: z.array(MemoryMutationSchema).max(12),
+  memories: z.array(MemoryMutationSchema).max(3),
   mood: z.object({
     score: z.number().int().min(-5).max(5),
     summary: z.string().min(1).max(240),
@@ -279,7 +424,10 @@ export type MemoryRecord = {
   confidence: number;
   validUntil: string | null;
   reason: string;
-  status?: "active" | "superseded" | "withdrawn";
+  status?: MemoryStatus;
+  lastUsedAt?: string | null;
+  evidenceMessageIds?: string[];
+  parentVersionIds?: string[];
   createdAt: string;
 };
 
@@ -318,8 +466,35 @@ export type ProfileSnapshot = {
   dimensionWeights: Record<string, number>;
   understanding: UnderstandingComponents;
   score: number;
+  schemaVersion: string;
+  sourceMemoryVersionIds: string[];
+  scoreChangeReasons: ScoreChangeReason[];
+  syncStatus: "legacy" | "syncing" | "current" | "stale" | "failed";
   createdAt: string;
 };
+
+export type ScoreChangeReason = {
+  component: keyof UnderstandingComponents | "total";
+  delta: number;
+  message: string;
+};
+
+export type MemoryEventType =
+  | "created"
+  | "candidate_created"
+  | "updated"
+  | "confirmed"
+  | "superseded"
+  | "rejected"
+  | "withdrawn"
+  | "expired"
+  | "used"
+  | "embedding_updated"
+  | "promoted"
+  | "consolidated"
+  | "restored";
+
+export type MemoryEventActor = "user" | "model" | "system" | "developer";
 
 export type UnderstandingComponents = {
   coverage: number;
