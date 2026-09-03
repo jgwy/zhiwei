@@ -71,6 +71,7 @@ export function streamAcceptedTurn(
         phase("context", "正在整理这段对话…");
         gateway = getModelGateway();
         const ordinary = turn.riskAssessment.level === "ordinary";
+        const messagesPromise=listMessagesThrough(userId,conversationId,userMessage.id,24);
         const embedded = (async () => {
           if (!ordinary) return undefined;
           try {
@@ -92,7 +93,7 @@ export function streamAcceptedTurn(
           if (!ordinary) return null;
           try {
             const result = await gateway!.routeFacts(userMessage.content, {
-              signal,
+              signal, recentMessages:await messagesPromise,
             });
             await record(result.meta);
             return result.data;
@@ -126,7 +127,7 @@ export function streamAcceptedTurn(
           memoryResult,
           route,
         ] = await Promise.all([
-          listMessagesThrough(userId, conversationId, userMessage.id, 24),
+          messagesPromise,
           callMemoryMcp<{ profile: ProfileSnapshot | null }>({
             tool: "profile_get_current",
             userId,

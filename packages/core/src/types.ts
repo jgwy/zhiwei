@@ -237,7 +237,7 @@ export type ModelUsage = {
   searchCalls: number;
 };
 
-export type ModelTransport = "openai-responses" | "openai-chat-completions" | "dashscope-multimodal+openai-chat" | "openai-embeddings" | "scripted" | "replay" | "fault";
+export type ModelTransport = "openai-responses" | "openai-chat-completions" | "dashscope-multimodal" | "dashscope-multimodal+openai-chat" | "openai-embeddings" | "scripted" | "replay" | "fault";
 
 export type ModelAttemptMeta = {
   model: string;
@@ -250,6 +250,8 @@ export type ModelAttemptMeta = {
   finishReason: string;
   outcome: "completed" | "quality-rejected" | "failed";
   errorCode?: string;
+  httpStatus?: number;
+  providerCode?: string;
 };
 
 export type ModelCallMeta = {
