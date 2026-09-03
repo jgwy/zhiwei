@@ -4,6 +4,7 @@ import {
   compileContext,
   createBenchmarkRun,
   defaultPersonalSkill,
+  getUserTimeZone,
   recordModelCallMeta,
   type BenchmarkMode,
   type BenchmarkOutput,
@@ -30,10 +31,11 @@ export async function POST(request: Request) {
     const input = InputSchema.parse(await request.json());
     const gateway = getModelGateway();
     const traceId = crypto.randomUUID();
-    const [profile, memories, activeSkill] = await Promise.all([
+    const [profile, memories, activeSkill, timeZone] = await Promise.all([
       callMemoryMcp<{ profile: ProfileSnapshot | null }>({ tool: "profile_get_current", userId, traceId }).then((result) => result.profile),
       callMemoryMcp<{ memories: MemoryRecord[] }>({ tool: "memory_search", userId, traceId, arguments: { query: input.prompt, limit: 8 } }).then((result) => result.memories),
       callMemoryMcp<any>({ tool: "personal_skill_get_active", userId, traceId }).then((result) => result.skill),
+      getUserTimeZone(userId),
     ]);
     let factBrief: FactBriefOutput | null = null;
     let factSources: any[] = [];
@@ -80,6 +82,7 @@ export async function POST(request: Request) {
         sessionSummary: null,
         messages: [],
         maxInputTokens: 18_000,
+        timeZone,
       });
       const started = Date.now();
       let content = "";

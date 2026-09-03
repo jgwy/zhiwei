@@ -2,17 +2,20 @@
 
 每次 Reflection 返回 `memories[]`：
 
-- `operation`: `create`、`supersede` 或 `promote`。
-- `memoryId`: 仅在更新既有记忆时提供。
+- `operation`: `create`、`supersede`、`promote` 或 `reinforce`。重复确认同一认识时使用 `reinforce`。
+- `memoryId`: `supersede`、`promote`、`reinforce` 时必须提供。
 - `category`: basic、goal、interest、expression、emotion、experience、challenge、boundary。
 - `content`: 面向用户可读的一条认识，不超过 600 字。
 - `tier`: short 或 long。
 - `confidence`: 0–1。
 - `validUntil`: 短期记忆的失效时间；长期可为 null。
+- `eventTime`: 用户所述事情的发生时间，包含 kind、start、end、precision、expression 与 timeZone。它不是消息时间或写入时间。
 - `reason`: 为什么此证据足以产生这条变化。
 - `evidenceMessageIds`: 产生该记忆的原始消息 ID。
 
 Memory MCP 只接受通过 Schema 校验的输出，并以追加版本方式写入。
+
+明确的“昨天”、年月日等表达可依据上下文中的当前时间和用户时区归一化。对于“最近”“以前”“很久前”等模糊表达，使用 `kind=fuzzy`、`precision=approximate` 并保留 `expression`，start/end 留空，禁止自行假设天数范围。
 
 ## 分类边界
 

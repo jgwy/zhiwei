@@ -7,6 +7,7 @@ coverage
 reports
 test-results
 playwright-report
+.playwright-browsers
 .git
 .env
 *.log

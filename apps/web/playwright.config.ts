@@ -1,4 +1,11 @@
 import { defineConfig, devices } from "@playwright/test";
+import path from "node:path";
+
+process.env.PLAYWRIGHT_BROWSERS_PATH ??= path.join(
+  __dirname,
+  "../..",
+  ".playwright-browsers",
+);
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -9,6 +16,7 @@ export default defineConfig({
   reporter: [["list"], ["html", { outputFolder: "../../playwright-report", open: "never" }]],
   use: {
     baseURL: process.env.E2E_BASE_URL ?? "http://127.0.0.1:3000",
+    timezoneId: "Asia/Shanghai",
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },

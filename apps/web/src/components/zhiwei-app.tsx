@@ -21,10 +21,10 @@ import {
   ThumbsUp,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessage } from "@zhiwei/core/client";
 import type { BootstrapData, ConversationView } from "@/lib/client-types";
-import { readSseStream, formatTime } from "@/lib/utils";
+import { formatDateDivider, formatFullTime, formatRelativeDateTime, localDateKey, readSseStream } from "@/lib/utils";
 import { isNearChatBottom } from "@/lib/chat-scroll";
 import { Button } from "@/components/ui/button";
 import { Onboarding } from "@/components/onboarding";
@@ -69,6 +69,19 @@ export function ZhiweiApp() {
   }
 
   useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    if (!data) return;
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (!timeZone || timeZone === data.user.timezone) return;
+    void fetch("/api/settings", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ timeZone }),
+    }).then((response) => {
+      if (!response.ok) return;
+      setData((current) => current ? { ...current, user: { ...current.user, timezone: timeZone } } : current);
+    });
+  }, [data?.user.timezone]);
   useEffect(() => { dataRef.current = data; }, [data]);
   useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
   const active = useMemo(
@@ -163,8 +176,9 @@ export function ZhiweiApp() {
       setActiveId(conversationId);
     }
     if (!conversationId) throw new Error("无法创建新的对话");
-    const userMessage: ChatMessage = { id: crypto.randomUUID(), role: "user", content: text, createdAt: new Date().toISOString() };
-    const assistantTemp: ChatMessage = { id: crypto.randomUUID(), role: "assistant", content: "", createdAt: new Date().toISOString(), metadata: { streaming: true } };
+    const nextSequence = (active?.messages.at(-1)?.sequence ?? 0) + 1;
+    const userMessage: ChatMessage = { id: crypto.randomUUID(), role: "user", content: text, createdAt: new Date().toISOString(), sequence: nextSequence };
+    const assistantTemp: ChatMessage = { id: crypto.randomUUID(), role: "assistant", content: "", createdAt: new Date().toISOString(), sequence: nextSequence + 1, metadata: { streaming: true } };
     followLatestRef.current = true;
     forceScrollRef.current = true;
     setShowJumpToLatest(false);
@@ -183,7 +197,11 @@ export function ZhiweiApp() {
       if (!response.ok) throw new Error(await responseMessage(response, "这句话没能送达，请再试一次。"));
       await readSseStream(response, (event) => {
         if (event.type === "message.started") {
-          updateConversationMessages(conversationId!, (messages) => messages.map((message) => message.id === assistantTemp.id ? { ...message, id: event.messageId, metadata: { traceId: event.traceId, streaming: true } } : message));
+          updateConversationMessages(conversationId!, (messages) => messages.map((message) => {
+            if (message.id === userMessage.id) return event.userMessage;
+            if (message.id === assistantTemp.id) return { ...message, id: event.messageId, createdAt: event.createdAt, sequence: event.sequence, metadata: { traceId: event.traceId, streaming: true } };
+            return message;
+          }));
           assistantTemp.id = event.messageId;
         }
         if (event.type === "text.delta") {
@@ -307,10 +325,15 @@ export function ZhiweiApp() {
             <div className="empty-conversation"><div className="empty-word">知微</div><h1>现在，你想从哪里聊起？</h1><p>可以是一件具体的事，也可以只是此刻说不清楚的心情。</p><div>{["最近脑子有点乱", "我有件事拿不定主意", "只是想找个人说说话"].map((prompt) => <button key={prompt} onClick={() => setInput(prompt)}>{prompt}</button>)}</div></div>
           ) : (
             <div className="messages">
-              {active.messages.map((message, index) => (
-                <Message
-                  key={message.id}
+              {active.messages.map((message, index) => {
+                const previous = active.messages[index - 1];
+                const showDate = !previous || localDateKey(previous.createdAt, data.user.timezone) !== localDateKey(message.createdAt, data.user.timezone);
+                return (
+                <Fragment key={message.id}>
+                  {showDate ? <div className="message-date-divider"><span>{formatDateDivider(message.createdAt, data.user.timezone)}</span></div> : null}
+                  <Message
                   message={message}
+                  timeZone={data.user.timezone}
                   receipt={receipts[message.id]}
                   onToggleReceipt={() => setReceipts((current) => {
                     const existing = current[message.id];
@@ -320,8 +343,9 @@ export function ZhiweiApp() {
                   })}
                   onFeedback={feedback}
                   onRetry={message.role === "assistant" ? () => { const previous = [...active.messages.slice(0, index)].reverse().find((item) => item.role === "user"); if (previous) void sendMessage(previous.content); } : undefined}
-                />
-              ))}
+                  />
+                </Fragment>
+              );})}
               <div ref={messageEndRef} />
             </div>
           )}
@@ -449,7 +473,7 @@ function AboutDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-function Message({ message, receipt, onToggleReceipt, onFeedback, onRetry }: { message: ChatMessage; receipt?: { count: number; open: boolean }; onToggleReceipt: () => void; onFeedback: (id: string, value: "understood" | "not-me", reason?: string) => Promise<void>; onRetry?: () => void }) {
+function Message({ message, timeZone, receipt, onToggleReceipt, onFeedback, onRetry }: { message: ChatMessage; timeZone: string; receipt?: { count: number; open: boolean }; onToggleReceipt: () => void; onFeedback: (id: string, value: "understood" | "not-me", reason?: string) => Promise<void>; onRetry?: () => void }) {
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const assistant = message.role === "assistant";
   return (
@@ -458,7 +482,7 @@ function Message({ message, receipt, onToggleReceipt, onFeedback, onRetry }: { m
       {message.metadata?.status === "interrupted" ? <div className="message-status">回复中断了，可以重试。</div> : null}
       {Array.isArray(message.metadata?.sources) && message.metadata.sources.length ? <details className="message-sources"><summary>查看事实来源（{message.metadata.sources.length}）</summary>{message.metadata.sources.map((source: any) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer"><span>{source.title}</span>{source.siteName ? <small>{source.siteName}</small> : null}</a>)}</details> : null}
       <footer>
-        <time>{formatTime(message.createdAt)}</time>
+        <time title={formatFullTime(message.createdAt, timeZone)} dateTime={message.createdAt}>{formatRelativeDateTime(message.createdAt)}</time>
         {assistant && message.content ? <div className="message-actions"><button onClick={() => navigator.clipboard.writeText(message.content)} aria-label="复制"><Clipboard size={14} /></button><button onClick={() => void onFeedback(message.id, "understood")} aria-label="有被懂到"><ThumbsUp size={14} /></button><button onClick={() => setFeedbackOpen(!feedbackOpen)} aria-label="不太像我"><ThumbsDown size={14} /></button>{onRetry ? <button onClick={onRetry} aria-label="重试"><RotateCcw size={14} /></button> : null}</div> : null}
       </footer>
       {feedbackOpen ? <div className="feedback-reasons"><span>哪里不太像你？</span>{["语气不对", "记错了", "建议不贴合", "太像模板"].map((reason) => <button key={reason} onClick={() => { void onFeedback(message.id, "not-me", reason); setFeedbackOpen(false); }}>{reason}</button>)}</div> : null}

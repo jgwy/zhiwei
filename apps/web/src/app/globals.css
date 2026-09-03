@@ -130,13 +130,16 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #222; outline-
 .jump-to-latest:hover { border-color: #c9c9c9; color: #111; }
 .messages, .empty-conversation, .return-note, .composer-wrap { width: min(760px, calc(100% - 44px)); margin-left: auto; margin-right: auto; }
 .messages { padding: 30px 0 70px; display: flex; flex-direction: column; gap: 30px; }
+.message-date-divider { align-self: stretch; display: flex; align-items: center; gap: 12px; color: #aaa; font-size: 10px; margin: 2px 0 -12px; }
+.message-date-divider::before, .message-date-divider::after { content: ""; height: 1px; background: #ededed; flex: 1; }
+.message-date-divider span { white-space: nowrap; }
 .message { max-width: 88%; }
 .message.user { align-self: flex-end; }
 .message.assistant { align-self: flex-start; }
 .message-content { white-space: pre-wrap; font-size: 15px; line-height: 1.78; color: #242424; }
 .message.user .message-content { background: #f2f2f2; padding: 10px 15px; border-radius: 17px 17px 5px 17px; line-height: 1.55; }
 .message footer { display: flex; gap: 12px; min-height: 25px; align-items: center; margin-top: 4px; }
-.message time { opacity: 0; font-size: 10px; color: #aaa; transition: .15s; }
+.message time { opacity: .75; font-size: 10px; color: #aaa; transition: .15s; cursor: help; }
 .message:hover time { opacity: 1; }
 .message-actions { display: flex; opacity: 0; transition: .15s; }
 .message:hover .message-actions { opacity: 1; }
@@ -188,6 +191,9 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #222; outline-
 .empty-chart { height: 100%; display: grid; place-items: center; align-content: center; color: #aaa; gap: 6px; }.empty-chart span { color: #ddd; font-size: 30px; }.empty-chart p { margin: 0; font-size: 10px; }
 .profile-summary { font-size: 12px; line-height: 1.72; color: #626262; padding: 12px 13px; margin: 0 0 8px; background: white; border: 1px solid #ededed; border-radius: 14px; }
 .memory-list { display: grid; gap: 4px; }.memory-row { display: grid; grid-template-columns: 1fr 27px; gap: 2px; align-items: center; }.memory-row > button:first-child { border: 0; background: transparent; display: grid; grid-template-columns: 1fr 15px; gap: 8px; text-align: left; padding: 8px 4px; cursor: pointer; color: #555; align-items: center; }.memory-row > button:first-child:hover { color: #111; }.memory-row button span { font-size: 11px; line-height: 1.5; }.memory-list small { display: block; color: #aaa; font-size: 9px; margin-bottom: 2px; }.withdraw-button { width: 27px; height: 27px; display: grid; place-items: center; border: 0; border-radius: 8px; background: transparent; color: #aaa; cursor: pointer; }.withdraw-button:hover { color: #b42318; background: #fff0ee; }
+.memory-time-details { grid-column: 1 / -1; margin: -3px 4px 5px; color: #999; font-size: 9px; }
+.memory-time-details summary { cursor: pointer; width: max-content; }
+.memory-time-details > div { display: grid; gap: 3px; margin-top: 5px; padding: 7px 9px; border-radius: 8px; background: #f5f5f5; }
 .settings-section { padding-top: 4px; }.setting-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 0; border-bottom: 1px solid #ededed; }.setting-row > span { display: flex; flex-direction: column; gap: 3px; }.setting-row strong { font-size: 11px; }.setting-row small { color: #999; font-size: 9px; }
 .delete-data-box { display: grid; gap: 8px; margin-top: 18px; padding: 12px; border: 1px solid #f1d4d1; border-radius: 12px; background: #fffafa; }.delete-data-box strong { display: flex; align-items: center; gap: 6px; color: #9f2d25; font-size: 11px; }.delete-data-box small { color: #9b7774; line-height: 1.5; }.delete-data-box input { width: 100%; border: 1px solid #e8cecb; border-radius: 8px; padding: 8px; background: white; font-size: 10px; }.delete-data-box button { border: 0; border-radius: 8px; padding: 8px; background: #b42318; color: white; font-size: 10px; cursor: pointer; }.delete-data-box button:disabled { opacity: .28; cursor: default; }
 .toggle { width: 38px; height: 23px; border-radius: 99px; background: #d9d9d9; border: 0; padding: 2px; cursor: pointer; transition: .2s; flex: 0 0 auto; }.toggle span { width: 19px; height: 19px; background: white; border-radius: 50%; display: block; box-shadow: 0 1px 4px rgba(0,0,0,.22); transition: .2s; }.toggle-on { background: #222; }.toggle-on span { transform: translateX(15px); }

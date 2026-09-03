@@ -12,17 +12,50 @@ export const MemoryCategorySchema = z.enum([
 ]);
 export type MemoryCategory = z.infer<typeof MemoryCategorySchema>;
 
-export const MemoryMutationSchema = z.object({
-  operation: z.enum(["create", "supersede", "promote"]),
-  memoryId: z.string().uuid().optional(),
+export const EventTimeSchema = z.object({
+  kind: z.enum(["point", "range", "ongoing", "fuzzy", "unknown"]),
+  start: z.string().datetime().nullable(),
+  end: z.string().datetime().nullable(),
+  precision: z.enum(["minute", "day", "month", "year", "approximate", "unknown"]),
+  expression: z.string().trim().min(1).max(80).nullable(),
+  timeZone: z.string().trim().min(1).max(100).nullable(),
+}).superRefine((value, context) => {
+  if (value.kind === "point" && !value.start) {
+    context.addIssue({ code: "custom", message: "point 时间必须提供 start" });
+  }
+  if (value.kind === "range" && (!value.start || !value.end)) {
+    context.addIssue({ code: "custom", message: "range 时间必须提供 start 和 end" });
+  }
+  if (value.start && value.end && Date.parse(value.start) > Date.parse(value.end)) {
+    context.addIssue({ code: "custom", message: "事件开始时间不能晚于结束时间" });
+  }
+});
+export type EventTime = z.infer<typeof EventTimeSchema>;
+
+const UnknownEventTime: EventTime = {
+  kind: "unknown",
+  start: null,
+  end: null,
+  precision: "unknown",
+  expression: null,
+  timeZone: null,
+};
+
+const MemoryMutationFields = {
   category: MemoryCategorySchema,
   content: z.string().min(1).max(600),
   tier: z.enum(["short", "long"]),
   confidence: z.number().min(0).max(1),
   validUntil: z.string().datetime().nullable(),
+  eventTime: EventTimeSchema.default(UnknownEventTime),
   reason: z.string().min(1).max(500),
   evidenceMessageIds: z.array(z.string().uuid()).min(1).max(12),
-});
+} as const;
+
+export const MemoryMutationSchema = z.discriminatedUnion("operation", [
+  z.object({ operation: z.literal("create"), ...MemoryMutationFields }),
+  z.object({ operation: z.enum(["supersede", "promote", "reinforce"]), memoryId: z.string().uuid(), ...MemoryMutationFields }),
+]);
 export type MemoryMutation = z.infer<typeof MemoryMutationSchema>;
 
 export const DimensionWeightsSchema = z
@@ -267,6 +300,7 @@ export type ChatMessage = {
   role: "user" | "assistant" | "system";
   content: string;
   createdAt: string;
+  sequence: number;
   metadata?: Record<string, unknown>;
 };
 
@@ -278,9 +312,25 @@ export type MemoryRecord = {
   tier: "short" | "long";
   confidence: number;
   validUntil: string | null;
+  eventTime: EventTime;
+  firstObservedAt: string | null;
+  lastConfirmedAt: string | null;
   reason: string;
   status?: "active" | "superseded" | "withdrawn";
   createdAt: string;
+};
+
+export type ConversationSummaryRecord = {
+  summary: string;
+  createdAt: string;
+  coveredThroughAt: string | null;
+  sourceMessageId: string | null;
+};
+
+export type TemporalContext = {
+  currentTimeUtc: string;
+  currentLocalTime: string;
+  timeZone: string;
 };
 
 export const RiskLevelSchema = z.enum(["ordinary", "ambiguous", "immediate"]);
@@ -338,7 +388,7 @@ export type QuestionDefinition = {
 };
 
 export type StreamEvent =
-  | { type: "message.started"; messageId: string; traceId: string }
+  | { type: "message.started"; messageId: string; traceId: string; createdAt: string; sequence: number; userMessage: ChatMessage }
   | { type: "text.delta"; delta: string }
   | { type: "tool.started"; name: string }
   | { type: "tool.completed"; name: string }

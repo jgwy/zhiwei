@@ -6,9 +6,11 @@ const context: CompiledContext = {
   foundationInstructions: "",
   personalSkill: defaultPersonalSkill,
   profileSummary: "",
+  profileUpdatedAt: null,
   memories: [],
-  sessionSummary: "",
+  sessionSummary: null,
   recentMessages: [],
+  temporalContext: { currentTimeUtc: "2026-09-03T06:00:00.000Z", currentLocalTime: "2026-09-03 14:00:00 Asia/Shanghai", timeZone: "Asia/Shanghai" },
   estimatedTokens: 0,
   truncated: false,
 };

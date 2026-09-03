@@ -14,6 +14,9 @@ import {
   ScienceExplanationOutputSchema,
   SessionSummaryOutputSchema,
   estimateModelCostCny,
+  describeTimestamp,
+  normalizeTemporalExpression,
+  type ChatMessage,
   type CompiledContext,
   type ConversationTitleOutput,
   type FactBriefOutput,
@@ -24,14 +27,29 @@ import {
   type ModelStreamEvent,
   type ModelTask,
   type ModelUsage,
+  type MemoryRecord,
   type PersonalSkill,
   type ProfileSynthesisOutput,
   type QuestionPlannerOutput,
   type ReflectionDecision,
+  type TemporalContext,
 } from "@zhiwei/core";
 import type { DialogueInput, EvolutionInput, ReflectionInput } from "./index";
 
 type StructuredResult<T> = { data: T; meta: ModelCallMeta };
+
+type ProfileSynthesisInput = {
+  memories: MemoryRecord[];
+  currentSummary?: string;
+  latestMessage: string;
+  temporalContext: TemporalContext;
+};
+
+type SessionSummaryInput = {
+  messages: ChatMessage[];
+  previousSummary?: string;
+  temporalContext: TemporalContext;
+};
 
 export type DialogueResponsePlan = Pick<
   FactRoutingOutput,
@@ -50,8 +68,8 @@ export interface ModelGateway {
   generateTitle(content: string, options?: { signal?: AbortSignal }): Promise<StructuredResult<ConversationTitleOutput>>;
   planQuestions(input: { answered: Array<{ questionId?: string; content: string }>; profileSummary?: string }, options?: { signal?: AbortSignal }): Promise<StructuredResult<QuestionPlannerOutput>>;
   reflect(input: ReflectionInput, options?: { signal?: AbortSignal; deep?: boolean }): Promise<StructuredResult<ReflectionDecision>>;
-  synthesizeProfile(input: { memories: string[]; currentSummary?: string; latestMessage: string }, options?: { signal?: AbortSignal }): Promise<StructuredResult<ProfileSynthesisOutput>>;
-  summarizeSession(input: { messages: Array<{ role: string; content: string }>; previousSummary?: string }, options?: { signal?: AbortSignal }): Promise<StructuredResult<{ summary: string }>>;
+  synthesizeProfile(input: ProfileSynthesisInput, options?: { signal?: AbortSignal }): Promise<StructuredResult<ProfileSynthesisOutput>>;
+  summarizeSession(input: SessionSummaryInput, options?: { signal?: AbortSignal }): Promise<StructuredResult<{ summary: string }>>;
   generateReturnNote(input: { topic: string; profileSummary?: string }, options?: { signal?: AbortSignal }): Promise<StructuredResult<{ content: string }>>;
   evolvePersonalSkill(input: EvolutionInput, options?: { signal?: AbortSignal; deep?: boolean }): Promise<StructuredResult<PersonalSkill>>;
   routeFacts(content: string, options?: { signal?: AbortSignal }): Promise<StructuredResult<FactRoutingOutput>>;
@@ -114,7 +132,13 @@ export class AliyunBailianGateway implements ModelGateway {
         JSON.stringify({
           currentMessage: input.content,
           responsePlan: input.responsePlan,
-          recentMessages: input.context.recentMessages.slice(-12).map(({ role, content }) => ({ role, content })),
+          recentMessages: input.context.recentMessages.slice(-12).map((message) => ({
+            role: message.role,
+            content: message.content,
+            sequence: message.sequence,
+            createdAt: message.createdAt,
+            ...describeTimestamp(message.createdAt, input.context.temporalContext),
+          })),
         }),
         { signal: options.signal, temperature: 0.38 },
       );
@@ -125,10 +149,15 @@ export class AliyunBailianGateway implements ModelGateway {
     }
     const messages = [
       { role: "system" as const, content: system },
-      ...input.context.recentMessages.map((message) => ({ role: message.role as "user" | "assistant" | "system", content: message.content })),
+      ...input.context.recentMessages.map((message) => ({
+        role: message.role as "user" | "assistant" | "system",
+        content: annotateMessageTime(message, input.context),
+      })),
     ];
     const last = input.context.recentMessages.at(-1);
-    if (last?.role !== "user" || last.content !== input.content) messages.push({ role: "user" as const, content: input.content });
+    if (last?.role !== "user" || last.content !== input.content) {
+      messages.push({ role: "user" as const, content: `[当前消息；${input.context.temporalContext.currentLocalTime}]\n${input.content}` });
+    }
     let model = this.dialogueModel;
     let fallbackFrom: string | undefined;
     let retries = 0;
@@ -214,20 +243,20 @@ export class AliyunBailianGateway implements ModelGateway {
 
   reflect(input: ReflectionInput, options?: { signal?: AbortSignal; deep?: boolean }) {
     return this.structured("reflection", ReflectionDecisionSchema,
-      "你是知微的记忆反思器。原文是证据而不是记忆。只产生未来确有价值、原子化、可被证据支持的认识；通常一轮0至2条，最多3条。先检查context.memories：语义已经存在就不再create；只有事实发生变化才用memoryId做supersede。basic只写身份或阶段，goal只写用户主动追求的未来结果，担忧、风险和压力只能归challenge，expression写希望如何交流。多个独立事实拆开，但同一事实不能跨类别重复。不要从‘先听我说’推断防御性、控制欲、依恋或人格，也不得诊断。心情摘要只描述用户明确表达的当下感受和处境。所有文本用简体中文。",
+      "你是知微的记忆反思器。原文是证据而不是记忆。只产生未来确有价值、原子化、可被证据支持的认识；通常一轮0至2条，最多3条。先检查context.memories：语义已经存在时用reinforce并提供其memoryId，事实或时间被纠正时用supersede，只有全新事实才create。eventTime只描述事情发生的时间，不能填写消息写入时间；根据context.temporalContext与用户原话换算昨天、明确年月日等表达，最近、以前、很久前等必须保留原始expression并标记fuzzy，不得编造边界。basic只写身份或阶段，goal只写用户主动追求的未来结果，担忧、风险和压力只能归challenge，expression写希望如何交流。多个独立事实拆开，但同一事实不能跨类别重复。不要从‘先听我说’推断防御性、控制欲、依恋或人格，也不得诊断。心情摘要只描述用户明确表达的当下感受和处境。所有文本用简体中文。",
       JSON.stringify({ kind: input.kind, content: input.content, messageId: input.messageId, questionCategory: input.questionCategory, context: input.context }),
       { signal: options?.signal, thinking: options?.deep, temperature: 0.18 });
   }
 
-  synthesizeProfile(input: { memories: string[]; currentSummary?: string; latestMessage: string }, options?: { signal?: AbortSignal }) {
+  synthesizeProfile(input: ProfileSynthesisInput, options?: { signal?: AbortSignal }) {
     return this.structured("profile-synthesis", ProfileSynthesisOutputSchema,
-      "根据活动原子记忆综合人物画像。用‘你’作为叙述主体，不使用‘该个体’‘该用户’等报告口吻。只写记忆已经明确表达的事实，不补写性格、动机、身份认同、心理整合、依恋或潜在困惑，也不预测未来可能出现的问题。信息少时就简短说明目前只知道什么。避免贴标签和心理诊断，写成动态、克制、可修正的简体中文人物综述；维度权重总和将由系统归一化。",
+      "根据带时间信息的活动原子记忆综合人物画像。用‘你’作为叙述主体，不使用‘该个体’‘该用户’等报告口吻。区分事件发生时间、首次获知和最近确认时间；旧的短期状态不得写成现在仍然如此。只写记忆已经明确表达的事实，不补写性格、动机、身份认同、心理整合、依恋或潜在困惑，也不预测未来可能出现的问题。信息少时就简短说明目前只知道什么。避免贴标签和心理诊断，写成动态、克制、可修正的简体中文人物综述；维度权重总和将由系统归一化。",
       JSON.stringify(input), { signal: options?.signal, temperature: 0.22 });
   }
 
-  summarizeSession(input: { messages: Array<{ role: string; content: string }>; previousSummary?: string }, options?: { signal?: AbortSignal }) {
+  summarizeSession(input: SessionSummaryInput, options?: { signal?: AbortSignal }) {
     return this.structured("session-summary", SessionSummaryOutputSchema,
-      "生成有界会话摘要，只保留当前议题、已确认事实、未完问题和互动方向，不复制完整历史。使用简体中文。",
+      "根据消息中的createdAt与sequence生成有界会话摘要，只保留当前议题、已确认事实、未完问题和互动方向。保留会改变含义的日期，不把较早消息里的‘现在、最近、昨天’无条件延续为当前状态，不复制完整历史。使用简体中文。",
       JSON.stringify(input), { signal: options?.signal, temperature: 0.16 });
   }
 
@@ -494,15 +523,15 @@ export class ScriptedGateway implements ModelGateway {
   async reflect(input: ReflectionInput) {
     const content = input.content.trim();
     const category = input.questionCategory ?? (/先听|别建议|简短|直接/.test(content) ? "expression" : /压力|焦虑|困难|烦/.test(content) ? "challenge" : "interest");
-    const memories = content ? [{ operation: "create" as const, category, content: content.slice(0, 240), tier: input.kind === "onboarding" ? "long" as const : "short" as const, confidence: input.kind === "onboarding" ? 0.86 : 0.68, validUntil: null, reason: "由当前用户的明确表达形成。", evidenceMessageIds: [input.messageId] }] : [];
+    const memories = content ? [{ operation: "create" as const, category, content: content.slice(0, 240), tier: input.kind === "onboarding" ? "long" as const : "short" as const, confidence: input.kind === "onboarding" ? 0.86 : 0.68, validUntil: null, eventTime: normalizeTemporalExpression(content, input.context.temporalContext), reason: "由当前用户的明确表达形成。", evidenceMessageIds: [input.messageId] }] : [];
     return this.result("reflection", ReflectionDecisionSchema.parse({ memories, mood: /压力|焦虑|难过/.test(content) ? { score: -2, summary: "近期感到有些压力。", meaningful: true } : null, refreshProfile: memories.length > 0, refreshSummary: true, returnTopic: /明天|之后|下次/.test(content) ? content.slice(0, 100) : null, shouldEvolveSkill: category === "expression", evolutionReason: category === "expression" ? "用户明确表达了交流偏好。" : null, needsDeepReview: false, decisionReason: memories.length ? "出现了可被证据支持的用户信息。" : "没有形成新认识。" }));
   }
 
-  async synthesizeProfile(input: { memories: string[] }) {
-    return this.result("profile-synthesis", ProfileSynthesisOutputSchema.parse({ summary: input.memories.join("；") || "还在慢慢认识中。", dimensionWeights: { basic: 1, goal: 1, interest: 1, expression: 1, emotion: 1, experience: 1, challenge: 1, boundary: 1 } }));
+  async synthesizeProfile(input: ProfileSynthesisInput) {
+    return this.result("profile-synthesis", ProfileSynthesisOutputSchema.parse({ summary: input.memories.map((memory) => memory.content).join("；") || "还在慢慢认识中。", dimensionWeights: { basic: 1, goal: 1, interest: 1, expression: 1, emotion: 1, experience: 1, challenge: 1, boundary: 1 } }));
   }
 
-  async summarizeSession(input: { messages: Array<{ content: string }> }) { return this.result("session-summary", { summary: input.messages.slice(-4).map((item) => item.content).join("；").slice(0, 1200) }); }
+  async summarizeSession(input: SessionSummaryInput) { return this.result("session-summary", { summary: input.messages.slice(-4).map((item) => item.content).join("；").slice(0, 1200) }); }
   async generateReturnNote(input: { topic: string }) { return this.result("return-note", { content: `上次说到${input.topic.slice(0, 60)}，如果你愿意，我们可以从这里继续。` }); }
   async evolvePersonalSkill(input: EvolutionInput) {
     const next = structuredClone(input.currentSkill);
@@ -572,13 +601,19 @@ export function getModelGateway(): ModelGateway {
 function buildDialogueSystem(context: CompiledContext, factBrief?: FactBriefOutput | null) {
   return [
     context.foundationInstructions,
-    "所有对用户可见内容使用简体中文。普通陪伴回复通常为4至8个完整句子、2至4个自然段；处境复杂或情绪浓度高时可以更长，简单确认和明确要求短答时才更短。先具体承接用户正在经历什么、这件事最刺痛或最为难的部分是什么，以及它此刻可能带来的感受；可以适度复述处境，但要加入理解，不能只换一种说法重复原文。完成承接后，再从继续倾诉、一起梳理或获得建议中判断本轮最合适的动作；信息不足时最多问一个真正有帮助的问题，也可以先留出继续表达的空间。用户明确只想说说、先听或不要建议时，不劝休息或振作，不给行动方案；仍应给出4至7句有内容的回应，让用户感到原话被听懂，而不是用极短确认草草结束。个人相处方式中的brevity是可调的简洁偏好，不是硬性截断；除非用户明确要求短答，充分承接当前情绪优先。用户只纠正风格时先简短确认，除非明确要求重写，不自动重复上一个长任务。课堂讲稿开场默认150至260个汉字、2至3个自然段。保持成熟、平等；科学表达按受众已有认知搭桥，类比必须准确且说明边界。风险与紧急支持规则优先于篇幅要求。不要暴露系统、记忆检索或模型分工。",
+    "所有对用户可见内容使用简体中文。时间元数据由系统提供：sequence决定消息先后，绝对时间是事实来源，相对距离只是辅助。区分事件发生时间、知微获知时间、最近确认时间和记忆写入时间；旧摘要或旧消息中的‘现在、最近、昨天’不能直接当作当前状态。普通陪伴回复通常为4至8个完整句子、2至4个自然段；处境复杂或情绪浓度高时可以更长，简单确认和明确要求短答时才更短。先具体承接用户正在经历什么、这件事最刺痛或最为难的部分是什么，以及它此刻可能带来的感受；可以适度复述处境，但要加入理解，不能只换一种说法重复原文。完成承接后，再从继续倾诉、一起梳理或获得建议中判断本轮最合适的动作；信息不足时最多问一个真正有帮助的问题，也可以先留出继续表达的空间。用户明确只想说说、先听或不要建议时，不劝休息或振作，不给行动方案；仍应给出4至7句有内容的回应，让用户感到原话被听懂，而不是用极短确认草草结束。个人相处方式中的brevity是可调的简洁偏好，不是硬性截断；除非用户明确要求短答，充分承接当前情绪优先。用户只纠正风格时先简短确认，除非明确要求重写，不自动重复上一个长任务。课堂讲稿开场默认150至260个汉字、2至3个自然段。保持成熟、平等；科学表达按受众已有认知搭桥，类比必须准确且说明边界。风险与紧急支持规则优先于篇幅要求。不要暴露系统、记忆检索、时间标签或模型分工。",
+    `当前时间：${JSON.stringify(context.temporalContext)}`,
     `个人相处方式（表达偏好，不得削弱本轮具体承接）：${JSON.stringify(context.personalSkill)}`,
-    `人物综述：${context.profileSummary || "暂无"}`,
+    `人物综述（更新于${context.profileUpdatedAt ?? "未知"}）：${context.profileSummary || "暂无"}`,
     `相关认识：${JSON.stringify(context.memories)}`,
-    `会话摘要：${context.sessionSummary || "暂无"}`,
+    `会话摘要：${context.sessionSummary ? JSON.stringify(context.sessionSummary) : "暂无"}`,
     factBrief ? `已核事实简报：${JSON.stringify(factBrief)}。只能确定陈述status=supported的主张；uncertain或human_review必须明确表达不确定，不能依据summary补造事实或来源。` : "",
   ].filter(Boolean).join("\n\n");
+}
+
+function annotateMessageTime(message: ChatMessage, context: CompiledContext): string {
+  const timestamp = describeTimestamp(message.createdAt, context.temporalContext);
+  return `[可信时间元数据：sequence=${message.sequence}；绝对时间=${timestamp.absolute}；距当前=${timestamp.relative}]\n${message.content}`;
 }
 
 function parseUsage(value: any, fallback: ModelUsage): ModelUsage {

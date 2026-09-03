@@ -1,17 +1,22 @@
 import type {
   ChatMessage,
+  ConversationSummaryRecord,
   MemoryRecord,
   PersonalSkill,
   ProfileSnapshot,
+  TemporalContext,
 } from "./types";
+import { createTemporalContext } from "./temporal";
 
 export type CompiledContext = {
   foundationInstructions: string;
   personalSkill: PersonalSkill;
   profileSummary: string;
+  profileUpdatedAt: string | null;
   memories: MemoryRecord[];
-  sessionSummary: string;
+  sessionSummary: ConversationSummaryRecord | null;
   recentMessages: ChatMessage[];
+  temporalContext: TemporalContext;
   estimatedTokens: number;
   truncated: boolean;
 };
@@ -21,9 +26,11 @@ export function compileContext(input: {
   personalSkill: PersonalSkill;
   profile: ProfileSnapshot | null;
   memories: MemoryRecord[];
-  sessionSummary: string | null;
+  sessionSummary: ConversationSummaryRecord | null;
   messages: ChatMessage[];
   maxInputTokens: number;
+  timeZone: string;
+  now?: Date;
 }): CompiledContext {
   const recentMessages = input.messages.slice(-12);
   const memories = input.memories.slice(0, 8);
@@ -31,9 +38,11 @@ export function compileContext(input: {
     foundationInstructions: input.foundationInstructions,
     personalSkill: input.personalSkill,
     profileSummary: input.profile?.summary ?? "",
+    profileUpdatedAt: input.profile?.createdAt ?? null,
     memories,
-    sessionSummary: input.sessionSummary ?? "",
+    sessionSummary: input.sessionSummary,
     recentMessages,
+    temporalContext: createTemporalContext(input.timeZone, input.now),
     estimatedTokens: 0,
     truncated: false,
   };
@@ -53,7 +62,12 @@ export function compileContext(input: {
     context.estimatedTokens = roughTokens(context);
   }
   if (context.estimatedTokens > input.maxInputTokens) {
-    context.sessionSummary = context.sessionSummary.slice(0, 1200);
+    if (context.sessionSummary) {
+      context.sessionSummary = {
+        ...context.sessionSummary,
+        summary: context.sessionSummary.summary.slice(0, 1200),
+      };
+    }
     context.profileSummary = context.profileSummary.slice(0, 1200);
     context.truncated = true;
     context.estimatedTokens = roughTokens(context);

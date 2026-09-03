@@ -9,6 +9,7 @@ import {
   enqueueJob,
   failJob,
   getConversationSummary,
+  getUserTimeZone,
   getUserSettings,
   listMessages,
   normalizeDimensionWeights,
@@ -72,10 +73,11 @@ async function handleReflection(job: any) {
   };
   const traceId = payload.traceId ?? crypto.randomUUID();
   const started = Date.now();
-  const [messages, summary, settings] = await Promise.all([
+  const [messages, summary, settings, timeZone] = await Promise.all([
     listMessages(job.user_id, payload.conversationId, 24),
     getConversationSummary(job.user_id, payload.conversationId),
     getUserSettings(job.user_id),
+    getUserTimeZone(job.user_id),
   ]);
   const queryEmbedding = await tryEmbedding(job.user_id, traceId, payload.conversationId, [payload.content]);
   const [profileResult, skillResult, memoryResult] = await Promise.all([
@@ -105,6 +107,7 @@ async function handleReflection(job: any) {
     memories,
     sessionSummary: summary,
     messages,
+    timeZone,
     maxInputTokens: Math.min(18_000, gateway.capabilities.maxContextTokens - 2_000),
   });
   await recordTrace({
@@ -147,20 +150,47 @@ async function handleReflection(job: any) {
   let dimensionWeights = normalizeDimensionWeights(profile?.dimensionWeights ?? equalWeights());
   const shouldRefreshProfile = settings.memoryEnabled !== false && (decision.refreshProfile || decision.memories.length > 0 || !profile);
   if (shouldRefreshProfile) {
+    const replacedMemoryIds = new Set(
+      decision.memories
+        .filter((memory) => memory.operation === "supersede" || memory.operation === "promote")
+        .map((memory) => memory.memoryId),
+    );
+    const newMemoryVersions = decision.memories.filter((memory) => memory.operation !== "reinforce");
     const result = await gateway.synthesizeProfile({
-      memories: [...memories.map((memory) => memory.content), ...decision.memories.map((memory) => memory.content)],
+      memories: [
+        ...memories.filter((memory) => !replacedMemoryIds.has(memory.id)),
+        ...newMemoryVersions.map((memory, index) => ({
+          id: memory.operation === "create" ? `pending-${index}` : memory.memoryId,
+          versionId: `pending-${index}`,
+          category: memory.category,
+          content: memory.content,
+          tier: memory.tier,
+          confidence: memory.confidence,
+          validUntil: memory.validUntil,
+          eventTime: memory.eventTime,
+          firstObservedAt: messages.at(-1)?.createdAt ?? null,
+          lastConfirmedAt: messages.at(-1)?.createdAt ?? null,
+          reason: memory.reason,
+          createdAt: context.temporalContext.currentTimeUtc,
+        })),
+      ],
       currentSummary: profile?.summary,
       latestMessage: payload.content,
+      temporalContext: context.temporalContext,
     });
     profileSummary = result.data.summary;
     dimensionWeights = normalizeDimensionWeights(result.data.dimensionWeights);
     await recordModelCallMeta({ userId: job.user_id, traceId, conversationId: payload.conversationId, adapterId: gateway.id, meta: result.meta });
   }
 
-  let sessionSummary = summary ?? "这段对话刚刚开始。";
+  let sessionSummary = summary?.summary ?? "这段对话刚刚开始。";
   const shouldRefreshSummary = decision.refreshSummary || !summary || messages.length >= 12;
   if (shouldRefreshSummary) {
-    const result = await gateway.summarizeSession({ messages, previousSummary: summary ?? undefined });
+    const result = await gateway.summarizeSession({
+      messages,
+      previousSummary: summary?.summary,
+      temporalContext: context.temporalContext,
+    });
     sessionSummary = result.data.summary;
     await recordModelCallMeta({ userId: job.user_id, traceId, conversationId: payload.conversationId, adapterId: gateway.id, meta: result.meta });
   }

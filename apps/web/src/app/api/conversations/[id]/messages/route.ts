@@ -6,12 +6,14 @@ import {
   compileContext,
   enqueueJob,
   getConversationSummary,
+  getUserTimeZone,
   listConversations,
   listMessages,
   recordModelCallMeta,
   recordRiskEvent,
   recordTrace,
   saveMessageSources,
+  updateMessage,
   type MemoryRecord,
   type FactBriefOutput,
   type FactRoutingOutput,
@@ -66,12 +68,13 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
     await recordTrace({ userId, traceId, stage: "retrieval.degraded", payload: { message: "向量服务不可用，已降级为关键词检索。" } });
   }
 
-  const [messages, profileResult, memoryResult, summary, skillResult] = await Promise.all([
+  const [messages, profileResult, memoryResult, summary, skillResult, timeZone] = await Promise.all([
     listMessages(userId, conversationId, 24),
     callMemoryMcp<{ profile: ProfileSnapshot | null }>({ tool: "profile_get_current", userId, traceId }),
     callMemoryMcp<{ memories: MemoryRecord[] }>({ tool: "memory_search", userId, traceId, arguments: { query: input.content, limit: 8, ...(queryEmbedding ? { queryEmbedding } : {}) } }),
     getConversationSummary(userId, conversationId),
     callMemoryMcp<any>({ tool: "personal_skill_get_active", userId, traceId }),
+    getUserTimeZone(userId),
   ]);
   const memories = memoryResult.memories;
   const activeSkill = skillResult.skill;
@@ -82,6 +85,7 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
     memories,
     sessionSummary: summary,
     messages,
+    timeZone,
     maxInputTokens: Math.min(18_000, gateway.capabilities.maxContextTokens - 2_000),
   });
 
@@ -145,7 +149,14 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
     payload: { gateway: gateway.id, skillVersion: activeSkill?.version, memoryIds: memories.map((memory) => memory.id), riskAssessment, responsePlan, factBrief, compiled },
   });
 
-  const assistantMessageId = crypto.randomUUID();
+  const assistantMessage = await addMessage({
+    conversationId,
+    userId,
+    role: "assistant",
+    content: "",
+    metadata: { traceId, gateway: gateway.id, status: "streaming" },
+  });
+  const assistantMessageId = assistantMessage.id;
   const stream = new ReadableStream({
     async start(controller) {
       const send = (event: StreamEvent) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
@@ -153,7 +164,14 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
       let sources: Array<{ title: string; url: string; siteName?: string }> = [...verifiedSources];
       let completedMeta: any = null;
       try {
-        send({ type: "message.started", messageId: assistantMessageId, traceId });
+        send({
+          type: "message.started",
+          messageId: assistantMessageId,
+          traceId,
+          createdAt: assistantMessage.createdAt,
+          sequence: assistantMessage.sequence,
+          userMessage,
+        });
         if (memories.length) {
           send({ type: "tool.started", name: "memory_search" });
           send({ type: "tool.completed", name: "memory_search" });
@@ -180,7 +198,7 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
           }
         }
         const status = request.signal.aborted ? "stopped" : "completed";
-        await addMessage({ id: assistantMessageId, conversationId, userId, role: "assistant", content: output, metadata: { traceId, gateway: gateway.id, status, sources } });
+        await updateMessage({ id: assistantMessageId, userId, content: output, metadata: { traceId, gateway: gateway.id, status, sources } });
         if (sources.length) await saveMessageSources({ userId, messageId: assistantMessageId, sources });
         if (completedMeta) await recordModelCallMeta({ userId, traceId, conversationId, adapterId: gateway.id, meta: completedMeta });
         const jobId = riskAssessment.level === "ordinary"
@@ -189,9 +207,7 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
         await recordTrace({ userId, traceId, stage: "dialogue.completed", durationMs: completedMeta?.durationMs, payload: { messageId: assistantMessageId, output, jobId, sources, meta: completedMeta, status } });
         send({ type: "message.completed", messageId: assistantMessageId, jobId, sources });
       } catch (error) {
-        if (output) {
-          await addMessage({ id: assistantMessageId, conversationId, userId, role: "assistant", content: output, metadata: { traceId, gateway: gateway.id, status: request.signal.aborted ? "stopped" : "interrupted", sources } });
-        }
+        await updateMessage({ id: assistantMessageId, userId, content: output, metadata: { traceId, gateway: gateway.id, status: request.signal.aborted ? "stopped" : "interrupted", sources } });
         send({ type: "error", code: publicErrorCode(error), message: publicErrorMessage(error) });
       } finally {
         controller.close();

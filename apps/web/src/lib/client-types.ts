@@ -21,6 +21,7 @@ export type BootstrapData = {
     id: string;
     onboarding_complete: boolean;
     settings: Record<string, boolean>;
+    timezone: string;
   };
   conversations: ConversationView[];
   profile: ProfileSnapshot | null;

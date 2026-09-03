@@ -57,6 +57,11 @@ function numberValue(value: number | string | null | undefined) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function formatDeveloperTime(value: unknown) {
+  if (typeof value !== "string" || !value) return "未知";
+  return new Date(value).toLocaleString("zh-CN");
+}
+
 function formatTokens(value: number | string | null | undefined) {
   return new Intl.NumberFormat("zh-CN").format(numberValue(value));
 }
@@ -172,7 +177,7 @@ export function DeveloperPanel({ onClose }: { onClose: () => void }) {
           <section>
             <div className="dev-section-heading"><div><h1>证据如何变成理解</h1><p>用户界面保持自然，这里保留证据来源、版本、置信度和了解度计算。</p></div><span>{data.memories.length} 个版本</span></div>
             <div className="dev-grid">
-              <div className="dev-column"><h2>记忆版本</h2>{data.memories.map((memory) => { const state = memoryStatus(memory); return <article className="data-card" key={memory.id}><header><span className={state.className}>{state.label}</span><small>{memory.tier === "long" ? "长期" : "短期"} · {categoryLabel(memory.category)}</small></header><p>{memory.content}</p><footer>置信度 {Number(memory.confidence).toFixed(2)} · 证据 {memory.evidence_ids?.length ?? 0} 条</footer><details><summary>查看原始记录</summary><pre>{JSON.stringify(memory, null, 2)}</pre></details></article>; })}</div>
+              <div className="dev-column"><h2>记忆版本</h2>{data.memories.map((memory) => { const state = memoryStatus(memory); return <article className="data-card" key={memory.id}><header><span className={state.className}>{state.label}</span><small>{memory.tier === "long" ? "长期" : "短期"} · {categoryLabel(memory.category)}</small></header><p>{memory.content}</p><footer>置信度 {Number(memory.confidence).toFixed(2)} · 证据 {memory.evidence_ids?.length ?? 0} 条<br />事件 {memory.temporal_expression ?? memory.event_time_kind ?? "unknown"} · 首次获知 {formatDeveloperTime(memory.first_observed_at)} · 最近确认 {formatDeveloperTime(memory.last_confirmed_at)} · 写入 {formatDeveloperTime(memory.created_at)}{memory.valid_until ? ` · 失效 ${formatDeveloperTime(memory.valid_until)}` : ""}</footer><details><summary>查看原始记录</summary><pre>{JSON.stringify(memory, null, 2)}</pre></details></article>; })}</div>
               <div className="dev-column"><h2>画像快照</h2>{data.profiles.map((profile) => <article className="data-card" key={profile.id}><header><strong>{profile.understanding_score}%</strong><small>{new Date(profile.created_at).toLocaleString("zh-CN")}</small></header><p>{profile.summary}</p><pre>{JSON.stringify({ weights: profile.dimension_weights, components: profile.understanding_components }, null, 2)}</pre></article>)}</div>
             </div>
           </section>

@@ -9,6 +9,7 @@ import {
 } from "./score";
 import type {
   ChatMessage,
+  ConversationSummaryRecord,
   MemoryRecord,
   ModelCallMeta,
   ModelSource,
@@ -67,9 +68,9 @@ export async function getUserState(userId: string) {
 export async function listConversations(userId: string) {
   const result = await getPool().query(
     `SELECT c.*,
-      COALESCE((SELECT json_agg(m ORDER BY m.created_at)
-        FROM (SELECT id, role, content, created_at, metadata
-              FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 80) m), '[]') AS messages
+      COALESCE((SELECT json_agg(m ORDER BY m.sequence_no)
+        FROM (SELECT id, role, content, created_at, sequence_no, metadata
+              FROM messages WHERE conversation_id = c.id ORDER BY sequence_no DESC LIMIT 80) m), '[]') AS messages
      FROM conversations c
      WHERE c.user_id = $1 AND c.kind = 'chat'
      ORDER BY c.updated_at DESC`,
@@ -133,22 +134,47 @@ export async function addMessage(input: {
   id?: string;
 }): Promise<ChatMessage> {
   const id = input.id ?? randomUUID();
+  return withTransaction(async (client) => {
+    const sequence = await client.query(
+      `UPDATE conversations
+       SET next_message_sequence = next_message_sequence + 1, updated_at = now()
+       WHERE id = $1 AND user_id = $2
+       RETURNING next_message_sequence - 1 AS sequence_no`,
+      [input.conversationId, input.userId],
+    );
+    if (!sequence.rowCount) throw new Error("只能向当前用户自己的对话添加消息");
+    const result = await client.query(
+      `INSERT INTO messages
+        (id, conversation_id, user_id, role, content, metadata, sequence_no)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7) RETURNING *`,
+      [
+        id,
+        input.conversationId,
+        input.userId,
+        input.role,
+        input.content,
+        JSON.stringify(input.metadata ?? {}),
+        sequence.rows[0].sequence_no,
+      ],
+    );
+    return mapMessage(result.rows[0]);
+  });
+}
+
+export async function updateMessage(input: {
+  id: string;
+  userId: string;
+  content: string;
+  metadata: Record<string, unknown>;
+}): Promise<ChatMessage> {
   const result = await getPool().query(
-    `INSERT INTO messages (id, conversation_id, user_id, role, content, metadata)
-     VALUES ($1, $2, $3, $4, $5, $6::jsonb) RETURNING *`,
-    [
-      id,
-      input.conversationId,
-      input.userId,
-      input.role,
-      input.content,
-      JSON.stringify(input.metadata ?? {}),
-    ],
+    `UPDATE messages
+     SET content = $3, metadata = $4::jsonb
+     WHERE id = $1 AND user_id = $2
+     RETURNING *`,
+    [input.id, input.userId, input.content, JSON.stringify(input.metadata)],
   );
-  await getPool().query(
-    `UPDATE conversations SET updated_at = now() WHERE id = $1 AND user_id = $2`,
-    [input.conversationId, input.userId],
-  );
+  if (!result.rowCount) throw new Error("找不到要更新的消息");
   return mapMessage(result.rows[0]);
 }
 
@@ -158,9 +184,9 @@ export async function listMessages(
   limit = 80,
 ): Promise<ChatMessage[]> {
   const result = await getPool().query(
-    `SELECT id, role, content, created_at, metadata FROM messages
+    `SELECT id, role, content, created_at, sequence_no, metadata FROM messages
      WHERE user_id = $1 AND conversation_id = $2
-     ORDER BY created_at DESC LIMIT $3`,
+     ORDER BY sequence_no DESC LIMIT $3`,
     [userId, conversationId, limit],
   );
   return result.rows.reverse().map(mapMessage);
@@ -170,7 +196,7 @@ export async function getOnboardingAnswers(userId: string) {
   const result = await getPool().query(
     `SELECT id, content, metadata, created_at FROM messages
      WHERE user_id = $1 AND role = 'user' AND metadata->>'kind' = 'onboarding-answer'
-     ORDER BY created_at`,
+     ORDER BY sequence_no`,
     [userId],
   );
   return result.rows;
@@ -218,6 +244,18 @@ export async function updateSettings(
     `UPDATE users SET settings = settings || $2::jsonb, updated_at = now() WHERE id = $1`,
     [userId, JSON.stringify(settings)],
   );
+}
+
+export async function updateTimeZone(userId: string, timeZone: string): Promise<void> {
+  await getPool().query(
+    `UPDATE users SET timezone = $2, updated_at = now() WHERE id = $1`,
+    [userId, timeZone],
+  );
+}
+
+export async function getUserTimeZone(userId: string): Promise<string> {
+  const result = await getPool().query(`SELECT timezone FROM users WHERE id = $1`, [userId]);
+  return result.rows[0]?.timezone ?? "Asia/Shanghai";
 }
 
 export async function getUserSettings(userId: string) {
@@ -291,7 +329,10 @@ export async function failJob(job: any, error: unknown): Promise<void> {
 export async function getActiveMemories(userId: string): Promise<MemoryRecord[]> {
   const result = await getPool().query(
     `SELECT m.id, mv.id AS version_id, mv.category, mv.content, mv.tier,
-            mv.confidence, mv.valid_until, mv.reason, mv.created_at
+            mv.confidence, mv.valid_until, mv.reason, mv.created_at,
+            mv.event_time_kind, mv.event_time_start, mv.event_time_end,
+            mv.temporal_precision, mv.temporal_expression, mv.source_timezone,
+            mv.first_observed_at, mv.last_confirmed_at
      FROM memories m
      JOIN memory_versions mv ON mv.memory_id = m.id AND mv.is_active = true
      JOIN users u ON u.id = m.user_id
@@ -301,17 +342,7 @@ export async function getActiveMemories(userId: string): Promise<MemoryRecord[]>
      ORDER BY mv.confidence DESC, mv.created_at DESC LIMIT 100`,
     [userId],
   );
-  return result.rows.map((row) => ({
-    id: row.id,
-    versionId: row.version_id,
-    category: row.category,
-    content: row.content,
-    tier: row.tier,
-    confidence: Number(row.confidence),
-    validUntil: row.valid_until,
-    reason: row.reason,
-    createdAt: row.created_at,
-  }));
+  return result.rows.map(mapMemory);
 }
 
 export async function searchMemories(
@@ -325,6 +356,9 @@ export async function searchMemories(
     const result = await getPool().query(
       `SELECT m.id, mv.id AS version_id, mv.category, mv.content, mv.tier,
               mv.confidence, mv.valid_until, mv.reason, mv.created_at,
+              mv.event_time_kind, mv.event_time_start, mv.event_time_end,
+              mv.temporal_precision, mv.temporal_expression, mv.source_timezone,
+              mv.first_observed_at, mv.last_confirmed_at,
               1 - (mv.embedding_v2 <=> $2::vector) AS similarity
        FROM memories m
        JOIN memory_versions mv ON mv.memory_id = m.id AND mv.is_active = true
@@ -350,21 +384,10 @@ function rankHybridMemories(rows: any[], query: string, limit: number): MemoryRe
     const lexical = terms.length
       ? terms.filter((term) => String(row.content).includes(term)).length / terms.length
       : 0;
-    const ageDays = Math.max(0, (now - new Date(row.created_at).getTime()) / 86_400_000);
-    const freshness = Math.exp(-ageDays / 90);
+    const freshness = memoryFreshness(row, now);
     const score = Number(row.similarity) * 0.55 + lexical * 0.15 + Number(row.confidence) * 0.15 + freshness * 0.1 + (row.tier === "long" ? 0.05 : 0);
     return { row, score };
-  }).sort((a, b) => b.score - a.score).slice(0, limit).map(({ row }) => ({
-    id: row.id,
-    versionId: row.version_id,
-    category: row.category,
-    content: row.content,
-    tier: row.tier,
-    confidence: Number(row.confidence),
-    validUntil: row.valid_until,
-    reason: row.reason,
-    createdAt: row.created_at,
-  }));
+  }).sort((a, b) => b.score - a.score).slice(0, limit).map(({ row }) => mapMemory(row));
 }
 
 export function rankMemories(
@@ -377,12 +400,14 @@ export function rankMemories(
     .split(/\s+/)
     .filter((term) => term.length >= 2)
     .slice(0, 8);
+  const now = Date.now();
   return memories
     .map((memory) => ({
       memory,
       score:
         memory.confidence * 2 +
         (memory.tier === "long" ? 0.35 : 0) +
+        memoryFreshness(memory, now) * 0.4 +
         terms.reduce(
           (sum, term) => sum + (memory.content.includes(term) ? 1 : 0),
           0,
@@ -391,6 +416,29 @@ export function rankMemories(
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
     .map(({ memory }) => memory);
+}
+
+function memoryFreshness(
+  memory: {
+    category: unknown;
+    tier: unknown;
+    lastConfirmedAt?: unknown;
+    createdAt?: unknown;
+    last_confirmed_at?: unknown;
+    created_at?: unknown;
+  },
+  now: number,
+): number {
+  const category = String(memory.category);
+  const tier = String(memory.tier);
+  if (tier === "long" && ["basic", "interest", "expression", "experience", "boundary"].includes(category)) return 1;
+  const confirmed = memory.lastConfirmedAt ?? memory.last_confirmed_at;
+  const created = memory.createdAt ?? memory.created_at;
+  const timestamp = confirmed ?? created;
+  const parsed = new Date(String(timestamp)).getTime();
+  const ageDays = Number.isFinite(parsed) ? Math.max(0, (now - parsed) / 86_400_000) : 0;
+  const halfLife = category === "emotion" ? 14 : category === "challenge" || category === "goal" ? 30 : 90;
+  return Math.exp(-Math.LN2 * ageDays / halfLife);
 }
 
 export async function getLatestProfile(
@@ -467,16 +515,25 @@ export async function commitProfileSnapshot(input: {
 export async function getConversationSummary(
   userId: string,
   conversationId: string,
-): Promise<string | null> {
+): Promise<ConversationSummaryRecord | null> {
   const result = await getPool().query(
-    `SELECT cs.summary FROM conversation_summaries cs
+    `SELECT cs.summary, cs.created_at, cs.source_message_id,
+            source.created_at AS covered_through_at
+     FROM conversation_summaries cs
      JOIN users u ON u.id = cs.user_id
+     LEFT JOIN messages source ON source.id = cs.source_message_id
      WHERE cs.user_id = $1 AND cs.conversation_id = $2
        AND (u.settings->>'memoryEnabled')::boolean = true
      ORDER BY cs.created_at DESC LIMIT 1`,
     [userId, conversationId],
   );
-  return result.rows[0]?.summary ?? null;
+  if (!result.rowCount) return null;
+  return {
+    summary: result.rows[0].summary,
+    createdAt: result.rows[0].created_at,
+    coveredThroughAt: result.rows[0].covered_through_at,
+    sourceMessageId: result.rows[0].source_message_id,
+  };
 }
 
 export async function getMoodSeries(userId: string) {
@@ -529,8 +586,46 @@ export async function commitReflection(input: {
     const memoryEnabled = settings.memoryEnabled !== false;
 
     for (const [mutationIndex, mutation] of (memoryEnabled ? input.reflection.memories : []).entries()) {
-      const memoryId = mutation.memoryId ?? randomUUID();
-      if (mutation.memoryId) {
+      const evidenceIds = [...new Set(mutation.evidenceMessageIds)];
+      const evidence = await client.query(
+        `SELECT id, created_at FROM messages
+         WHERE user_id = $1 AND id = ANY($2::uuid[])
+         ORDER BY created_at`,
+        [input.userId, evidenceIds],
+      );
+      if (evidence.rows.length !== evidenceIds.length) {
+        throw new Error("记忆证据必须属于当前用户");
+      }
+      const firstObservedAt = evidence.rows[0].created_at;
+      const lastConfirmedAt = evidence.rows[evidence.rows.length - 1].created_at;
+
+      if (mutation.operation === "reinforce") {
+        const active = await client.query(
+          `SELECT mv.id FROM memories m
+           JOIN memory_versions mv ON mv.memory_id = m.id AND mv.is_active = true
+           WHERE m.id = $1 AND m.user_id = $2 FOR UPDATE`,
+          [mutation.memoryId, input.userId],
+        );
+        if (!active.rowCount) throw new Error("找不到要确认的活动记忆");
+        for (const evidenceId of evidenceIds) {
+          await client.query(
+            `INSERT INTO memory_evidence (memory_version_id, message_id, user_id)
+             VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+            [active.rows[0].id, evidenceId, input.userId],
+          );
+        }
+        await client.query(
+          `UPDATE memory_versions
+           SET first_observed_at = LEAST(COALESCE(first_observed_at, $2), $2),
+               last_confirmed_at = GREATEST(COALESCE(last_confirmed_at, $3), $3)
+           WHERE id = $1 AND user_id = $4`,
+          [active.rows[0].id, firstObservedAt, lastConfirmedAt, input.userId],
+        );
+        continue;
+      }
+
+      const memoryId = mutation.operation === "create" ? randomUUID() : mutation.memoryId;
+      if (mutation.operation !== "create") {
         await client.query(
           `UPDATE memory_versions SET is_active = false, status = 'superseded'
            WHERE memory_id = $1 AND user_id = $2 AND is_active = true`,
@@ -545,8 +640,13 @@ export async function commitReflection(input: {
       const versionId = randomUUID();
       await client.query(
         `INSERT INTO memory_versions
-          (id, memory_id, user_id, category, content, tier, confidence, valid_until, reason, embedding_v2, is_active, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector, true, 'active')`,
+          (id, memory_id, user_id, category, content, tier, confidence, valid_until,
+           event_time_kind, event_time_start, event_time_end, temporal_precision,
+           temporal_expression, source_timezone, first_observed_at, last_confirmed_at,
+           reason, embedding_v2, is_active, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+                 $9, $10, $11, $12, $13, $14, $15, $16,
+                 $17, $18::vector, true, 'active')`,
         [
           versionId,
           memoryId,
@@ -556,13 +656,21 @@ export async function commitReflection(input: {
           mutation.tier,
           mutation.confidence,
           mutation.validUntil,
+          mutation.eventTime.kind,
+          mutation.eventTime.start,
+          mutation.eventTime.end,
+          mutation.eventTime.precision,
+          mutation.eventTime.expression,
+          mutation.eventTime.timeZone,
+          firstObservedAt,
+          lastConfirmedAt,
           mutation.reason,
           input.embeddings?.[mutationIndex]?.length === 1024
             ? `[${input.embeddings[mutationIndex]!.join(",")}]`
             : null,
         ],
       );
-      for (const evidenceId of mutation.evidenceMessageIds) {
+      for (const evidenceId of evidenceIds) {
         await client.query(
           `INSERT INTO memory_evidence (memory_version_id, message_id, user_id)
            VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
@@ -606,22 +714,15 @@ export async function commitReflection(input: {
     if (memoryEnabled && input.reflection.profileChanged !== false) {
       const memoriesResult = await client.query(
       `SELECT m.id, mv.id AS version_id, mv.category, mv.content, mv.tier,
-              mv.confidence, mv.valid_until, mv.reason, mv.created_at
+              mv.confidence, mv.valid_until, mv.reason, mv.created_at,
+              mv.event_time_kind, mv.event_time_start, mv.event_time_end,
+              mv.temporal_precision, mv.temporal_expression, mv.source_timezone,
+              mv.first_observed_at, mv.last_confirmed_at
        FROM memories m JOIN memory_versions mv ON mv.memory_id = m.id AND mv.is_active = true
        WHERE m.user_id = $1`,
       [input.userId],
     );
-      const memories: MemoryRecord[] = memoriesResult.rows.map((row) => ({
-      id: row.id,
-      versionId: row.version_id,
-      category: row.category,
-      content: row.content,
-      tier: row.tier,
-      confidence: Number(row.confidence),
-      validUntil: row.valid_until,
-      reason: row.reason,
-      createdAt: row.created_at,
-    }));
+      const memories: MemoryRecord[] = memoriesResult.rows.map(mapMemory);
       const feedback = await client.query(
       `SELECT
         count(*) FILTER (WHERE value = 'understood')::int AS positive,
@@ -1230,6 +1331,31 @@ function mapMessage(row: any): ChatMessage {
     role: row.role,
     content: row.content,
     createdAt: row.created_at,
+    sequence: Number(row.sequence_no),
     metadata: row.metadata ?? {},
+  };
+}
+
+function mapMemory(row: any): MemoryRecord {
+  return {
+    id: row.id,
+    versionId: row.version_id,
+    category: row.category,
+    content: row.content,
+    tier: row.tier,
+    confidence: Number(row.confidence),
+    validUntil: row.valid_until,
+    eventTime: {
+      kind: row.event_time_kind ?? "unknown",
+      start: row.event_time_start,
+      end: row.event_time_end,
+      precision: row.temporal_precision ?? "unknown",
+      expression: row.temporal_expression,
+      timeZone: row.source_timezone,
+    },
+    firstObservedAt: row.first_observed_at,
+    lastConfirmedAt: row.last_confirmed_at,
+    reason: row.reason,
+    createdAt: row.created_at,
   };
 }

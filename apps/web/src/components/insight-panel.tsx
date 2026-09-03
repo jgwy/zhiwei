@@ -4,8 +4,9 @@ import { LineChart, Line, ResponsiveContainer, YAxis, Tooltip } from "recharts";
 import { ChevronRight, Settings2, Undo2, Trash2 } from "lucide-react";
 import { useState } from "react";
 import type { BootstrapData } from "@/lib/client-types";
-import { categoryLabel } from "@zhiwei/core/client";
+import { categoryLabel, type MemoryRecord } from "@zhiwei/core/client";
 import { Toggle } from "@/components/ui/toggle";
+import { formatFullTime, formatRelativeDateTime } from "@/lib/utils";
 
 export function InsightPanel({
   data,
@@ -86,13 +87,17 @@ export function InsightPanel({
         <div className="memory-list">
           {data.memories.slice(0, 6).map((memory) => (
             <div className="memory-row" key={memory.versionId}>
-              <button onClick={() => onMemoryClick(memory.content)}>
-                <span><small>{categoryLabel(memory.category)}</small>{memory.content}</span>
+              <button onClick={() => onMemoryClick(memory.content)} title={memoryTimeTitle(memory, data.user.timezone)}>
+                <span><small>{categoryLabel(memory.category)} · {memoryTimeLabel(memory)}</small>{memory.content}</span>
                 <ChevronRight size={15} />
               </button>
               <button className="withdraw-button" onClick={() => onWithdraw(memory.id)} aria-label={`撤回记忆：${memory.content}`} title="撤回这条认识">
                 <Undo2 size={13} />
               </button>
+              <details className="memory-time-details">
+                <summary>时间记录</summary>
+                <div>{memoryTimeLines(memory, data.user.timezone).map((line) => <span key={line}>{line}</span>)}</div>
+              </details>
             </div>
           ))}
         </div>
@@ -124,4 +129,27 @@ export function InsightPanel({
       </section>
     </aside>
   );
+}
+
+function memoryTimeLabel(memory: MemoryRecord): string {
+  if (memory.eventTime.expression) return `发生于${memory.eventTime.expression}`;
+  if (memory.eventTime.start) return `发生于${formatRelativeDateTime(memory.eventTime.start)}`;
+  if (memory.lastConfirmedAt) return `${formatRelativeDateTime(memory.lastConfirmedAt)}确认`;
+  return `${formatRelativeDateTime(memory.createdAt)}记录`;
+}
+
+function memoryTimeLines(memory: MemoryRecord, timeZone: string): string[] {
+  const lines: string[] = [];
+  if (memory.eventTime.expression) lines.push(`用户表达：${memory.eventTime.expression}`);
+  if (memory.eventTime.start) lines.push(`事件开始：${formatFullTime(memory.eventTime.start, timeZone)}`);
+  if (memory.eventTime.end) lines.push(`事件结束：${formatFullTime(memory.eventTime.end, timeZone)}`);
+  if (memory.firstObservedAt) lines.push(`首次获知：${formatFullTime(memory.firstObservedAt, timeZone)}`);
+  if (memory.lastConfirmedAt) lines.push(`最近确认：${formatFullTime(memory.lastConfirmedAt, timeZone)}`);
+  lines.push(`版本写入：${formatFullTime(memory.createdAt, timeZone)}`);
+  if (memory.validUntil) lines.push(`记忆失效：${formatFullTime(memory.validUntil, timeZone)}`);
+  return lines;
+}
+
+function memoryTimeTitle(memory: MemoryRecord, timeZone: string): string {
+  return memoryTimeLines(memory, timeZone).join("\n");
 }

@@ -11,6 +11,9 @@ describe("offline retrieval fixtures", () => {
       tier: "long",
       confidence: 0.8,
       validUntil: null,
+      eventTime: { kind: "unknown", start: null, end: null, precision: "unknown", expression: null, timeZone: null },
+      firstObservedAt: null,
+      lastConfirmedAt: null,
       reason: "fixture",
       createdAt: new Date().toISOString(),
     }));

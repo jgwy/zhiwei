@@ -13,7 +13,7 @@ vi.mock("openai", () => ({
   },
 }));
 
-import { defaultPersonalSkill, type CompiledContext } from "@zhiwei/core";
+import { defaultPersonalSkill, type CompiledContext, type MemoryRecord } from "@zhiwei/core";
 import { AliyunBailianGateway } from "./gateway";
 
 const weights = {
@@ -26,6 +26,29 @@ const weights = {
   challenge: 1,
   boundary: 1,
 };
+
+const temporalContext = {
+  currentTimeUtc: "2026-09-03T06:00:00.000Z",
+  currentLocalTime: "2026-09-03 14:00:00 Asia/Shanghai",
+  timeZone: "Asia/Shanghai",
+};
+
+function memory(content: string): MemoryRecord {
+  return {
+    id: crypto.randomUUID(),
+    versionId: crypto.randomUUID(),
+    category: "basic",
+    content,
+    tier: "long",
+    confidence: 0.9,
+    validUntil: null,
+    eventTime: { kind: "unknown", start: null, end: null, precision: "unknown", expression: null, timeZone: null },
+    firstObservedAt: null,
+    lastConfirmedAt: null,
+    reason: "fixture",
+    createdAt: temporalContext.currentTimeUtc,
+  };
+}
 
 function completion(data: unknown) {
   return {
@@ -71,8 +94,9 @@ describe("Aliyun structured-output quality retry contract", () => {
       }));
 
     const result = await new AliyunBailianGateway().synthesizeProfile({
-      memories: ["正在准备毕业论文", "希望先听后建议"],
+      memories: [memory("正在准备毕业论文"), memory("希望先听后建议")],
       latestMessage: "这段时间主要在写毕业论文",
+      temporalContext,
     });
 
     expect(openAiMock.completionCreate).toHaveBeenCalledTimes(2);
@@ -85,6 +109,29 @@ describe("Aliyun structured-output quality retry contract", () => {
     const repairedRequest = openAiMock.completionCreate.mock.calls[1]?.[0];
     expect(repairedRequest.messages[0].content).toContain("上一次输出未通过业务校验");
     expect(repairedRequest.messages[0].content).toContain("不得补写抽象能力、人格或心理动机");
+    expect(repairedRequest.messages[1].content).toContain(temporalContext.currentLocalTime);
+  });
+
+  it("includes current time and ordered message timestamps in session summaries", async () => {
+    openAiMock.completionCreate.mockResolvedValue(completion({
+      summary: "昨天用户提到工作压力，当前仍待继续确认。",
+    }));
+
+    await new AliyunBailianGateway().summarizeSession({
+      messages: [{
+        id: crypto.randomUUID(),
+        role: "user",
+        content: "昨天工作压力很大",
+        createdAt: "2026-09-03T05:58:00.000Z",
+        sequence: 7,
+      }],
+      temporalContext,
+    });
+
+    const request = openAiMock.completionCreate.mock.calls[0]?.[0];
+    expect(request.messages[1].content).toContain(temporalContext.currentLocalTime);
+    expect(request.messages[1].content).toContain('"sequence":7');
+    expect(request.messages[1].content).toContain('"createdAt":"2026-09-03T05:58:00.000Z"');
   });
 
   it("retries a schema-valid question plan that uses research-style wording", async () => {
@@ -134,9 +181,17 @@ describe("Aliyun structured-output quality retry contract", () => {
       foundationInstructions: "知微基底技能",
       personalSkill: defaultPersonalSkill,
       profileSummary: "",
+      profileUpdatedAt: null,
       memories: [],
-      sessionSummary: "",
-      recentMessages: [],
+      sessionSummary: null,
+      recentMessages: [{
+        id: crypto.randomUUID(),
+        role: "user",
+        content: "今天被当众否定以后，我一直觉得自己特别差，只想找个人说说。",
+        createdAt: "2026-09-03T05:58:00.000Z",
+        sequence: 12,
+      }],
+      temporalContext: temporalContext,
       estimatedTokens: 0,
       truncated: false,
     };
@@ -165,6 +220,9 @@ describe("Aliyun structured-output quality retry contract", () => {
     expect(system).toContain("最刺痛或最为难的部分");
     expect(system).toContain("不能只换一种说法重复原文");
     expect(system).toContain("brevity是可调的简洁偏好，不是硬性截断");
+    expect(system).toContain("2026-09-03 14:00:00 Asia/Shanghai");
+    expect(request.input[1].content).toContain("sequence=12");
+    expect(request.input[1].content).toContain("距当前=2分钟前");
     expect(system).not.toContain("只用1至3句具体承接");
     expect(events.at(-1)).toMatchObject({
       type: "completed",
@@ -217,9 +275,11 @@ describe("Aliyun structured-output quality retry contract", () => {
       foundationInstructions: "知微基底技能",
       personalSkill: defaultPersonalSkill,
       profileSummary: "正在学习大学物理。",
+      profileUpdatedAt: null,
       memories: [],
-      sessionSummary: "",
+      sessionSummary: null,
       recentMessages: [],
+      temporalContext: temporalContext,
       estimatedTokens: 0,
       truncated: false,
     };
@@ -278,9 +338,11 @@ describe("Aliyun structured-output quality retry contract", () => {
       foundationInstructions: "知微基底技能",
       personalSkill: defaultPersonalSkill,
       profileSummary: "",
+      profileUpdatedAt: null,
       memories: [],
-      sessionSummary: "",
+      sessionSummary: null,
       recentMessages: [],
+      temporalContext: temporalContext,
       estimatedTokens: 0,
       truncated: false,
     };

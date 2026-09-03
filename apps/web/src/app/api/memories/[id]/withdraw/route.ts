@@ -1,6 +1,8 @@
 import {
   addActivity,
   callMemoryMcp,
+  createTemporalContext,
+  getUserTimeZone,
   normalizeDimensionWeights,
   recordModelCallMeta,
   recordTrace,
@@ -23,12 +25,18 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const traceId = crypto.randomUUID();
     const withdrawal = await callMemoryMcp<any>({ tool: "memory_withdraw", userId, traceId, arguments: { memoryId: id, reason: input.reason } });
     try {
-      const [memoryResult, profileResult] = await Promise.all([
+      const [memoryResult, profileResult, timeZone] = await Promise.all([
         callMemoryMcp<{ memories: MemoryRecord[] }>({ tool: "memory_search", userId, traceId, arguments: { query: "当前活动画像与长期关注", limit: 20 } }),
         callMemoryMcp<{ profile: ProfileSnapshot | null }>({ tool: "profile_get_current", userId, traceId }),
+        getUserTimeZone(userId),
       ]);
       const gateway = getModelGateway();
-      const profile = await gateway.synthesizeProfile({ memories: memoryResult.memories.map((memory) => memory.content), currentSummary: profileResult.profile?.summary, latestMessage: "用户主动撤回了一条认识。" });
+      const profile = await gateway.synthesizeProfile({
+        memories: memoryResult.memories,
+        currentSummary: profileResult.profile?.summary,
+        latestMessage: "用户主动撤回了一条认识。",
+        temporalContext: createTemporalContext(timeZone),
+      });
       await callMemoryMcp({ tool: "profile_commit_snapshot", userId, traceId, arguments: { summary: profile.data.summary, dimensionWeights: normalizeDimensionWeights(profile.data.dimensionWeights) } });
       await recordModelCallMeta({ userId, traceId, adapterId: gateway.id, meta: profile.meta });
     } catch (error) {

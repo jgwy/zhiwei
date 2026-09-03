@@ -32,9 +32,11 @@ const context: CompiledContext = {
   foundationInstructions: "",
   personalSkill: defaultPersonalSkill,
   profileSummary: "",
+  profileUpdatedAt: null,
   memories: [],
-  sessionSummary: "",
+  sessionSummary: null,
   recentMessages: [],
+  temporalContext: { currentTimeUtc: new Date().toISOString(), currentLocalTime: "当前", timeZone: "Asia/Shanghai" },
   estimatedTokens: 0,
   truncated: false,
 };
@@ -98,14 +100,16 @@ const compiled = compileContext({
   personalSkill: defaultPersonalSkill,
   profile: null,
   memories: makeRetrievalFixtures(30),
-  sessionSummary: "s".repeat(2_000),
+  sessionSummary: { summary: "s".repeat(2_000), createdAt: new Date().toISOString(), coveredThroughAt: null, sourceMessageId: null },
   messages: Array.from({ length: 40 }, (_, index) => ({
     id: crypto.randomUUID(),
     role: index % 2 ? "assistant" as const : "user" as const,
     content: `message-${index}-${"x".repeat(160)}`,
     createdAt: new Date().toISOString(),
+    sequence: index + 1,
   })),
   maxInputTokens: 3_000,
+  timeZone: "Asia/Shanghai",
 });
 
 const openingCounts = new Map<string, number>();
@@ -204,6 +208,9 @@ function memory(id: string, category: MemoryCategory, content: string): MemoryRe
     tier: "long",
     confidence: 0.9,
     validUntil: null,
+    eventTime: { kind: "unknown", start: null, end: null, precision: "unknown", expression: null, timeZone: null },
+    firstObservedAt: null,
+    lastConfirmedAt: null,
     reason: "fixture",
     createdAt: new Date().toISOString(),
   };

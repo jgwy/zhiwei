@@ -3,6 +3,7 @@ import {
   ReflectionOutputSchema,
   defaultPersonalSkill,
   normalizeDimensionWeights,
+  normalizeTemporalExpression,
   type CompiledContext,
   type MemoryCategory,
   type MemoryMutation,
@@ -291,6 +292,7 @@ function extractMemories(input: ReflectionInput): MemoryMutation[] {
           input.questionCategory === "emotion"
             ? new Date(Date.now() + 30 * 86_400_000).toISOString()
             : null,
+        eventTime: normalizeTemporalExpression(text, input.context.temporalContext),
         reason: `来自初次认识问题 ${input.questionId ?? "dynamic"} 的回答。`,
         evidenceMessageIds: [input.messageId],
       },
@@ -304,23 +306,38 @@ function extractMemories(input: ReflectionInput): MemoryMutation[] {
     tier: "short" | "long",
     confidence = 0.78,
   ) => {
-    const existing = input.context.memories.find(
-      (memory) => memory.category === category && /其实|不是|改成|记错/.test(text),
+    const correcting = /其实|不是|改成|记错/.test(text);
+    const same = input.context.memories.find(
+      (memory) => memory.category === category
+        && (memory.content === content || memory.content.includes(content) || content.includes(memory.content)),
     );
-    results.push({
-      operation: existing ? "supersede" : "create",
-      memoryId: existing?.id,
+    const existing = correcting
+      ? input.context.memories.find((memory) => memory.category === category)
+      : same;
+    const fields = {
       category,
       content,
       tier,
       confidence,
       validUntil:
         tier === "short" ? new Date(Date.now() + 30 * 86_400_000).toISOString() : null,
+      eventTime: normalizeTemporalExpression(text, input.context.temporalContext),
       reason: existing
-        ? "用户在对话中给出了新的、更高优先级的表述。"
+        ? correcting
+          ? "用户在对话中给出了新的、更高优先级的表述。"
+          : "用户再次明确表达了同一认识。"
         : "用户在自然对话中提供了对以后交流有价值的信息。",
       evidenceMessageIds: [input.messageId],
-    });
+    };
+    if (existing) {
+      results.push({
+        ...fields,
+        operation: correcting ? "supersede" : "reinforce",
+        memoryId: existing.id,
+      });
+    } else {
+      results.push({ ...fields, operation: "create" });
+    }
   };
 
   const name = text.match(/(?:我叫|叫我)([\u4e00-\u9fa5A-Za-z0-9_-]{1,16})/);
