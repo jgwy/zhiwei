@@ -11,7 +11,7 @@ const folders = (await readdir(root, { withFileTypes: true }))
 
 const skills = [];
 for (const folder of folders) {
-  const content = await readFile(join(root, folder, "SKILL.md"), "utf8");
+  const content = (await readFile(join(root, folder, "SKILL.md"), "utf8")).replace(/\r\n/g, "\n");
   const frontmatter = content.match(/^---\n([\s\S]*?)\n---\n/);
   if (!frontmatter) throw new Error(`${folder}/SKILL.md 缺少 YAML frontmatter`);
   const name = frontmatter[1].match(/^name:\s*"?([^"\n]+)"?$/m)?.[1]?.trim();

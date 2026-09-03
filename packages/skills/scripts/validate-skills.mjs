@@ -25,7 +25,7 @@ for (const name of required) {
   if (!/^[a-f0-9]{64}$/.test(skill.sha256)) throw new Error(`${name} 的 SHA-256 无效`);
 
   const skillPath = join(foundationRoot, name, "SKILL.md");
-  const content = await readFile(skillPath, "utf8");
+  const content = (await readFile(skillPath, "utf8")).replace(/\r\n/g, "\n");
   const currentHash = createHash("sha256").update(content).digest("hex");
   if (skill.sha256 !== currentHash || skill.content !== content) {
     throw new Error(`${name} 的 manifest 内容不是最新版本`);
