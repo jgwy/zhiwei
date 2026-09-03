@@ -21,7 +21,7 @@ services:
     build:
       context: .
       target: runner
-    command: ["npm", "run", "db:migrate"]
+    command: ["node", "dist/packages/core/scripts/migrate.mjs"]
     environment: &app-env
       DATABASE_URL: postgres://zhiwei:zhiwei@postgres:5432/zhiwei
       ANON_COOKIE_SECRET: ${ANON_COOKIE_SECRET:-local-development-cookie-secret-change-before-deploy}
@@ -44,7 +44,7 @@ services:
     build:
       context: .
       target: runner
-    command: ["npm", "run", "start", "--workspace", "@zhiwei/memory-mcp"]
+    command: ["node", "dist/apps/memory-mcp/server.mjs"]
     environment: *app-env
     depends_on:
       migrate:
@@ -59,7 +59,7 @@ services:
     build:
       context: .
       target: runner
-    command: ["npm", "run", "start", "--workspace", "@zhiwei/science-mcp"]
+    command: ["node", "dist/apps/science-mcp/server.mjs"]
     environment: *app-env
     depends_on:
       migrate:
@@ -74,7 +74,7 @@ services:
     build:
       context: .
       target: runner
-    command: ["npm", "run", "start", "--workspace", "@zhiwei/worker"]
+    command: ["node", "dist/apps/worker/worker.mjs"]
     environment: *app-env
     depends_on:
       memory-mcp:
