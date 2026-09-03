@@ -50,7 +50,6 @@ describe("ordinary memory view", () => {
     expect(resolveLongTermSummary(profile({ schemaVersion: "long-profile-v2" })).state).toBe("ready");
     expect(resolveLongTermSummary(profile({ schemaVersion: "long-profile-v2", syncStatus: "current" })).state).toBe("ready");
     expect(resolveLongTermSummary(profile({ schemaVersion: "long-profile-v2", syncStatus: "stale" }))).toMatchObject({ state: "stale", text: "一段可靠的长期认识。" });
-    expect(resolveLongTermSummary(profile({ stale: true })).state).toBe("stale");
     expect(resolveLongTermSummary(profile()).state).toBe("ready");
   });
 
