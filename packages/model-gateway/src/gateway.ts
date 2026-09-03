@@ -301,30 +301,41 @@ export class AliyunBailianGateway implements ModelGateway {
   private async dashScopeSearch(query: string, strategy: "turbo" | "max", thinking: boolean, signal?: AbortSignal) {
     const base = new URL(process.env.MODEL_BASE_URL!);
     const url = new URL("/api/v1/services/aigc/multimodal-generation/generation", base.origin);
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${process.env.MODEL_API_KEY}`,
-        "content-type": "application/json",
-      },
-      signal,
-      body: JSON.stringify({
-        model: this.backgroundModel,
-        input: {
-          messages: [{
-            role: "user",
-            content: [{ text: `请联网查证下面的问题，优先采用官方机构、原始文件和权威来源。区分事实、推断和不确定内容，不要补造来源。\n\n${query}` }],
-          }],
+    const configuredTimeout = Number(process.env.MODEL_SEARCH_TIMEOUT_MS ?? 10_000);
+    const timeoutMs = Number.isFinite(configuredTimeout)
+      ? Math.min(60_000, Math.max(100, configuredTimeout))
+      : 10_000;
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
+    const searchSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${process.env.MODEL_API_KEY}`,
+          "content-type": "application/json",
         },
-        parameters: {
-          enable_search: true,
-          search_options: { forced_search: true, search_strategy: strategy, enable_source: true },
-          enable_thinking: thinking,
-          clear_thinking: true,
-          result_format: "message",
-        },
-      }),
-    });
+        signal: searchSignal,
+        body: JSON.stringify({
+          model: this.backgroundModel,
+          input: {
+            messages: [{
+              role: "user",
+              content: [{ text: `请联网查证下面的问题，优先采用官方机构、原始文件和权威来源。区分事实、推断和不确定内容，不要补造来源。\n\n${query}` }],
+            }],
+          },
+          parameters: {
+            enable_search: true,
+            search_options: { forced_search: true, search_strategy: strategy, enable_source: true },
+            enable_thinking: thinking,
+            clear_thinking: true,
+            result_format: "message",
+          },
+        }),
+      });
+    } catch (error) {
+      throw normalizeProviderError(error);
+    }
     const body = await response.json() as any;
     if (!response.ok || body.code) {
       const error = new Error("provider_unavailable") as Error & { status?: number };

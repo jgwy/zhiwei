@@ -1,5 +1,71 @@
 import { expect, test } from "@playwright/test";
 
+test("思考图标随首段文本和停止操作正确清理", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-desktop", "动画生命周期只需在桌面 Chromium 验证一次");
+  const conversationId = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await page.route("**/api/bootstrap", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        user: { id: crypto.randomUUID(), onboarding_complete: true, settings: {} },
+        conversations: [{ id: conversationId, title: "等待状态测试", titleSource: "default", titleLocked: false, createdAt: now, updatedAt: now, messages: [] }],
+        profile: null,
+        memories: [],
+        mood: [],
+        skill: null,
+        onboarding: { complete: true, answeredCount: 0, canFinish: true, question: null },
+        returnNote: null,
+        developerModeAvailable: true,
+        adapter: "scripted",
+        modelModeLabel: "仿真模式",
+        modelCapabilities: { streaming: true, structuredOutput: true, toolCalls: true, nativeWebSearch: false, usage: true, maxContextTokens: 24_000 },
+      }),
+    });
+  });
+
+  let releaseResponse: (() => void) | undefined;
+  let responseGate = new Promise<void>((resolve) => { releaseResponse = resolve; });
+  await page.route("**/api/conversations/*/messages", async (route) => {
+    const requestGate = responseGate;
+    await requestGate;
+    const messageId = crypto.randomUUID();
+    try {
+      await route.fulfill({
+        contentType: "text/event-stream; charset=utf-8",
+        body: [
+          `data: ${JSON.stringify({ type: "message.started", messageId, traceId: crypto.randomUUID() })}\n\n`,
+          `data: ${JSON.stringify({ type: "text.delta", delta: "回复完成" })}\n\n`,
+          `data: ${JSON.stringify({ type: "message.completed", messageId, jobId: crypto.randomUUID(), sources: [] })}\n\n`,
+        ].join(""),
+      });
+    } catch {
+      // The second request is intentionally aborted by the stop button.
+    }
+  });
+
+  await page.goto("/");
+  const composer = page.getByLabel("消息内容");
+  await composer.fill("测试等待状态");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  const indicator = page.getByRole("status", { name: "正在思考" });
+  await expect(indicator).toBeVisible();
+  await expect(indicator.locator("img")).toHaveAttribute("src", "/about/aliyun-cloud.png");
+  expect(await indicator.locator("img").evaluate((element) => getComputedStyle(element).animationName)).toBe("thinking-logo-bounce");
+  releaseResponse?.();
+  await expect(page.getByText("回复完成", { exact: true })).toBeVisible();
+  await expect(indicator).toBeHidden();
+
+  responseGate = new Promise<void>((resolve) => { releaseResponse = resolve; });
+  await composer.fill("测试停止清理");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await expect(indicator).toBeVisible();
+  await page.getByRole("button", { name: "停止回复" }).click();
+  await expect(indicator).toBeHidden();
+  await expect(page.getByRole("button", { name: "发送消息" })).toBeVisible();
+  releaseResponse?.();
+});
+
 test("从空白问卷进入聊天并生成画像、memory 与 Skill 证据", async ({ page }, testInfo) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "先让我认识一下此刻的你" })).toBeVisible();

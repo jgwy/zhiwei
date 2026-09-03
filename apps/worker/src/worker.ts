@@ -10,13 +10,11 @@ import {
   failJob,
   getConversationSummary,
   getUserSettings,
-  inferMemoryKind,
-  isExplicitMemoryRequest,
-  isMemoryDenial,
   listMessages,
   normalizeDimensionWeights,
   recordModelCallMeta,
   recordTrace,
+  selectMemoryMutations,
   updateConversationTitle,
   type MemoryRecord,
   type PersonalSkill,
@@ -147,9 +145,38 @@ async function handleReflection(job: any) {
     }, { deep: true });
     await recordModelCallMeta({ userId: job.user_id, traceId, conversationId: payload.conversationId, adapterId: gateway.id, meta: reflectionResult.meta, promptVersion: "deep-v1" });
   }
+  const selectedMemories = selectMemoryMutations({
+    mutations: reflectionResult.data.memories,
+    activeMemories: memories,
+    sourceText: payload.content,
+    sourceMessageId: payload.messageId,
+    sourceKind: payload.kind,
+  });
+  const evidenceRejections = selectedMemories.rejected.filter(({ reason }) => (
+    reason === "invalid_evidence_message"
+    || reason === "missing_evidence_quote"
+    || reason === "quote_not_in_source"
+    || reason === "quote_does_not_support_memory"
+  ));
+  if (evidenceRejections.length) {
+    await recordTrace({
+      userId: job.user_id,
+      traceId,
+      stage: "memory.evidence_rejected",
+      payload: {
+        sourceMessageId: payload.messageId,
+        rejected: evidenceRejections.map(({ mutation, reason }) => ({
+          reason,
+          content: mutation.content,
+          evidenceMessageIds: mutation.evidenceMessageIds,
+          evidenceQuote: mutation.evidenceQuote ?? null,
+        })),
+      },
+    });
+  }
   const decision = {
     ...reflectionResult.data,
-    memories: filterMemoryMutations(reflectionResult.data.memories, memories, payload.content),
+    memories: selectedMemories.accepted,
   };
 
   let profileSummary = profile?.summary ?? "仍在形成第一轮认识。";
@@ -253,51 +280,5 @@ async function tryEmbedding(userId: string, traceId: string, conversationId: str
 }
 
 function equalWeights() { return { basic: 1, goal: 1, interest: 1, expression: 1, emotion: 1, experience: 1, challenge: 1, boundary: 1 }; }
-function filterMemoryMutations(mutations: any[], active: MemoryRecord[], sourceText: string) {
-  const accepted: any[] = [];
-  if (isMemoryDenial(sourceText)) return accepted;
-  const explicitRequest = isExplicitMemoryRequest(sourceText);
-  const correctionSignal = /(?:其实|不是|改成|纠正|记错|不再|现在是|准确地说)/u.test(sourceText);
-  for (const mutation of mutations) {
-    if (accepted.length >= 2) break;
-    if (mutation.category === "goal" && /^(担心|害怕|忧虑|压力|风险|困扰)/u.test(mutation.content.trim())) continue;
-    if (/(密码|口令|API\s*key|密钥|验证码|身份证号|银行卡号)/iu.test(mutation.content)) continue;
-    const sensitive = /(健康|疾病|用药|政治|宗教|性取向|财务|收入|债务|身份)/u.test(mutation.content);
-    if (sensitive && !explicitRequest) continue;
-    const kind = inferMemoryKind(mutation.content, mutation.kind);
-    const sameCategory = active.filter((memory) => memory.category === mutation.category && (memory.kind ?? "profile") === kind);
-    const duplicate = sameCategory.find((memory) => semanticOverlap(memory.content, mutation.content) >= 0.72);
-    if (mutation.operation === "create" && duplicate && !correctionSignal) continue;
-    const conflict = correctionSignal
-      ? [...sameCategory].sort((left, right) => semanticOverlap(right.content, mutation.content) - semanticOverlap(left.content, mutation.content))[0]
-      : undefined;
-    const shouldSupersede = mutation.operation === "create" && conflict
-      && semanticOverlap(conflict.content, mutation.content) >= 0.28;
-    accepted.push({
-      ...mutation,
-      operation: shouldSupersede ? "supersede" : mutation.operation,
-      memoryId: shouldSupersede ? conflict.id : mutation.memoryId,
-      kind,
-      tier: explicitRequest || kind === "learning" || kind === "misconception" ? "long" : mutation.tier,
-      sourceType: explicitRequest ? "explicit" : shouldSupersede ? "confirmed" : mutation.sourceType ?? "inferred",
-      sensitivity: sensitive ? "sensitive" : mutation.sensitivity ?? "normal",
-      evidenceQuote: mutation.evidenceQuote ?? sourceText.slice(0, 200),
-      importance: mutation.importance ?? (explicitRequest ? 0.8 : 0.5),
-    });
-  }
-  return accepted;
-}
-
-function semanticOverlap(left: string, right: string) {
-  const grams = (value: string) => {
-    const normalized = value.replace(/[\s，。！？、,.!?：“”"'（）()]/gu, "");
-    return new Set(Array.from({ length: Math.max(0, normalized.length - 1) }, (_, index) => normalized.slice(index, index + 2)));
-  };
-  const a = grams(left);
-  const b = grams(right);
-  if (!a.size || !b.size) return left === right ? 1 : 0;
-  const intersection = [...a].filter((gram) => b.has(gram)).length;
-  return intersection / Math.max(a.size, b.size);
-}
 function publicErrorCode(error: unknown) { const code = error instanceof Error ? error.message : String(error); return ["rate_limited", "provider_unavailable", "invalid_response", "request_cancelled"].includes(code) ? code : "background_failed"; }
 function delay(ms: number) { return new Promise((resolve) => setTimeout(resolve, ms)); }

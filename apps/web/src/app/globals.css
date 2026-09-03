@@ -142,10 +142,10 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #222; outline-
 .message:hover .message-actions { opacity: 1; }
 .message-actions button { border: 0; background: transparent; width: 28px; height: 25px; display: grid; place-items: center; cursor: pointer; color: #999; border-radius: 7px; }
 .message-actions button:hover { background: #f2f2f2; color: #333; }
-.typing { display: flex; gap: 4px; padding: 10px 0; }
-.typing i { width: 5px; height: 5px; border-radius: 50%; background: #999; animation: typing 1.1s infinite; }
-.typing i:nth-child(2) { animation-delay: .14s; }.typing i:nth-child(3) { animation-delay: .28s; }
-@keyframes typing { 0%, 70%, 100% { opacity: .25; transform: translateY(0); } 35% { opacity: 1; transform: translateY(-3px); } }
+.thinking-logo { width: 88px; height: 28px; display: inline-flex; align-items: center; padding: 5px 0; overflow: hidden; }
+.thinking-logo img { display: block; width: 82px; height: auto; animation: thinking-logo-bounce 1s ease-in-out infinite; }
+@keyframes thinking-logo-bounce { 0%, 100% { opacity: .55; transform: translateY(2px); } 50% { opacity: 1; transform: translateY(-3px); } }
+@media (prefers-reduced-motion: reduce) { .thinking-logo img { animation: none; opacity: .85; } }
 .feedback-reasons { margin-top: 6px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 11px; color: #888; }
 .feedback-reasons button { border: 1px solid #e5e5e5; background: white; padding: 5px 8px; border-radius: 8px; cursor: pointer; }
 .memory-receipt { border: 0; background: transparent; color: #8b8b8b; font-size: 11px; padding: 4px 0; display: flex; gap: 6px; align-items: center; cursor: pointer; }

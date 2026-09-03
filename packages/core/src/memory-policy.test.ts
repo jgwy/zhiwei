@@ -4,6 +4,8 @@ import {
   isExplicitMemoryRequest,
   memoryIsRecallable,
   normalizeMemoryMutation,
+  selectMemoryMutations,
+  validateMemoryEvidence,
 } from "./memory-policy";
 import type { MemoryMutation, MemoryRecord } from "./types";
 
@@ -91,5 +93,69 @@ describe("memory lifecycle policy", () => {
   it("recognizes learning progress and explicit misconceptions", () => {
     expect(inferMemoryKind("已经掌握事件视界的基本定义")).toBe("learning");
     expect(inferMemoryKind("一直以为事件视界就是奇点，正确区分是二者并不相同")).toBe("misconception");
+  });
+
+  it("rejects unrelated current-message text as identity evidence", () => {
+    const sourceMessageId = crypto.randomUUID();
+    const candidate = mutation({
+      category: "basic",
+      content: "用户是华中科技大学药学院刘一民。",
+      tier: "long",
+      evidenceMessageIds: [sourceMessageId],
+      evidenceQuote: "111",
+    });
+
+    expect(validateMemoryEvidence(candidate, { sourceMessageId, sourceText: "111" }))
+      .toBe("quote_does_not_support_memory");
+    expect(selectMemoryMutations({
+      mutations: [candidate],
+      activeMemories: [],
+      sourceText: "111",
+      sourceMessageId,
+      sourceKind: "chat",
+    }).accepted).toHaveLength(0);
+  });
+
+  it("only accepts evidence attached to the current source message", () => {
+    const sourceMessageId = crypto.randomUUID();
+    const candidate = mutation({
+      category: "basic",
+      content: "用户是刘一民。",
+      tier: "long",
+      evidenceMessageIds: [crypto.randomUUID()],
+      evidenceQuote: "我是刘一民",
+    });
+    expect(validateMemoryEvidence(candidate, { sourceMessageId, sourceText: "我是刘一民" }))
+      .toBe("invalid_evidence_message");
+  });
+
+  it("keeps a plain identity disclosure pending but activates an explicit save request", () => {
+    const sourceMessageId = crypto.randomUUID();
+    const plain = selectMemoryMutations({
+      mutations: [mutation({
+        category: "basic",
+        content: "用户是华中科技大学药学院刘一民。",
+        tier: "long",
+        sourceType: "explicit",
+        evidenceMessageIds: [sourceMessageId],
+        evidenceQuote: "我是华中科技大学药学院刘一民",
+      })],
+      activeMemories: [],
+      sourceText: "我是华中科技大学药学院刘一民",
+      sourceMessageId,
+      sourceKind: "chat",
+    }).accepted[0]!;
+    const explicit = selectMemoryMutations({
+      mutations: [{ ...plain, evidenceQuote: "请记住我是华中科技大学药学院刘一民" }],
+      activeMemories: [],
+      sourceText: "请记住我是华中科技大学药学院刘一民",
+      sourceMessageId,
+      sourceKind: "chat",
+    }).accepted[0]!;
+
+    expect(normalizeMemoryMutation(plain, { conversationId: "conversation-a" }).status).toBe("pending");
+    expect(plain.sourceType).toBe("inferred");
+    expect(normalizeMemoryMutation(explicit, { conversationId: "conversation-a" }).status).toBe("active");
+    expect(explicit.sourceType).toBe("explicit");
   });
 });

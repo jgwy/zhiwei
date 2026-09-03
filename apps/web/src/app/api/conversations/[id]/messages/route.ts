@@ -1,5 +1,6 @@
 import {
   addMessage,
+  addUserMessageWithReflectionJob,
   assessRisk,
   callMemoryMcp,
   callScienceMcp,
@@ -23,7 +24,8 @@ import { getModelGateway } from "@zhiwei/model-gateway";
 import { composeFoundationInstructions } from "@zhiwei/skills";
 import { z } from "zod";
 import { getSessionUserId } from "@/lib/session";
-import { addNoDbMessage, commitNoDbMemories, isNoDbMode, listNoDbConversations, recallNoDbMemories } from "@/lib/no-db-store";
+import { addNoDbMessage, commitNoDbMemories, isNoDbMode, listNoDbConversations, listNoDbMemories, recallNoDbMemories } from "@/lib/no-db-store";
+import { isPersonalDisclosure, isPotentialMemoryQuery, resolveMemoryQuery } from "@/lib/message-routing";
 
 const InputSchema = z.object({ content: z.string().trim().min(1).max(8_000) });
 const encoder = new TextEncoder();
@@ -46,8 +48,16 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
   if (!conversation) return new Response("这段对话已经不可用，请新建一段对话。", { status: 404 });
 
   const traceId = crypto.randomUUID();
-  const userMessage = await addMessage({ conversationId, userId, role: "user", content: input.content, metadata: { traceId } });
   const riskAssessment = assessRisk(input.content);
+  let reflectionJobId: string | null = null;
+  let userMessage: Awaited<ReturnType<typeof addMessage>>;
+  if (riskAssessment.level === "ordinary") {
+    const persisted = await addUserMessageWithReflectionJob({ conversationId, userId, content: input.content, traceId });
+    userMessage = persisted.message;
+    reflectionJobId = persisted.jobId;
+  } else {
+    userMessage = await addMessage({ conversationId, userId, role: "user", content: input.content, metadata: { traceId } });
+  }
   const riskEventId = await recordRiskEvent({ userId, conversationId, messageId: userMessage.id, assessment: riskAssessment });
   if (conversation.messages.length === 0) {
     await enqueueJob({
@@ -68,6 +78,7 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
     await recordTrace({ userId, traceId, stage: "retrieval.degraded", payload: { message: "向量服务不可用，已降级为关键词检索。" } });
   }
 
+  const potentialMemoryQuery = isPotentialMemoryQuery(input.content);
   const [messages, profileResult, memoryResult, summary, skillResult] = await Promise.all([
     listMessages(userId, conversationId, 24),
     callMemoryMcp<{ profile: ProfileSnapshot | null }>({ tool: "profile_get_current", userId, traceId }),
@@ -80,13 +91,16 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
         limit: 8,
         conversationId,
         recordUsage: true,
+        includePending: potentialMemoryQuery,
         ...(queryEmbedding ? { queryEmbedding } : {}),
       },
     }),
     getConversationSummary(userId, conversationId),
     callMemoryMcp<any>({ tool: "personal_skill_get_active", userId, traceId }),
   ]);
-  const memories = memoryResult.memories;
+  const retrievedMemories = memoryResult.memories;
+  const memories = retrievedMemories.filter((memory) => (memory.status ?? "active") === "active");
+  const memoryResolution = resolveMemoryQuery(input.content, retrievedMemories);
   const activeSkill = skillResult.skill;
   const compiled = compileContext({
     foundationInstructions: composeFoundationInstructions(["zhiwei-persona", "dialogue-orchestrator", "fact-and-tool-use", "scientific-answering", "risk-and-boundary", "privacy-and-withdrawal"]),
@@ -102,7 +116,7 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
   let scienceMode = false;
   let responsePlan: Pick<FactRoutingOutput, "responseMode" | "depth" | "physicalSymptom" | "reason"> | undefined;
   let verifiedSources: Array<{ title: string; url: string; siteName?: string }> = [];
-  if (riskAssessment.level === "ordinary") {
+  if (riskAssessment.level === "ordinary" && !memoryResolution && !isPersonalDisclosure(input.content)) {
     try {
       const route = await gateway.routeFacts(input.content, { signal: request.signal });
       scienceMode = route.data.scientific;
@@ -151,6 +165,17 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
     }
   }
 
+  if (memoryResolution || isPersonalDisclosure(input.content)) {
+    await recordTrace({
+      userId,
+      traceId,
+      stage: memoryResolution ? "memory.query_resolved" : "fact.routing_skipped",
+      payload: memoryResolution
+        ? { state: memoryResolution.state, memoryIds: memoryResolution.memoryIds }
+        : { reason: "personal_disclosure" },
+    });
+  }
+
   await recordTrace({
     userId,
     traceId,
@@ -171,34 +196,37 @@ async function handlePost(request: Request, context: { params: Promise<{ id: str
           send({ type: "tool.started", name: "memory_search" });
           send({ type: "tool.completed", name: "memory_search" });
         }
-        for await (const event of gateway.streamDialogue({
-          userId,
-          conversationId,
-          messageId: userMessage.id,
-          content: input.content,
-          context: compiled,
-          riskAssessment,
-          factBrief,
-          scienceMode,
-          responsePlan,
-        }, { signal: request.signal })) {
-          if (event.type === "text.delta") {
-            output += event.delta;
-            send({ type: "text.delta", delta: event.delta });
-          }
-          if (event.type === "source") sources = uniqueSources([...sources, event.source]);
-          if (event.type === "completed") {
-            completedMeta = event.meta;
-            sources = uniqueSources([...sources, ...event.meta.sources]);
+        if (memoryResolution) {
+          output = memoryResolution.answer;
+          send({ type: "text.delta", delta: output });
+        } else {
+          for await (const event of gateway.streamDialogue({
+            userId,
+            conversationId,
+            messageId: userMessage.id,
+            content: input.content,
+            context: compiled,
+            riskAssessment,
+            factBrief,
+            scienceMode,
+            responsePlan,
+          }, { signal: request.signal })) {
+            if (event.type === "text.delta") {
+              output += event.delta;
+              send({ type: "text.delta", delta: event.delta });
+            }
+            if (event.type === "source") sources = uniqueSources([...sources, event.source]);
+            if (event.type === "completed") {
+              completedMeta = event.meta;
+              sources = uniqueSources([...sources, ...event.meta.sources]);
+            }
           }
         }
         const status = request.signal.aborted ? "stopped" : "completed";
         await addMessage({ id: assistantMessageId, conversationId, userId, role: "assistant", content: output, metadata: { traceId, gateway: gateway.id, status, sources } });
         if (sources.length) await saveMessageSources({ userId, messageId: assistantMessageId, sources });
         if (completedMeta) await recordModelCallMeta({ userId, traceId, conversationId, adapterId: gateway.id, meta: completedMeta });
-        const jobId = riskAssessment.level === "ordinary"
-          ? await enqueueJob({ userId, type: "reflection", idempotencyKey: `reflection:${userMessage.id}:v1`, payload: { conversationId, messageId: userMessage.id, content: input.content, kind: "chat", traceId } })
-          : riskEventId;
+        const jobId = reflectionJobId ?? riskEventId;
         await recordTrace({ userId, traceId, stage: "dialogue.completed", durationMs: completedMeta?.durationMs, payload: { messageId: assistantMessageId, output, jobId, sources, meta: completedMeta, status } });
         send({ type: "message.completed", messageId: assistantMessageId, jobId, sources });
       } catch (error) {
@@ -227,6 +255,7 @@ async function handleNoDbPost(request: Request, context: { params: Promise<{ id:
   const riskAssessment = assessRisk(input.content);
   const gateway = getModelGateway();
   const recalledMemories = recallNoDbMemories(conversationId, input.content);
+  const memoryResolution = resolveMemoryQuery(input.content, listNoDbMemories());
   const compiled = compileContext({
     foundationInstructions: composeFoundationInstructions(["zhiwei-persona", "dialogue-orchestrator", "risk-and-boundary", "privacy-and-withdrawal"]),
     personalSkill: undefined as never,
@@ -237,42 +266,48 @@ async function handleNoDbPost(request: Request, context: { params: Promise<{ id:
     maxInputTokens: Math.min(18_000, gateway.capabilities.maxContextTokens - 2_000),
   });
   const assistantMessageId = crypto.randomUUID();
+  const reflectionPromise = gateway.reflect({
+    userId,
+    conversationId,
+    messageId: userMessage.id,
+    content: input.content,
+    context: compiled,
+    riskAssessment,
+    kind: "chat",
+  }).then((reflection) => {
+    commitNoDbMemories({
+      mutations: reflection.data.memories,
+      sourceText: input.content,
+      sourceMessageId: userMessage.id,
+      conversationId,
+    });
+  }).catch(() => undefined);
+  void reflectionPromise;
   const stream = new ReadableStream({
     async start(controller) {
       const send = (event: StreamEvent) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
       let output = "";
       try {
         send({ type: "message.started", messageId: assistantMessageId, traceId });
-        for await (const event of gateway.streamDialogue({
-          userId,
-          conversationId,
-          messageId: userMessage.id,
-          content: input.content,
-          context: compiled,
-          riskAssessment,
-        }, { signal: request.signal })) {
-          if (event.type === "text.delta") {
-            output += event.delta;
-            send({ type: "text.delta", delta: event.delta });
+        if (memoryResolution) {
+          output = memoryResolution.answer;
+          send({ type: "text.delta", delta: output });
+        } else {
+          for await (const event of gateway.streamDialogue({
+            userId,
+            conversationId,
+            messageId: userMessage.id,
+            content: input.content,
+            context: compiled,
+            riskAssessment,
+          }, { signal: request.signal })) {
+            if (event.type === "text.delta") {
+              output += event.delta;
+              send({ type: "text.delta", delta: event.delta });
+            }
           }
         }
         addNoDbMessage(conversationId, "assistant", output, { traceId, gateway: gateway.id, status: "completed" }, assistantMessageId);
-        // Local demo memory reflection should not keep the visible reply stream open.
-        void gateway.reflect({
-          userId,
-          conversationId,
-          messageId: userMessage.id,
-          content: input.content,
-          context: compiled,
-          riskAssessment,
-          kind: "chat",
-        }).then((reflection) => {
-          commitNoDbMemories({
-            mutations: reflection.data.memories,
-            sourceText: input.content,
-            conversationId,
-          });
-        }).catch(() => undefined);
         send({ type: "message.completed", messageId: assistantMessageId, jobId: `no-db:${assistantMessageId}`, sources: [] });
       } catch (error) {
         send({ type: "error", code: publicErrorCode(error), message: publicErrorMessage(error) });

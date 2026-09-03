@@ -3,7 +3,7 @@ import { diffJson } from "diff";
 import type { PoolClient } from "pg";
 import { getPool, withTransaction } from "./db";
 import { defaultPersonalSkill } from "./personal-skill";
-import { inferMemoryKind, memoryIsRecallable, normalizeMemoryMutation } from "./memory-policy";
+import { inferMemoryKind, memoryIsRecallable, normalizeMemoryMutation, validateMemoryEvidence } from "./memory-policy";
 import {
   calculateUnderstandingScore,
   deriveUnderstandingComponents,
@@ -151,6 +151,48 @@ export async function addMessage(input: {
     [input.conversationId, input.userId],
   );
   return mapMessage(result.rows[0]);
+}
+
+export async function addUserMessageWithReflectionJob(input: {
+  conversationId: string;
+  userId: string;
+  content: string;
+  traceId: string;
+  id?: string;
+}): Promise<{ message: ChatMessage; jobId: string }> {
+  return withTransaction(async (client) => {
+    const messageId = input.id ?? randomUUID();
+    const messageResult = await client.query(
+      `INSERT INTO messages (id, conversation_id, user_id, role, content, metadata)
+       VALUES ($1, $2, $3, 'user', $4, $5::jsonb) RETURNING *`,
+      [messageId, input.conversationId, input.userId, input.content, JSON.stringify({ traceId: input.traceId })],
+    );
+    const jobId = randomUUID();
+    const jobResult = await client.query(
+      `INSERT INTO jobs (id, user_id, type, payload, idempotency_key)
+       VALUES ($1, $2, 'reflection', $3::jsonb, $4)
+       ON CONFLICT (user_id, idempotency_key) WHERE idempotency_key IS NOT NULL
+       DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
+       RETURNING id`,
+      [
+        jobId,
+        input.userId,
+        JSON.stringify({
+          conversationId: input.conversationId,
+          messageId,
+          content: input.content,
+          kind: "chat",
+          traceId: input.traceId,
+        }),
+        `reflection:${messageId}:v1`,
+      ],
+    );
+    await client.query(
+      `UPDATE conversations SET updated_at = now() WHERE id = $1 AND user_id = $2`,
+      [input.conversationId, input.userId],
+    );
+    return { message: mapMessage(messageResult.rows[0]), jobId: jobResult.rows[0].id };
+  });
 }
 
 export async function listMessages(
@@ -594,6 +636,13 @@ export async function commitReflection(input: {
   embeddings?: Array<number[] | null>;
 }): Promise<{ memoryCount: number; profile: ProfileSnapshot | null }> {
   return withTransaction(async (client) => {
+    const sourceResult = await client.query(
+      `SELECT content FROM messages
+       WHERE id = $1 AND user_id = $2 AND conversation_id = $3 AND role = 'user'`,
+      [input.sourceMessageId, input.userId, input.conversationId],
+    );
+    if (!sourceResult.rowCount) throw new Error("记忆来源消息不存在或不属于当前用户");
+    const sourceText = String(sourceResult.rows[0].content);
     const settingsResult = await client.query(`SELECT settings FROM users WHERE id = $1`, [
       input.userId,
     ]);
@@ -606,6 +655,11 @@ export async function commitReflection(input: {
       .filter(({ rawMutation }) => rawMutation.tier === "short" ? shortTermMemoryEnabled : longTermMemoryEnabled);
 
     for (const { rawMutation, mutationIndex } of mutations) {
+      const evidenceError = validateMemoryEvidence(rawMutation, {
+        sourceMessageId: input.sourceMessageId,
+        sourceText,
+      });
+      if (evidenceError) throw new Error(`记忆证据无效：${evidenceError}`);
       const mutation = normalizeMemoryMutation(rawMutation, {
         conversationId: input.conversationId,
         projectId: input.projectId,

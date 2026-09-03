@@ -43,6 +43,7 @@ describe("Aliyun structured-output quality retry contract", () => {
   const original = {
     apiKey: process.env.MODEL_API_KEY,
     baseUrl: process.env.MODEL_BASE_URL,
+    searchTimeoutMs: process.env.MODEL_SEARCH_TIMEOUT_MS,
   };
 
   beforeEach(() => {
@@ -53,10 +54,13 @@ describe("Aliyun structured-output quality retry contract", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     if (original.apiKey === undefined) delete process.env.MODEL_API_KEY;
     else process.env.MODEL_API_KEY = original.apiKey;
     if (original.baseUrl === undefined) delete process.env.MODEL_BASE_URL;
     else process.env.MODEL_BASE_URL = original.baseUrl;
+    if (original.searchTimeoutMs === undefined) delete process.env.MODEL_SEARCH_TIMEOUT_MS;
+    else process.env.MODEL_SEARCH_TIMEOUT_MS = original.searchTimeoutMs;
   });
 
   it("retries a schema-valid profile that violates the no-psychological-inference rule", async () => {
@@ -224,6 +228,28 @@ describe("Aliyun structured-output quality retry contract", () => {
     expect(system).toContain("responseMode必须为emotional-deep");
     expect(openAiMock.completionCreate.mock.calls[0]?.[0].response_format.json_schema.schema.required)
       .toEqual(expect.arrayContaining(["responseMode", "depth", "physicalSymptom"]));
+  });
+
+  it("aborts web search at the configured deadline", async () => {
+    process.env.MODEL_SEARCH_TIMEOUT_MS = "20";
+    vi.stubGlobal("fetch", vi.fn((_url: URL, init?: RequestInit) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("Timed out", "AbortError")), { once: true });
+    })));
+    const gateway = new AliyunBailianGateway();
+
+    await expect(gateway.buildFactBrief({
+      content: "刘一民是谁？",
+      route: {
+        needsSearch: true,
+        scientific: false,
+        responseMode: "character",
+        depth: "light",
+        physicalSymptom: false,
+        query: "刘一民是谁",
+        impact: "ordinary",
+        reason: "人物事实需要核验",
+      },
+    })).rejects.toThrow("request_cancelled");
   });
 
   it("uses Flash strict structured output for a routed deep emotional reply", async () => {

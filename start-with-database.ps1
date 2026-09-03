@@ -1,11 +1,17 @@
 [CmdletBinding()]
 param(
-  [string]$ApiConfigPath = (Join-Path (Split-Path $PSScriptRoot -Parent) "默认业务空间-apiKey-6016377.csv")
+  [string]$ApiConfigPath
 )
 
 $ErrorActionPreference = "Stop"
+$scriptRootPath = Split-Path -Parent $PSCommandPath
+if ([string]::IsNullOrWhiteSpace($ApiConfigPath)) {
+  $configRoot = Split-Path $scriptRootPath -Parent
+  $ApiConfigPath = Get-ChildItem -LiteralPath $configRoot -File -Filter "*-apiKey-6016377.csv" |
+    Select-Object -First 1 -ExpandProperty FullName
+}
 
-if (-not (Test-Path -LiteralPath $ApiConfigPath)) {
+if ([string]::IsNullOrWhiteSpace($ApiConfigPath) -or -not (Test-Path -LiteralPath $ApiConfigPath)) {
   throw "API configuration file was not found: $ApiConfigPath"
 }
 
@@ -44,7 +50,7 @@ $env:NEXT_PUBLIC_ACTIVITY_STREAM = "true"
 $env:DEV_MODE = "true"
 Remove-Item Env:NO_DB_MODE -ErrorAction SilentlyContinue
 
-$runtimePath = Join-Path (Split-Path $PSScriptRoot -Parent) ".zhiwei-runtime"
+$runtimePath = Join-Path (Split-Path $scriptRootPath -Parent) ".zhiwei-runtime"
 New-Item -ItemType Directory -Force -Path $runtimePath > $null
 $pidPath = Join-Path $runtimePath "processes.json"
 $npmCommand = (Get-Command npm.cmd -ErrorAction Stop).Source
@@ -53,7 +59,12 @@ if (Test-Path -LiteralPath $pidPath) {
   Get-Content -LiteralPath $pidPath |
     ConvertFrom-Json |
     ForEach-Object {
-      taskkill.exe /PID $_.pid /T /F *> $null
+      $processId = [int]$_.pid
+      try {
+        taskkill.exe /PID $processId /T /F *> $null
+      } catch {
+        # A stale PID is already stopped and needs no further cleanup.
+      }
     }
 }
 
@@ -68,7 +79,7 @@ function Start-ZhiweiProcess {
   return Start-Process `
     -FilePath $npmCommand `
     -ArgumentList $Arguments `
-    -WorkingDirectory $PSScriptRoot `
+    -WorkingDirectory $scriptRootPath `
     -RedirectStandardOutput $stdoutPath `
     -RedirectStandardError $stderrPath `
     -WindowStyle Hidden `
@@ -94,7 +105,7 @@ function Wait-ZhiweiHealth {
   throw "$Name did not become healthy. Check logs in $runtimePath."
 }
 
-Push-Location $PSScriptRoot
+Push-Location $scriptRootPath
 try {
   docker compose up -d postgres
   if ($LASTEXITCODE -ne 0) {

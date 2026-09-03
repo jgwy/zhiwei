@@ -15,7 +15,11 @@ export default defineConfig({
   projects: [
     {
       name: "chromium-desktop",
-      use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 800 } },
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 1280, height: 800 },
+        ...(process.env.E2E_BROWSER_CHANNEL ? { channel: process.env.E2E_BROWSER_CHANNEL } : {}),
+      },
     },
     {
       name: "webkit-desktop",
@@ -27,4 +31,3 @@ export default defineConfig({
     },
   ],
 });
-

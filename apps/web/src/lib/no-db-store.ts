@@ -6,6 +6,7 @@ import {
   memoryIsRecallable,
   normalizeMemoryMutation,
   rankMemories,
+  selectMemoryMutations,
 } from "@zhiwei/core";
 import type { ConversationView } from "@/lib/client-types";
 import { randomUUID } from "node:crypto";
@@ -86,11 +87,20 @@ export function updateNoDbSettings(settings: Record<string, boolean>) {
   return state().settings;
 }
 
-export function commitNoDbMemories(input: { mutations: MemoryMutation[]; sourceText?: string; conversationId: string }) {
+export function commitNoDbMemories(input: { mutations: MemoryMutation[]; sourceText?: string; sourceMessageId?: string; conversationId: string }) {
   if (!state().settings.memoryEnabled) return [];
   if (isMemoryDenial(input.sourceText ?? "")) return listNoDbMemories();
   const explicitRequest = isExplicitMemoryRequest(input.sourceText ?? "");
-  for (const rawMutation of input.mutations.slice(0, 2)) {
+  const mutations = input.sourceMessageId
+    ? selectMemoryMutations({
+        mutations: input.mutations,
+        activeMemories: state().memories,
+        sourceText: input.sourceText ?? "",
+        sourceMessageId: input.sourceMessageId,
+        sourceKind: "chat",
+      }).accepted
+    : input.mutations.slice(0, 2);
+  for (const rawMutation of mutations) {
     if (rawMutation.tier === "short" && state().settings.shortTermMemoryEnabled === false) continue;
     if (rawMutation.tier === "long" && state().settings.longTermMemoryEnabled === false) continue;
     const mutation = normalizeMemoryMutation({

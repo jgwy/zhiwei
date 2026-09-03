@@ -54,6 +54,7 @@ export function ZhiweiApp() {
   const lastScrolledConversationRef = useRef<string | null>(null);
   const dataRef = useRef<BootstrapData | null>(null);
   const activeIdRef = useRef<string | null>(null);
+  const pendingAssistantRef = useRef<{ conversationId: string; messageId: string } | null>(null);
 
   async function load() {
     try {
@@ -71,6 +72,10 @@ export function ZhiweiApp() {
   useEffect(() => { void load(); }, []);
   useEffect(() => { dataRef.current = data; }, [data]);
   useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
+  useEffect(() => {
+    const pending = pendingAssistantRef.current;
+    if (pending && pending.conversationId !== activeId) stopStreamingReply();
+  }, [activeId]);
   const active = useMemo(
     () => data?.conversations.find((conversation) => conversation.id === activeId) ?? null,
     [data, activeId],
@@ -165,6 +170,7 @@ export function ZhiweiApp() {
     if (!conversationId) throw new Error("无法创建新的对话");
     const userMessage: ChatMessage = { id: crypto.randomUUID(), role: "user", content: text, createdAt: new Date().toISOString() };
     const assistantTemp: ChatMessage = { id: crypto.randomUUID(), role: "assistant", content: "", createdAt: new Date().toISOString(), metadata: { streaming: true } };
+    pendingAssistantRef.current = { conversationId, messageId: assistantTemp.id };
     followLatestRef.current = true;
     forceScrollRef.current = true;
     setShowJumpToLatest(false);
@@ -185,12 +191,14 @@ export function ZhiweiApp() {
         if (event.type === "message.started") {
           updateConversationMessages(conversationId!, (messages) => messages.map((message) => message.id === assistantTemp.id ? { ...message, id: event.messageId, metadata: { traceId: event.traceId, streaming: true } } : message));
           assistantTemp.id = event.messageId;
+          pendingAssistantRef.current = { conversationId: conversationId!, messageId: event.messageId };
         }
         if (event.type === "text.delta") {
           updateConversationMessages(conversationId!, (messages) => messages.map((message) => message.id === assistantTemp.id ? { ...message, content: message.content + event.delta } : message));
         }
         if (event.type === "message.completed") {
           updateConversationMessages(conversationId!, (messages) => messages.map((message) => message.id === event.messageId ? { ...message, metadata: { ...message.metadata, streaming: false, status: "completed", sources: event.sources ?? [] } } : message));
+          pendingAssistantRef.current = null;
         }
         if (event.type === "error") {
           updateConversationMessages(conversationId!, (messages) => messages.map((message) => message.id === assistantTemp.id ? { ...message, metadata: { ...message.metadata, streaming: false, status: abort.signal.aborted ? "stopped" : "interrupted" } } : message));
@@ -201,9 +209,29 @@ export function ZhiweiApp() {
     } catch (error) {
       if (!abort.signal.aborted) setToast(error instanceof Error ? error.message : "回复中断了，可以重试。");
     } finally {
+      if (pendingAssistantRef.current?.conversationId === conversationId) {
+        settlePendingAssistant(abort.signal.aborted ? "stopped" : "interrupted");
+      }
       setStreaming(false);
       abortRef.current = null;
     }
+  }
+
+  function settlePendingAssistant(status: "stopped" | "interrupted") {
+    const pending = pendingAssistantRef.current;
+    if (!pending) return;
+    updateConversationMessages(pending.conversationId, (messages) => messages.flatMap((message) => {
+      if (message.id !== pending.messageId) return [message];
+      if (!message.content) return [];
+      return [{ ...message, metadata: { ...message.metadata, streaming: false, status } }];
+    }));
+    pendingAssistantRef.current = null;
+  }
+
+  function stopStreamingReply() {
+    abortRef.current?.abort();
+    settlePendingAssistant("stopped");
+    setStreaming(false);
   }
 
   function updateConversationMessages(conversationId: string, updater: (messages: ChatMessage[]) => ChatMessage[]) {
@@ -351,7 +379,7 @@ export function ZhiweiApp() {
         <div className="composer-wrap">
           <div className="chat-composer">
             <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} rows={1} placeholder="和知微说点什么…" aria-label="消息内容" />
-            {streaming ? <Button size="icon" variant="primary" onClick={() => abortRef.current?.abort()} aria-label="停止回复"><Square size={15} fill="currentColor" /></Button> : <Button size="icon" variant="primary" onClick={() => void sendMessage()} disabled={!input.trim()} aria-label="发送消息"><ArrowUp size={18} /></Button>}
+            {streaming ? <Button size="icon" variant="primary" onClick={stopStreamingReply} aria-label="停止回复"><Square size={15} fill="currentColor" /></Button> : <Button size="icon" variant="primary" onClick={() => void sendMessage()} disabled={!input.trim()} aria-label="发送消息"><ArrowUp size={18} /></Button>}
           </div>
           <small>按 Enter 发送 · 按 Shift + Enter 换行</small>
         </div>
@@ -475,7 +503,7 @@ function Message({ message, receipt, onToggleReceipt, onFeedback, onRetry }: { m
   const assistant = message.role === "assistant";
   return (
     <article className={assistant ? "message assistant" : "message user"}>
-      <div className="message-content">{message.content || (message.metadata?.streaming ? <span className="typing"><i /><i /><i /></span> : null)}</div>
+      <div className="message-content">{message.content || (message.metadata?.streaming ? <span className="thinking-logo" role="status" aria-label="正在思考"><img src="/about/aliyun-cloud.png" alt="" /></span> : null)}</div>
       {message.metadata?.status === "interrupted" ? <div className="message-status">回复中断了，可以重试。</div> : null}
       {Array.isArray(message.metadata?.sources) && message.metadata.sources.length ? <details className="message-sources"><summary>查看事实来源（{message.metadata.sources.length}）</summary>{message.metadata.sources.map((source: any) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer"><span>{source.title}</span>{source.siteName ? <small>{source.siteName}</small> : null}</a>)}</details> : null}
       <footer>
