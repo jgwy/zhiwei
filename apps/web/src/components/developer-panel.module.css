@@ -1,0 +1,152 @@
+.batchListHeading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.batchListHeading span {
+  color: #999;
+  font-size: 9px;
+}
+
+.modelRunBatch {
+  overflow: hidden;
+  border: 1px solid #e6e6e6;
+  border-radius: 14px;
+  background: white;
+}
+
+.modelRunBatchSummary {
+  position: relative;
+  display: grid;
+  gap: 13px;
+  padding: 14px 42px 14px 14px;
+  list-style: none;
+  color: inherit;
+}
+
+.modelRunBatchSummary::-webkit-details-marker {
+  display: none;
+}
+
+.modelRunBatchSummary:focus-visible {
+  outline: 2px solid #555;
+  outline-offset: -3px;
+  border-radius: 13px;
+}
+
+.modelRunBatchSummary:hover {
+  background: #fafafa;
+}
+
+.batchHeading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.batchHeading > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.batchHeading strong {
+  font-size: 12px;
+}
+
+.batchHeading small {
+  overflow: hidden;
+  color: #999;
+  font-family: ui-monospace, monospace;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batchMetrics {
+  display: grid;
+  grid-template-columns: .65fr 1.45fr 1fr 1fr 1fr;
+  gap: 8px;
+  margin: 0;
+}
+
+.batchMetrics > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  padding: 8px;
+  border-radius: 9px;
+  background: #f7f7f7;
+}
+
+.batchMetrics small {
+  color: #999;
+  font-size: 8px;
+}
+
+.batchMetrics strong {
+  overflow: hidden;
+  margin-top: 4px;
+  font-size: 9px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.expandHint {
+  position: absolute;
+  right: 14px;
+  bottom: 16px;
+  display: flex;
+  align-items: center;
+  color: #999;
+}
+
+.expandHint > span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.expandHint svg {
+  transition: transform .18s ease;
+}
+
+.modelRunBatch[open] .expandHint svg {
+  transform: rotate(180deg);
+}
+
+.batchRuns {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-top: 1px solid #ededed;
+  background: #f7f7f7;
+}
+
+@media (max-width: 680px) {
+  .batchListHeading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .modelRunBatchSummary {
+    padding-right: 36px;
+  }
+
+  .batchMetrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .batchMetrics > span:nth-child(2) {
+    grid-column: span 2;
+  }
+}

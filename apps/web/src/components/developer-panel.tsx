@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, CheckCircle2, Clock3, Coins, Database, FlaskConical, GitBranch, RefreshCw, ScrollText, ShieldCheck, Undo2 } from "lucide-react";
+import { ArrowLeft, CheckCircle2, ChevronDown, Clock3, Coins, Database, FlaskConical, GitBranch, RefreshCw, ScrollText, ShieldCheck, Undo2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { categoryLabel } from "@zhiwei/core/client";
+import styles from "./developer-panel.module.css";
 
 type DeveloperData = {
   traces: any[];
@@ -63,6 +64,114 @@ function formatTokens(value: number | string | null | undefined) {
 
 function formatCost(value: number | string | null | undefined) {
   return `¥${numberValue(value).toFixed(6)}`;
+}
+
+function runInputTokens(run: any) {
+  return run.status === "running" ? run.estimated_input_tokens : run.input_tokens;
+}
+
+function runOutputTokens(run: any) {
+  return run.status === "running" ? run.estimated_output_tokens : run.output_tokens;
+}
+
+type ModelRunBatch = {
+  id: string;
+  kind: "conversation" | "trace" | "standalone";
+  conversationId?: string;
+  traceId?: string;
+  runs: any[];
+};
+
+function groupModelRuns(runs: any[]): ModelRunBatch[] {
+  const batches = new Map<string, ModelRunBatch>();
+  for (const run of runs) {
+    const conversationId = typeof run.conversation_id === "string" && run.conversation_id ? run.conversation_id : undefined;
+    const traceId = typeof run.trace_id === "string" && run.trace_id ? run.trace_id : undefined;
+    const id = conversationId ? `conversation:${conversationId}` : traceId ? `trace:${traceId}` : `run:${run.id}`;
+    const batch: ModelRunBatch = batches.get(id) ?? {
+      id,
+      kind: conversationId ? "conversation" : traceId ? "trace" : "standalone",
+      conversationId,
+      traceId,
+      runs: [],
+    };
+    batch.runs.push(run);
+    batches.set(id, batch);
+  }
+  return [...batches.values()];
+}
+
+function modelRunBatchSummary(batch: ModelRunBatch) {
+  const traces = new Set(batch.runs.map((run) => run.trace_id).filter(Boolean));
+  const roles = [...new Set(batch.runs.map((run) => taskLabels[run.role] ?? "其他任务"))];
+  const firstTokenValues = batch.runs
+    .filter((run) => run.first_token_ms != null && Number.isFinite(Number(run.first_token_ms)))
+    .map((run) => Number(run.first_token_ms));
+  const statuses = batch.runs.map((run) => run.status ?? "completed");
+  const status = statuses.includes("running") ? "running" : statuses.includes("failed") ? "failed" : statuses.includes("cancelled") ? "cancelled" : "completed";
+  return {
+    title: roles.length > 2 ? `${roles.slice(0, 2).join("、")}等 ${roles.length} 类任务` : roles.join("、") || "模型调用",
+    context: batch.kind === "conversation"
+      ? `会话 ${batch.conversationId?.slice(0, 8)} · ${traces.size || 1} 个任务批次`
+      : batch.kind === "trace"
+        ? `运行追踪 ${batch.traceId?.slice(0, 12)}`
+        : "独立调用",
+    inputTokens: batch.runs.reduce((sum, run) => sum + numberValue(runInputTokens(run)), 0),
+    outputTokens: batch.runs.reduce((sum, run) => sum + numberValue(runOutputTokens(run)), 0),
+    cost: batch.runs.reduce((sum, run) => sum + numberValue(run.estimated_cost_cny), 0),
+    durationMs: batch.runs.reduce((sum, run) => sum + numberValue(run.duration_ms), 0),
+    firstTokenMs: firstTokenValues.length ? Math.round(firstTokenValues.reduce((sum, value) => sum + value, 0) / firstTokenValues.length) : null,
+    status,
+  };
+}
+
+function ModelRunCard({ run }: { run: any }) {
+  return (
+    <article className="model-run-card">
+      <header><div><strong>{taskLabels[run.role] ?? "其他任务"}</strong><span>{run.model_name ?? run.adapter_id}{run.transport && run.transport !== "unknown" ? ` · ${run.transport}` : ""}</span></div><em className={`run-status ${run.status ?? "completed"}`}>{statusLabels[run.status ?? "completed"] ?? "未知状态"}</em></header>
+      <dl>
+        <div><dt>{run.status === "running" ? "预计输入" : "输入"}</dt><dd>{formatTokens(runInputTokens(run))}</dd></div>
+        <div><dt>{run.status === "running" ? "预计输出" : "输出"}</dt><dd>{formatTokens(runOutputTokens(run))}</dd></div>
+        <div><dt>缓存输入</dt><dd>{formatTokens(run.cached_input_tokens)}</dd></div>
+        <div><dt>思考</dt><dd>{formatTokens(run.reasoning_tokens)}</dd></div>
+        <div><dt>搜索</dt><dd>{formatTokens(run.search_calls)} 次</dd></div>
+        <div><dt>费用</dt><dd>{formatCost(run.estimated_cost_cny)}</dd></div>
+        <div><dt>首字延迟</dt><dd>{run.first_token_ms == null ? "—" : `${run.first_token_ms} 毫秒`}</dd></div>
+        <div><dt>总耗时</dt><dd>{formatTokens(run.duration_ms)} 毫秒</dd></div>
+      </dl>
+      <footer><span>{new Date(run.created_at).toLocaleString("zh-CN")}</span><span>{run.thinking ? "已开启思考" : "未开启思考"}{run.retries ? ` · 重试 ${run.retries} 次` : ""}</span></footer>
+      <details><summary>查看原始调用记录</summary><pre>{JSON.stringify(run, null, 2)}</pre></details>
+    </article>
+  );
+}
+
+function ModelRunBatchCard({ batch }: { batch: ModelRunBatch }) {
+  const summary = modelRunBatchSummary(batch);
+  const identifier = batch.conversationId ?? batch.traceId;
+  return (
+    <details className={styles.modelRunBatch}>
+      <summary className={styles.modelRunBatchSummary} title={identifier}>
+        <span className={styles.batchHeading}>
+          <span>
+            <strong>{summary.title}</strong>
+            <small>{summary.context}</small>
+          </span>
+          <em className={`run-status ${summary.status}`}>{statusLabels[summary.status] ?? summary.status}</em>
+        </span>
+        <span className={styles.batchMetrics}>
+          <span><small>调用</small><strong>{batch.runs.length} 次</strong></span>
+          <span><small>词元</small><strong>{formatTokens(summary.inputTokens)} 入 / {formatTokens(summary.outputTokens)} 出</strong></span>
+          <span><small>费用</small><strong>{formatCost(summary.cost)}</strong></span>
+          <span><small>累计耗时</small><strong>{formatTokens(summary.durationMs)} 毫秒</strong></span>
+          <span><small>平均首字</small><strong>{summary.firstTokenMs == null ? "—" : `${formatTokens(summary.firstTokenMs)} 毫秒`}</strong></span>
+        </span>
+        <span className={styles.expandHint}><span>展开明细</span><ChevronDown aria-hidden="true" size={15} /></span>
+      </summary>
+      <div className={styles.batchRuns}>
+        {batch.runs.map((run) => <ModelRunCard key={run.id} run={run} />)}
+      </div>
+    </details>
+  );
 }
 
 function memoryStatus(memory: any) {
@@ -128,6 +237,8 @@ export function DeveloperPanel({ onClose }: { onClose: () => void }) {
     }
     return [...groups.entries()];
   }, [data]);
+
+  const modelRunBatches = useMemo(() => groupModelRuns(costData?.runs ?? []), [costData]);
 
   return (
     <div className="developer-shell">
@@ -252,24 +363,8 @@ export function DeveloperPanel({ onClose }: { onClose: () => void }) {
                 <p className="cost-disclaimer">{costData.disclaimer}</p>
                 <div className="model-cost-layout">
                   <section className="model-run-list">
-                    <h2>逐次调用</h2>
-                    {costData.runs.length ? costData.runs.map((run) => (
-                      <article className="model-run-card" key={run.id}>
-                        <header><div><strong>{taskLabels[run.role] ?? run.role}</strong><span>{run.model_name ?? run.adapter_id}{run.transport && run.transport !== "unknown" ? ` · ${run.transport}` : ""}</span></div><em className={`run-status ${run.status ?? "completed"}`}>{statusLabels[run.status ?? "completed"] ?? run.status}</em></header>
-                        <dl>
-                          <div><dt>{run.status === "running" ? "预计输入" : "输入"}</dt><dd>{formatTokens(run.status === "running" ? run.estimated_input_tokens : run.input_tokens)}</dd></div>
-                          <div><dt>{run.status === "running" ? "预计输出" : "输出"}</dt><dd>{formatTokens(run.status === "running" ? run.estimated_output_tokens : run.output_tokens)}</dd></div>
-                          <div><dt>缓存输入</dt><dd>{formatTokens(run.cached_input_tokens)}</dd></div>
-                          <div><dt>思考</dt><dd>{formatTokens(run.reasoning_tokens)}</dd></div>
-                          <div><dt>搜索</dt><dd>{formatTokens(run.search_calls)} 次</dd></div>
-                          <div><dt>费用</dt><dd>{formatCost(run.estimated_cost_cny)}</dd></div>
-                          <div><dt>首字延迟</dt><dd>{run.first_token_ms == null ? "—" : `${run.first_token_ms} 毫秒`}</dd></div>
-                          <div><dt>总耗时</dt><dd>{formatTokens(run.duration_ms)} 毫秒</dd></div>
-                        </dl>
-                        <footer><span>{new Date(run.created_at).toLocaleString("zh-CN")}</span><span>{run.thinking ? "已开启思考" : "未开启思考"}{run.retries ? ` · 重试 ${run.retries} 次` : ""}</span></footer>
-                        <details><summary>查看原始调用记录</summary><pre>{JSON.stringify(run, null, 2)}</pre></details>
-                      </article>
-                    )) : <div className="empty-cost-state">还没有模型调用记录。完成一次访谈或聊天后，这里会显示真实用量。</div>}
+                    <div className={styles.batchListHeading}><h2>调用批次</h2><span>默认收起，按会话或运行追踪归类</span></div>
+                    {modelRunBatches.length ? modelRunBatches.map((batch) => <ModelRunBatchCard key={batch.id} batch={batch} />) : <div className="empty-cost-state">还没有模型调用记录。完成一次访谈或聊天后，这里会显示真实用量。</div>}
                   </section>
                   <aside className="pricing-list">
                     <h2>价格快照</h2>
