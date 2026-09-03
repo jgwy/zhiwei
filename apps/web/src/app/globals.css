@@ -124,6 +124,9 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #222; outline-
 .about-team { display: grid; grid-template-columns: 1fr 1fr; gap: 27px 38px; padding: 28px 0 12px; }
 .about-team section > p { margin: 0 0 9px; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: #666; font-size: 12px; line-height: 1.55; }
 .about-team section > p strong { flex: 0 0 auto; color: #222; font-size: 13px; font-weight: 620; }
+.about-lead-profile { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 18px; align-items: start; }
+.about-lead-profile > strong { color: #222; font-size: 15px; font-weight: 650; }
+.about-lead-profile > div { display: flex; flex-direction: column; gap: 5px; color: #777; font-size: 11px; line-height: 1.45; }
 .about-members-section { grid-column: 1 / -1; }
 .about-members { margin: 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 11px 18px; list-style: none; }
 .about-members li { display: flex; align-items: baseline; white-space: nowrap; }

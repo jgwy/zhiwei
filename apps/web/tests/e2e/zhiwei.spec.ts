@@ -33,6 +33,9 @@ test("从空白问卷进入聊天并生成画像、memory 与 Skill 证据", asy
   await expect(aboutDialog.getByRole("heading", { name: "我们如何使用阿里云相关技术" })).toBeVisible();
   await expect(aboutDialog.getByText("应用现已部署在阿里云服务器上", { exact: false })).toBeVisible();
   await expect(aboutDialog.getByText("开发过程完全使用 Qoder", { exact: false })).toBeVisible();
+  await expect(aboutDialog.getByText("东南大学化学化工学院25级本科生", { exact: true })).toBeVisible();
+  await expect(aboutDialog.getByText("Datawhale 成员", { exact: true })).toBeVisible();
+  await expect(aboutDialog.getByText("ModelScope 社区开发者", { exact: true })).toBeVisible();
   await expect(aboutDialog.getByText("刘一民", { exact: true })).toBeVisible();
   await expect(aboutDialog.getByText("（华中科技大学）", { exact: true })).toBeVisible();
   await expect(aboutDialog.getByText("版本 1.0beta", { exact: true })).toBeVisible();

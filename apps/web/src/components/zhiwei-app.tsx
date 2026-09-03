@@ -476,7 +476,10 @@ function AboutDialog({ onClose }: { onClose: () => void }) {
           <div className="about-team">
             <section>
               <h3>团队负责人、主要开发者</h3>
-              <p><span>东南大学化学化工学院</span><strong>张正明</strong></p>
+              <div className="about-lead-profile">
+                <strong>张正明</strong>
+                <div><span>东南大学化学化工学院25级本科生</span><span>Datawhale 成员</span><span>ModelScope 社区开发者</span></div>
+              </div>
             </section>
 
             <section>
