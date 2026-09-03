@@ -43,6 +43,7 @@ export function ZhiweiApp() {
   const [aboutOpen, setAboutOpen] = useState(false);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [toastFading, setToastFading] = useState(false);
   const [receipts, setReceipts] = useState<Record<string, { count: number; open: boolean }>>({});
   const abortRef = useRef<AbortController | null>(null);
   const messageEndRef = useRef<HTMLDivElement | null>(null);
@@ -59,11 +60,16 @@ export function ZhiweiApp() {
 
   function showToast(message: string, duration = 3_500) {
     if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+    setToastFading(false);
     setToast(message);
     toastTimerRef.current = window.setTimeout(() => {
-      toastTimerRef.current = null;
-      setToast(null);
-    }, duration);
+      setToastFading(true);
+      toastTimerRef.current = window.setTimeout(() => {
+        toastTimerRef.current = null;
+        setToast(null);
+        setToastFading(false);
+      }, 240);
+    }, Math.max(0, duration - 240));
   }
 
   useEffect(() => () => {
@@ -428,7 +434,7 @@ export function ZhiweiApp() {
       </div>
       {mobileMenu ? <button className="mobile-scrim" onClick={() => setMobileMenu(null)} aria-label="关闭面板" /> : null}
       {aboutOpen ? <AboutDialog onClose={closeAbout} /> : null}
-      {toast ? <div className="toast" aria-live="polite"><Check size={16} />{toast}</div> : null}
+      {toast ? <div className={`toast${toastFading ? " toast-fading" : ""}`} aria-live="polite"><Check size={16} />{toast}</div> : null}
     </main>
   );
 }

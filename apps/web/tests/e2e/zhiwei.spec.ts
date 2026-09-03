@@ -119,9 +119,11 @@ test("不完整生成提示会自动消失", async ({ page }, testInfo) => {
   await composer.fill("触发不完整生成");
   await page.getByRole("button", { name: "发送消息" }).click();
 
-  const toast = page.getByText("这次回复没有完整生成，可以重试。", { exact: true });
+  const toast = page.locator(".toast");
+  await expect(toast).toContainText("这次回复没有完整生成，可以重试。", { timeout: 5_000 });
   await expect(toast).toBeVisible();
   await expect(page.getByRole("button", { name: "发送消息" })).toBeVisible();
+  await expect(toast).toHaveClass(/toast-fading/u, { timeout: 5_000 });
   await expect(toast).toBeHidden({ timeout: 6_000 });
 });
 
