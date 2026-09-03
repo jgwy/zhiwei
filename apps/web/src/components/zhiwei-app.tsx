@@ -16,7 +16,6 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Plus,
-  RotateCcw,
   Square,
   ThumbsDown,
   ThumbsUp,
@@ -220,6 +219,8 @@ export function ZhiweiApp() {
       });
       window.setTimeout(() => void load(), 500);
     } catch (error) {
+      const status = abort.signal.aborted ? "stopped" : "interrupted";
+      updateConversationMessages(conversationId, (messages) => messages.map((message) => message.metadata?.streaming ? { ...message, metadata: { ...message.metadata, streaming: false, status } } : message));
       if (!abort.signal.aborted) setToast(error instanceof Error ? error.message : "回复中断了，可以重试。");
     } finally {
       setStreaming(false);
@@ -229,6 +230,17 @@ export function ZhiweiApp() {
 
   function updateConversationMessages(conversationId: string, updater: (messages: ChatMessage[]) => ChatMessage[]) {
     setData((current) => current ? { ...current, conversations: current.conversations.map((conversation) => conversation.id === conversationId ? { ...conversation, messages: updater(conversation.messages) } : conversation) } : current);
+  }
+
+  // 原地重试：删掉失败的用户消息和中断的回复，再以原文重发，避免消息堆叠。
+  function retryFrom(assistantIndex: number) {
+    const conversation = data?.conversations.find((item) => item.id === activeId);
+    if (!conversation || streaming) return;
+    const assistant = conversation.messages[assistantIndex];
+    const previous = [...conversation.messages.slice(0, assistantIndex)].reverse().find((item) => item.role === "user");
+    if (!assistant || !previous) return;
+    updateConversationMessages(conversation.id, (messages) => messages.filter((item) => item.id !== assistant.id && item.id !== previous.id));
+    void sendMessage(previous.content);
   }
 
   async function feedback(messageId: string, value: "understood" | "not-me", reason?: string) {
@@ -340,7 +352,7 @@ export function ZhiweiApp() {
                       : current;
                   })}
                   onFeedback={feedback}
-                  onRetry={message.role === "assistant" ? () => { const previous = [...active.messages.slice(0, index)].reverse().find((item) => item.role === "user"); if (previous) void sendMessage(previous.content); } : undefined}
+                  onRetry={message.role === "assistant" && message.metadata?.status === "interrupted" && index === active.messages.length - 1 ? () => retryFrom(index) : undefined}
                 />
               ))}
               <div ref={messageEndRef} />
@@ -524,11 +536,11 @@ function Message({ message, receipt, onToggleReceipt, onFeedback, onRetry }: { m
   return (
     <article className={assistant ? "message assistant" : "message user"}>
       <div className="message-content">{message.content || (message.metadata?.streaming ? <span className="typing"><i /><i /><i /></span> : null)}</div>
-      {message.metadata?.status === "interrupted" ? <div className="message-status">回复中断了，可以重试。</div> : null}
+      {message.metadata?.status === "interrupted" ? <div className="message-status">回复中断了，可以重试。{onRetry ? <button className="retry-inline" onClick={onRetry}>重试</button> : null}</div> : null}
       {Array.isArray(message.metadata?.sources) && message.metadata.sources.length ? <details className="message-sources"><summary>查看事实来源（{message.metadata.sources.length}）</summary>{message.metadata.sources.map((source: any) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer"><span>{source.title}</span>{source.siteName ? <small>{source.siteName}</small> : null}</a>)}</details> : null}
       <footer>
         <time>{formatTime(message.createdAt)}</time>
-        {assistant && message.content ? <div className="message-actions"><button onClick={() => navigator.clipboard.writeText(message.content)} aria-label="复制"><Clipboard size={14} /></button><button onClick={() => void onFeedback(message.id, "understood")} aria-label="有被懂到"><ThumbsUp size={14} /></button><button onClick={() => setFeedbackOpen(!feedbackOpen)} aria-label="不太像我"><ThumbsDown size={14} /></button>{onRetry ? <button onClick={onRetry} aria-label="重试"><RotateCcw size={14} /></button> : null}</div> : null}
+        {assistant && message.content ? <div className="message-actions"><button onClick={() => navigator.clipboard.writeText(message.content)} aria-label="复制"><Clipboard size={14} /></button><button onClick={() => void onFeedback(message.id, "understood")} aria-label="有被懂到"><ThumbsUp size={14} /></button><button onClick={() => setFeedbackOpen(!feedbackOpen)} aria-label="不太像我"><ThumbsDown size={14} /></button></div> : null}
       </footer>
       {feedbackOpen ? <div className="feedback-reasons"><span>哪里不太像你？</span>{["语气不对", "记错了", "建议不贴合", "太像模板"].map((reason) => <button key={reason} onClick={() => { void onFeedback(message.id, "not-me", reason); setFeedbackOpen(false); }}>{reason}</button>)}</div> : null}
       {assistant && receipt ? <button className="memory-receipt" onClick={onToggleReceipt}><SparkleDot />知微更新了 {receipt.count} 条认识 <ChevronRight size={13} className={receipt.open ? "rotated" : ""} /></button> : null}

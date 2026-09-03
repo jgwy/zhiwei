@@ -39,6 +39,8 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #222; outline-
 .loading-retry { padding: 7px 16px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--muted); font-size: 13px; cursor: pointer; transition: .18s ease; }
 .loading-retry:hover { color: var(--ink); border-color: var(--ink); }
 .list-empty { margin: 0; padding: 14px 12px; color: var(--faint); font-size: 12.5px; line-height: 1.7; }
+.retry-inline { margin-left: 8px; padding: 2px 10px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; transition: .18s ease; }
+.retry-inline:hover { color: var(--ink); border-color: var(--ink); }
 
 .onboarding-shell { padding: 24px; }
 .onboarding-card { width: min(620px, 100%); min-height: 520px; display: flex; flex-direction: column; justify-content: center; padding: 52px 56px; border: 1px solid var(--line); border-radius: 28px; background: rgba(255,255,255,.94); box-shadow: var(--shadow); }
