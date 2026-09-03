@@ -124,7 +124,7 @@ export function validateReflectionBatch(actions: MemoryMutation[]): void {
   }
 }
 
-function extractSearchTerms(query: string): string[] {
+export function extractSearchTerms(query: string): string[] {
   const normalized = query.replace(/[，。！？、,.!?：:；;]/gu, " ");
   const words = normalized.split(/\s+/u).filter((term) => term.length >= 2);
   const compact = normalized.replace(/\s+/gu, "");

@@ -11,3 +11,8 @@ export * from "./risk";
 export * from "./science-mcp-client";
 export * from "./score";
 export * from "./types";
+export * from "./turns";
+export * from "./notifications";
+export * from "./job-lifecycle";
+export * from "./onboarding";
+export * from "./mcp-http";

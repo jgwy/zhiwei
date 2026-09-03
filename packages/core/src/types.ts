@@ -31,6 +31,7 @@ export type MemoryStatus = z.infer<typeof MemoryStatusSchema>;
 const MemoryEvidenceSchema = z.object({
   reason: z.string().min(1).max(500),
   evidenceMessageIds: z.array(z.string().uuid()).min(1).max(12),
+  triggerMessageId: z.string().uuid().optional(),
 });
 
 const MemoryContentSchema = MemoryEvidenceSchema.extend({
@@ -64,7 +65,9 @@ export type MemoryMutation = z.infer<typeof MemoryMutationSchema>;
 
 export const MemorySearchInputSchema = z.object({
   query: z.string().max(1_000),
-  limit: z.number().int().min(1).max(8).default(8),
+  limit: z.number().int().min(1).max(12).default(8),
+  purpose: z.enum(["dialogue", "reflection"]).default("dialogue"),
+  afterEvidenceAt: z.string().datetime().optional(),
   queryEmbedding: z.array(z.number()).length(1024).optional(),
 });
 export type MemorySearchInput = z.infer<typeof MemorySearchInputSchema>;
@@ -143,6 +146,7 @@ export const MemoryReflectionCommitSchema = z.object({
     score: z.number().int().min(-5).max(5),
     summary: z.string().min(1).max(240),
     meaningful: z.boolean(),
+    evidenceMessageIds: z.array(z.string().uuid()).min(1).max(3).optional(),
   }).nullable().optional(),
   sessionSummary: z.string().min(1).max(1_200).optional(),
   summaryChanged: z.boolean().optional(),
@@ -159,32 +163,6 @@ export const DimensionWeightsSchema = z
   .refine((weights) => Object.values(weights).some((value) => value > 0), {
     message: "至少一个画像维度必须有权重",
   });
-
-export const ReflectionOutputSchema = z.object({
-  memories: z.array(MemoryMutationSchema).max(3),
-  profileSummary: z.string().min(1).max(1600),
-  dimensionWeights: DimensionWeightsSchema,
-  mood: z
-    .object({
-      score: z.number().int().min(-5).max(5),
-      summary: z.string().min(1).max(240),
-      meaningful: z.boolean(),
-    })
-    .nullable(),
-  sessionSummary: z.string().min(1).max(1200),
-  returnNote: z
-    .object({
-      content: z.string().min(1).max(300),
-      validAfter: z.string().datetime(),
-      expiresAt: z.string().datetime(),
-    })
-    .nullable(),
-  shouldEvolveSkill: z.boolean(),
-  evolutionReason: z.string().max(500).nullable(),
-  profileChanged: z.boolean().optional().default(true),
-  summaryChanged: z.boolean().optional().default(true),
-});
-export type ReflectionOutput = z.infer<typeof ReflectionOutputSchema>;
 
 export const PersonalSkillSchema = z.object({
   expression: z.object({
@@ -266,6 +244,8 @@ export type ModelAttemptMeta = {
   transport: ModelTransport;
   requestId?: string;
   usage: ModelUsage;
+  usageReported?: boolean;
+  firstTokenMs?: number;
   durationMs: number;
   finishReason: string;
   outcome: "completed" | "quality-rejected" | "failed";
@@ -281,6 +261,8 @@ export type ModelCallMeta = {
   usage: ModelUsage;
   estimatedCostCny: number;
   firstTokenMs?: number;
+  firstDeltaMs?: number;
+  usageReported?: boolean;
   durationMs: number;
   finishReason: string;
   retries: number;
@@ -322,7 +304,9 @@ export const ReflectionDecisionSchema = z.object({
     score: z.number().int().min(-5).max(5),
     summary: z.string().min(1).max(240),
     meaningful: z.boolean(),
+    evidenceMessageIds: z.array(z.string().uuid()).min(1).max(3).optional(),
   }).nullable(),
+  summaryEvidenceMessageIds: z.array(z.string().uuid()).max(3).optional(),
   refreshProfile: z.boolean(),
   refreshSummary: z.boolean(),
   returnTopic: z.string().min(1).max(240).nullable(),
@@ -513,9 +497,10 @@ export type QuestionDefinition = {
 };
 
 export type StreamEvent =
-  | { type: "message.started"; messageId: string; traceId: string }
+  | { type: "message.started"; messageId: string; traceId: string; userMessage?: ChatMessage }
+  | { type: "phase"; stage: string; message: string }
   | { type: "text.delta"; delta: string }
   | { type: "tool.started"; name: string }
   | { type: "tool.completed"; name: string }
-  | { type: "message.completed"; messageId: string; jobId: string; sources?: ModelSource[] }
+  | { type: "message.completed"; messageId: string; jobId: string; sources?: ModelSource[]; status?: "completed" | "stopped" }
   | { type: "error"; code: string; message: string };
