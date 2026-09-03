@@ -125,6 +125,10 @@ test("编辑历史用户消息会截断后续聊天并重新回复", async ({ pa
   await completeOnboarding(page);
 
   const composer = page.getByLabel("消息内容");
+  const initialComposerHeight = await composer.evaluate((element) => element.getBoundingClientRect().height);
+  await composer.fill("输入框增长测试\n".repeat(40));
+  await expect.poll(() => composer.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThan(initialComposerHeight);
+  await expect.poll(() => composer.evaluate((element) => getComputedStyle(element).overflowY)).toBe("auto");
   await composer.fill("第一条原始消息");
   await page.getByRole("button", { name: "发送消息" }).click();
   await expect(page.getByRole("button", { name: "发送消息" })).toBeVisible({ timeout: 30_000 });
@@ -135,8 +139,13 @@ test("编辑历史用户消息会截断后续聊天并重新回复", async ({ pa
   const original = page.locator(".message.user", { hasText: "第一条原始消息" });
   await original.hover();
   await original.getByRole("button", { name: "编辑消息" }).click();
-  await page.getByLabel("编辑消息内容").fill("第一条编辑后的消息");
-  await page.getByRole("button", { name: "保存并重新发送" }).click();
+  const editInput = page.getByLabel("编辑消息内容");
+  const initialEditHeight = await editInput.evaluate((element) => element.getBoundingClientRect().height);
+  await editInput.fill("内容增长测试\n".repeat(30));
+  await expect.poll(() => editInput.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThan(initialEditHeight);
+  await expect.poll(() => editInput.evaluate((element) => getComputedStyle(element).overflowY)).toBe("auto");
+  await editInput.fill("第一条编辑后的消息");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
 
   await expect(page.getByText("第一条编辑后的消息", { exact: true })).toBeVisible();
   await expect(page.getByText("这条后续消息应被删除", { exact: true })).not.toBeVisible();

@@ -47,6 +47,7 @@ export function ZhiweiApp() {
   const [receipts, setReceipts] = useState<Record<string, { count: number; open: boolean }>>({});
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const messageEndRef = useRef<HTMLDivElement | null>(null);
   const messageScrollRef = useRef<HTMLDivElement | null>(null);
@@ -93,6 +94,17 @@ export function ZhiweiApp() {
   );
   const lastMessage = active?.messages.at(-1);
   const messageScrollSignal = `${activeId ?? "none"}:${active?.messages.length ?? 0}:${lastMessage?.id ?? "none"}:${lastMessage?.content.length ?? 0}:${lastMessage?.metadata?.status ?? ""}`;
+
+  useEffect(() => {
+    const textarea = composerTextareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    const contentHeight = textarea.scrollHeight;
+    const configuredMaxHeight = Number.parseFloat(window.getComputedStyle(textarea).maxHeight);
+    const maxHeight = Number.isFinite(configuredMaxHeight) ? configuredMaxHeight : 320;
+    textarea.style.height = `${Math.min(contentHeight, maxHeight)}px`;
+    textarea.style.overflowY = contentHeight > maxHeight ? "auto" : "hidden";
+  }, [input]);
 
   useEffect(() => {
     const conversationChanged = lastScrolledConversationRef.current !== activeId;
@@ -460,7 +472,7 @@ export function ZhiweiApp() {
 
         <div className="composer-wrap">
           <div className="chat-composer">
-            <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} rows={1} placeholder="和知微说点什么…" aria-label="消息内容" />
+            <textarea ref={composerTextareaRef} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} rows={1} placeholder="和知微说点什么…" aria-label="消息内容" />
             {streaming ? <Button size="icon" variant="primary" onClick={() => abortRef.current?.abort()} aria-label="停止回复"><Square size={15} fill="currentColor" /></Button> : <Button size="icon" variant="primary" onClick={() => void sendMessage()} disabled={!input.trim()} aria-label="发送消息"><ArrowUp size={18} /></Button>}
           </div>
           <small>按 Enter 发送 · 按 Shift + Enter 换行</small>
@@ -580,33 +592,52 @@ function AboutDialog({ onClose }: { onClose: () => void }) {
 
 function Message({ message, timeZone, receipt, onToggleReceipt, onFeedback, onRetry, editing, editDraft, editDisabled, onEditStart, onEditDraft, onEditCancel, onEditSave }: { message: ChatMessage; timeZone: string; receipt?: { count: number; open: boolean }; onToggleReceipt: () => void; onFeedback: (id: string, value: "understood" | "not-me", reason?: string) => Promise<void>; onRetry?: () => void; editing: boolean; editDraft?: string; editDisabled: boolean; onEditStart?: () => void; onEditDraft: (value: string) => void; onEditCancel: () => void; onEditSave: () => void }) {
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const editTextareaRef = useRef<HTMLTextAreaElement>(null);
   const assistant = message.role === "assistant";
+
+  useEffect(() => {
+    if (!editing || !editTextareaRef.current) return;
+    const textarea = editTextareaRef.current;
+    textarea.style.height = "auto";
+    const contentHeight = textarea.scrollHeight;
+    const configuredMaxHeight = Number.parseFloat(window.getComputedStyle(textarea).maxHeight);
+    const maxHeight = Number.isFinite(configuredMaxHeight) ? configuredMaxHeight : 220;
+    textarea.style.height = `${Math.min(contentHeight, maxHeight)}px`;
+    textarea.style.overflowY = contentHeight > maxHeight ? "auto" : "hidden";
+  }, [editing, editDraft]);
+
   return (
-    <article className={assistant ? "message assistant" : "message user"}>
+    <article className={`${assistant ? "message assistant" : "message user"}${editing ? " editing" : ""}`}>
       {editing ? (
         <div className="message-editor">
           <textarea
             aria-label="编辑消息内容"
             autoFocus
+            ref={editTextareaRef}
             value={editDraft ?? ""}
             onChange={(event) => onEditDraft(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Escape") onEditCancel();
               if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); onEditSave(); }
             }}
-            rows={3}
+            rows={1}
           />
-          <small>保存后会删除这条消息之后的聊天及相关记忆</small>
-          <div><button onClick={onEditCancel} disabled={editDisabled}>取消</button><button onClick={onEditSave} disabled={editDisabled || !(editDraft ?? "").trim()}>保存并重新发送</button></div>
+          <div className="message-editor-footer">
+            <small>保存后会删除这条消息之后的聊天及相关记忆</small>
+            <div><button onClick={onEditCancel} disabled={editDisabled}>取消</button><button onClick={onEditSave} disabled={editDisabled || !(editDraft ?? "").trim()}>发送</button></div>
+          </div>
         </div>
       ) : <div className="message-content">{message.content || (message.metadata?.streaming ? <span className="typing"><i /><i /><i /></span> : null)}</div>}
       {message.metadata?.status === "interrupted" ? <div className="message-status">回复中断了，可以重试。</div> : null}
       {Array.isArray(message.metadata?.sources) && message.metadata.sources.length ? <details className="message-sources"><summary>查看事实来源（{message.metadata.sources.length}）</summary>{message.metadata.sources.map((source: any) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer"><span>{source.title}</span>{source.siteName ? <small>{source.siteName}</small> : null}</a>)}</details> : null}
-      <footer>
-        <time title={formatFullTime(message.createdAt, timeZone)} dateTime={message.createdAt}>{formatRelativeDateTime(message.createdAt)}{message.editedAt ? " · 已编辑" : ""}</time>
-        {!assistant && !editing && onEditStart ? <div className="message-actions user-message-actions"><button onClick={onEditStart} disabled={editDisabled} aria-label="编辑消息"><Pencil size={14} /></button></div> : null}
-        {assistant && message.content ? <div className="message-actions"><button onClick={() => navigator.clipboard.writeText(message.content)} aria-label="复制"><Clipboard size={14} /></button><button onClick={() => void onFeedback(message.id, "understood")} aria-label="有被懂到"><ThumbsUp size={14} /></button><button onClick={() => setFeedbackOpen(!feedbackOpen)} aria-label="不太像我"><ThumbsDown size={14} /></button>{onRetry ? <button onClick={onRetry} aria-label="重试"><RotateCcw size={14} /></button> : null}</div> : null}
-      </footer>
+      {!editing ? <footer>
+          <time title={formatFullTime(message.createdAt, timeZone)} dateTime={message.createdAt}>{formatRelativeDateTime(message.createdAt)}{message.editedAt ? " · 已编辑" : ""}</time>
+          {!assistant ? <div className="message-actions user-message-actions">
+            <button onClick={() => navigator.clipboard.writeText(message.content)} aria-label="复制消息"><Clipboard size={16} strokeWidth={1.8} /></button>
+            {onEditStart ? <button onClick={onEditStart} disabled={editDisabled} aria-label="编辑消息"><Pencil size={16} strokeWidth={1.8} /></button> : null}
+          </div> : null}
+          {assistant && message.content ? <div className="message-actions"><button onClick={() => navigator.clipboard.writeText(message.content)} aria-label="复制"><Clipboard size={14} /></button><button onClick={() => void onFeedback(message.id, "understood")} aria-label="有被懂到"><ThumbsUp size={14} /></button><button onClick={() => setFeedbackOpen(!feedbackOpen)} aria-label="不太像我"><ThumbsDown size={14} /></button>{onRetry ? <button onClick={onRetry} aria-label="重试"><RotateCcw size={14} /></button> : null}</div> : null}
+        </footer> : null}
       {feedbackOpen ? <div className="feedback-reasons"><span>哪里不太像你？</span>{["语气不对", "记错了", "建议不贴合", "太像模板"].map((reason) => <button key={reason} onClick={() => { void onFeedback(message.id, "not-me", reason); setFeedbackOpen(false); }}>{reason}</button>)}</div> : null}
       {assistant && receipt ? <button className="memory-receipt" onClick={onToggleReceipt}><SparkleDot />知微更新了 {receipt.count} 条认识 <ChevronRight size={13} className={receipt.open ? "rotated" : ""} /></button> : null}
       {assistant && receipt?.open ? <div className="receipt-detail">这些认识已经进入“关于你”，会在以后相关的对话中使用。若有不对，点开画像里的对应内容告诉我新的说法。</div> : null}
