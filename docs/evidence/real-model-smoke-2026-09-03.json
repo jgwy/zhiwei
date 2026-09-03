@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-09-03",
+  "adapter": "AliyunBailianGateway (aliyun-bailian-openai-v1)",
+  "scope": "real-model end-to-end smoke evidence, single workspace key, not a quality benchmark",
+  "models": {
+    "dialogue": "qwen-plus-character (Character Responses API, streaming)",
+    "background": "qwen3.8-flash (structured JSON output, reflection/routing)",
+    "embedding": "qwen3.7-text-embedding (1024 dims)"
+  },
+  "checks": [
+    { "name": "embedding", "result": "1024-dim vector returned, stored into memory_versions.embedding_v2" },
+    { "name": "factRouting", "result": "scientific question routed scientific=true; daily-emotional chat routed character mode" },
+    { "name": "streamDialogue", "result": "SSE text deltas streamed; usage recorded (sample: input 1251 / output 42 tokens)" },
+    { "name": "reflectionPipeline", "result": "worker extracted memories from 3 real turns, committed with evidence chain; activity event delivered" },
+    { "name": "uiLoop", "result": "receipt badge instant; profile summary/score patched live; debounced bootstrap refreshed memory list (~2s)" },
+    { "name": "retryUX", "result": "real failure (MCP down) surfaced with inline retry; retry replaced the failed pair and succeeded after recovery" }
+  ],
+  "sampleMemoryExtractions": [
+    "此刻的你：养了一只猫，名叫团子",
+    "兴趣偏好：喜欢下班后跑步解压",
+    "正在面对：周五入职第一天，担心记不住同事的名字"
+  ],
+  "interpretation": [
+    "Verifies that the full real-model loop (dialogue, embedding, reflection, memory commit, live UI) functions end to end.",
+    "Sample size is a handful of turns; these are smoke checks, not quality or preference measurements.",
+    "Recorded manually during integration testing; superseded by npm run eval output once eval is aligned to the production gateway."
+  ]
+}
