@@ -6,6 +6,7 @@
   "scripts": {
     "eval": "node --import tsx src/run.ts",
     "eval:real-memory": "node --env-file-if-exists=../../.env --import tsx src/run-real-memory-lifecycle.ts",
+    "eval:real-experience": "node --import tsx src/run-experience-real.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
