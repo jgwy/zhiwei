@@ -4,6 +4,8 @@ import type {
 } from "./types";
 import { normalizeDimensionWeights } from "./personal-skill";
 
+export const UNDERSTANDING_ALGORITHM_VERSION = 2;
+
 export function calculateUnderstandingScore(
   components: UnderstandingComponents,
 ): number {
@@ -43,6 +45,7 @@ export function deriveUnderstandingComponents(input: {
   const total = input.memories.length;
   if (!total) {
     return {
+      algorithmVersion: UNDERSTANDING_ALGORITHM_VERSION,
       coverage: 0,
       validation: 0,
       personalization: 0,
@@ -115,6 +118,7 @@ export function deriveUnderstandingComponents(input: {
   );
 
   return {
+    algorithmVersion: UNDERSTANDING_ALGORITHM_VERSION,
     coverage: clamp(coverage),
     validation,
     personalization,

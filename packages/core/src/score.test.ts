@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   calculateUnderstandingScore,
   deriveUnderstandingComponents,
+  UNDERSTANDING_ALGORITHM_VERSION,
 } from "./score";
 import type { MemoryRecord } from "./types";
 
@@ -73,6 +74,7 @@ describe("calculateUnderstandingScore", () => {
 
     expect(calculateUnderstandingScore(components)).toBeGreaterThanOrEqual(5);
     expect(calculateUnderstandingScore(components)).toBeLessThanOrEqual(10);
+    expect(components.algorithmVersion).toBe(UNDERSTANDING_ALGORITHM_VERSION);
     expect(components.validation).toBeLessThan(0.15);
     expect(components.personalization).toBeLessThan(0.1);
     expect(components.temporal).toBeLessThan(0.15);

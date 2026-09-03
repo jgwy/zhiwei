@@ -497,6 +497,7 @@ export type MemoryEventType =
 export type MemoryEventActor = "user" | "model" | "system" | "developer";
 
 export type UnderstandingComponents = {
+  algorithmVersion?: number;
   coverage: number;
   validation: number;
   personalization: number;

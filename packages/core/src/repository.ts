@@ -15,6 +15,7 @@ import {
 import {
   calculateUnderstandingScore,
   deriveUnderstandingComponents,
+  UNDERSTANDING_ALGORITHM_VERSION,
 } from "./score";
 import type {
   ChatMessage,
@@ -99,10 +100,44 @@ export async function getUserState(userId: string) {
     getMoodSeries(userId),
     getActiveSkill(userId),
   ]);
+  let currentProfile = profile;
+  if (profile && profile.understanding.algorithmVersion !== UNDERSTANDING_ALGORITHM_VERSION) {
+    const settings = user.rows[0]?.settings ?? {};
+    const scoreMemories = memories.filter((memory) => (
+      memory.tier === "long"
+      && (memory.category !== "emotion" || settings.emotionTrackingEnabled !== false)
+    ));
+    const [feedback, observations] = await Promise.all([
+      getPool().query(
+        `SELECT count(DISTINCT message_id) FILTER (WHERE value = 'understood')::int AS positive,
+                count(DISTINCT message_id) FILTER (WHERE value = 'not-me')::int AS negative
+         FROM feedback WHERE user_id = $1`,
+        [userId],
+      ),
+      getPool().query(UNDERSTANDING_OBSERVATIONS_SQL, [userId]),
+    ]);
+    const understanding = deriveUnderstandingComponents({
+      memories: scoreMemories,
+      dimensionWeights: profile.dimensionWeights,
+      positiveFeedback: feedback.rows[0]?.positive ?? 0,
+      negativeFeedback: feedback.rows[0]?.negative ?? 0,
+      correctedMemories: 0,
+      observationSessions: observations.rows[0]?.sessions ?? 0,
+      observationSpanDays: observations.rows[0]?.span_days ?? 0,
+    });
+    const score = calculateUnderstandingScore(understanding);
+    currentProfile = { ...profile, understanding, score };
+    await getPool().query(
+      `UPDATE profile_snapshots
+       SET understanding_components = $2::jsonb, understanding_score = $3
+       WHERE id = $1`,
+      [profile.id, JSON.stringify(understanding), score],
+    );
+  }
   return {
     user: user.rows[0],
     conversations,
-    profile,
+    profile: currentProfile,
     memories,
     mood,
     skill,
@@ -1951,13 +1986,14 @@ function explainScoreChange(
   if (!previous) {
     return [{ component: "total", delta: score, message: "形成了第一轮长期认识。" }];
   }
-  const labels: Record<keyof ProfileSnapshot["understanding"], string> = {
+  type ScoreComponent = Exclude<keyof ProfileSnapshot["understanding"], "algorithmVersion">;
+  const labels: Record<ScoreComponent, string> = {
     coverage: "画像覆盖",
     validation: "长期一致性",
     personalization: "回答贴合度",
     temporal: "时间校准",
   };
-  const reasons = (Object.keys(labels) as Array<keyof ProfileSnapshot["understanding"]>)
+  const reasons = (Object.keys(labels) as ScoreComponent[])
     .map((component) => ({
       component,
       delta: roundComponent(components[component] - previous.understanding[component]),
