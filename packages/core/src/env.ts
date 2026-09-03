@@ -17,7 +17,12 @@ function parseEnvLine(line: string): Array<[string, string]> {
 // 为工作目录、tsx 不加载 env 文件，没有这一步 INTERNAL_MCP_TOKEN 等配置到不了进程。
 // compose 部署时容器内没有根目录 .env，配置由 docker-compose 显式注入，此处自动跳过。
 export function loadLocalEnv(filePath?: string): void {
-  const envPath = filePath ?? resolve(import.meta.dirname, "../../../.env");
+  // webpack 打包产物里 import.meta.dirname 是 undefined，此时必须由调用方显式传路径。
+  const envPath = filePath
+    ?? (typeof import.meta.dirname === "string"
+      ? resolve(import.meta.dirname, "../../../.env")
+      : undefined);
+  if (!envPath) return;
   let content: string;
   try {
     content = readFileSync(envPath, "utf8");
