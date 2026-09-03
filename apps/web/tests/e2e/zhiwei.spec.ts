@@ -30,6 +30,9 @@ test("从空白问卷进入聊天并生成画像、memory 与 Skill 证据", asy
   await expect(aboutDialog).toBeVisible();
   await expect(aboutDialog.getByRole("img")).toHaveCount(5);
   await expect(aboutDialog.getByText("真切地陪伴你的数字分身", { exact: true })).toBeVisible();
+  await expect(aboutDialog.getByRole("heading", { name: "我们如何使用阿里云相关技术" })).toBeVisible();
+  await expect(aboutDialog.getByText("应用现已部署在阿里云服务器上", { exact: false })).toBeVisible();
+  await expect(aboutDialog.getByText("开发过程完全使用 Qoder", { exact: false })).toBeVisible();
   await expect(aboutDialog.getByText("刘一民", { exact: true })).toBeVisible();
   await expect(aboutDialog.getByText("（华中科技大学）", { exact: true })).toBeVisible();
   await expect(aboutDialog.getByText("版本 1.0beta", { exact: true })).toBeVisible();

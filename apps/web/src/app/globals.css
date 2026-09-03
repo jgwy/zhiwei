@@ -118,8 +118,9 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #222; outline-
 .about-hero h2 { margin: 0; font-family: Georgia, "Songti SC", serif; font-size: 34px; font-weight: 540; letter-spacing: .18em; text-indent: .18em; }
 .about-hero p { margin: 9px 0 0; color: #777; font-size: 14px; letter-spacing: .04em; }
 .about-project { padding: 25px 0 27px; border-top: 1px solid #ededed; border-bottom: 1px solid #ededed; }
-.about-project h3, .about-team h3 { margin: 0 0 12px; color: #999; font-size: 11px; font-weight: 590; letter-spacing: .08em; }
-.about-project p { margin: 0; color: #4f4f4f; font-size: 13px; line-height: 1.9; text-align: justify; }
+.about-project h3, .about-cloud h3, .about-team h3 { margin: 0 0 12px; color: #999; font-size: 11px; font-weight: 590; letter-spacing: .08em; }
+.about-project p, .about-cloud p { margin: 0; color: #4f4f4f; font-size: 13px; line-height: 1.9; text-align: justify; }
+.about-cloud { padding: 25px 0 27px; border-bottom: 1px solid #ededed; }
 .about-team { display: grid; grid-template-columns: 1fr 1fr; gap: 27px 38px; padding: 28px 0 12px; }
 .about-team section > p { margin: 0 0 9px; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: #666; font-size: 12px; line-height: 1.55; }
 .about-team section > p strong { flex: 0 0 auto; color: #222; font-size: 13px; font-weight: 620; }
@@ -287,7 +288,8 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #222; outline-
   .about-hero h2 { font-size: 30px; }
   .about-hero p { font-size: 13px; }
   .about-project { padding: 22px 0 24px; }
-  .about-project p { font-size: 12px; line-height: 1.85; }
+  .about-project p, .about-cloud p { font-size: 12px; line-height: 1.85; }
+  .about-cloud { padding: 22px 0 24px; }
   .about-team { grid-template-columns: 1fr; gap: 22px; padding-top: 24px; }
   .about-members-section { grid-column: auto; }
   .about-members { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
