@@ -12,7 +12,7 @@ const folders = (await readdir(root, { withFileTypes: true }))
 const skills = [];
 for (const folder of folders) {
   const content = await readFile(join(root, folder, "SKILL.md"), "utf8");
-  const frontmatter = content.match(/^---\n([\s\S]*?)\n---\n/);
+  const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/);
   if (!frontmatter) throw new Error(`${folder}/SKILL.md 缺少 YAML frontmatter`);
   const name = frontmatter[1].match(/^name:\s*"?([^"\n]+)"?$/m)?.[1]?.trim();
   const description = frontmatter[1].match(/^description:\s*"?([^"\n]+)"?$/m)?.[1]?.trim();
