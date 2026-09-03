@@ -89,6 +89,19 @@ describe("calculateUnderstandingScore", () => {
     expect(twentyFourFacts - eightFacts).toBeLessThanOrEqual(4);
   });
 
+  it("does not inflate first-meeting familiarity when model weights concentrate on known dimensions", () => {
+    const memories = makeMemories(2);
+    const dimensionWeights = Object.fromEntries(CATEGORIES.map(category => [category,
+      memories.some(memory => memory.category === category) ? 0.5 : 0,
+    ]));
+    const components = deriveUnderstandingComponents({
+      memories, dimensionWeights, positiveFeedback: 0, negativeFeedback: 0,
+      correctedMemories: 0, observationSessions: 1, observationSpanDays: 0, now: NOW,
+    });
+    expect(calculateUnderstandingScore(components)).toBeLessThanOrEqual(10);
+    expect(calculateUnderstandingScore(components)).toBeGreaterThanOrEqual(5);
+  });
+
   it("grows gradually with independent conversations, elapsed time and feedback", () => {
     const progression = [
       deriveScore({ memories: 3, sessions: 1, spanDays: 0 }),
