@@ -358,9 +358,9 @@ export function ZhiweiApp() {
 const ABOUT_LOGOS = [
   { src: "/about/seu-emblem.png", alt: "东南大学校徽", kind: "round" },
   { src: "/about/seu-chem.png", alt: "东南大学化学化工学院院徽", kind: "round" },
-  { src: "/about/seu-cs.png", alt: "东南大学计算机学院计算机科学徽标", kind: "round" },
-  { src: "/about/seu-science-park.png", alt: "东南大学国家大学科技园", kind: "wide" },
-  { src: "/about/aliyun-cloud.png", alt: "阿里云", kind: "wide" },
+  { src: "/about/seu-cs.png", alt: "东南大学计算机学院院徽", kind: "cs" },
+  { src: "/about/seu-science-park.png", alt: "东南大学国家大学科技园", kind: "park" },
+  { src: "/about/aliyun-cloud.png", alt: "阿里云", kind: "wordmark" },
 ] as const;
 
 const PROJECT_MEMBERS = [

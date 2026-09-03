@@ -5,16 +5,20 @@
   },
   "seu-chem.png": {
     "source": "https://chem.seu.edu.cn/_upload/article/images/d8/bc/389bb7894986875c019d3cb3e7ef/9bff40a3-4cfa-4fc1-b0bc-c68c1da904d6.png",
-    "page": "https://chem.seu.edu.cn/xyyh/list.htm"
+    "page": "https://chem.seu.edu.cn/xyyh/list.htm",
+    "processing": "仅裁去官方原图四周透明留白（原图 963×943，裁切范围 x=175..787、y=165..777）；徽标像素、颜色、透明度和宽高比例均保持不变"
   },
   "seu-cs.png": {
-    "source": "https://cse.seu.edu.cn/_upload/article/images/88/45/7a16c78e42479d5044cbdccf4ff4/969ae2e2-acc5-4de5-985e-27a937c49797.png",
-    "page": "https://cse.seu.edu.cn/49478/list.htm",
-    "assetName": "东南大学计算机科学拔尖学生培养基地徽标"
+    "source": "https://cs.seu.edu.cn/_upload/tpl/0b/77/2935/template2935/images/logo.png",
+    "page": "https://cs.seu.edu.cn/",
+    "assetName": "东南大学计算机科学与工程学院官网页眉圆形院徽（从页眉标识左端裁切）",
+    "processing": "裁取官方页眉原图左端 63×63 像素院徽，等比放大后置于 512×512 透明画布；原始白色图形与透明度保持不变"
   },
   "seu-science-park.png": {
-    "source": "https://www.seuiec.com/storage/topimg/20210120/d7aYRzoCIEtYTquNwYpiqASDcsEJD9X47MCIqTbH.png",
-    "page": "https://www.seuiec.com/fbrandActivity/activityImageDetails/6/"
+    "source": "https://sp.seu.edu.cn/_upload/article/images/b7/63/11993bb54c55976edfda9673421e/71121906-e87e-4074-95ea-8c1bfbc53dbb.png",
+    "page": "https://sp.seu.edu.cn/",
+    "assetName": "东南大学国家大学科技园中英文彩色组合标识",
+    "processing": "仅裁去官方原图外围留白，标识图形、颜色和标准字均保持不变"
   },
   "aliyun-cloud.png": {
     "source": "https://img.alicdn.com/imgextra/i4/O1CN01cMRNZN1Q3rqeuFGkP_!!6000000001921-55-tps-296-37.svg",
