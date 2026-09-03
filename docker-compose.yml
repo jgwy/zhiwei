@@ -24,8 +24,8 @@ services:
     command: ["npm", "run", "db:migrate"]
     environment: &app-env
       DATABASE_URL: postgres://zhiwei:zhiwei@postgres:5432/zhiwei
-      ANON_COOKIE_SECRET: ${ANON_COOKIE_SECRET:-local-development-cookie-secret-change-before-deploy}
-      INTERNAL_MCP_TOKEN: ${INTERNAL_MCP_TOKEN:-local-development-mcp-token}
+      ANON_COOKIE_SECRET: ${ANON_COOKIE_SECRET:?Set ANON_COOKIE_SECRET in .env}
+      INTERNAL_MCP_TOKEN: ${INTERNAL_MCP_TOKEN:?Set INTERNAL_MCP_TOKEN in .env}
       MEMORY_MCP_URL: http://memory-mcp:4100/mcp
       SCIENCE_MCP_URL: http://science-mcp:4200/mcp
       MODEL_PROVIDER: ${MODEL_PROVIDER:-scripted}
@@ -36,6 +36,7 @@ services:
       MODEL_BASE_URL: ${MODEL_BASE_URL:-}
       MODEL_PRICING_REFRESH_HOURS: ${MODEL_PRICING_REFRESH_HOURS:-24}
       DEV_MODE: ${DEV_MODE:-true}
+      COMPETITION_MODE: ${COMPETITION_MODE:-false}
     depends_on:
       postgres:
         condition: service_healthy

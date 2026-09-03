@@ -1019,11 +1019,39 @@ export class FaultGateway extends ScriptedGateway {
 
 export function getModelGateway(): ModelGateway {
   const provider = process.env.MODEL_PROVIDER ?? "scripted";
+  validateCompetitionModelConfig(provider);
   if (["aliyun", "bailian", "aliyun-bailian"].includes(provider)) return new AliyunBailianGateway();
   if (provider === "scripted") return new ScriptedGateway();
   if (provider === "replay") return new ReplayGateway();
   if (provider === "fault") return new FaultGateway();
   throw new Error(`不支持的模型供应商配置：${provider}`);
+}
+
+export function validateCompetitionModelConfig(provider: string): void {
+  if (process.env.COMPETITION_MODE !== "true") return;
+  if (!["aliyun", "bailian", "aliyun-bailian"].includes(provider)) {
+    throw new Error("比赛模式只允许使用阿里云百炼模型供应商");
+  }
+  for (const [name, fallback] of [
+    ["MODEL_DIALOGUE_NAME", "qwen-plus-character"],
+    ["MODEL_BACKGROUND_NAME", "qwen3.8-flash"],
+    ["MODEL_EMBEDDING_NAME", "qwen3.7-text-embedding"],
+  ] as const) {
+    if (!(process.env[name] ?? fallback).toLowerCase().startsWith("qwen")) {
+      throw new Error(`比赛模式要求 ${name} 使用 Qwen 系列模型`);
+    }
+  }
+  let base: URL;
+  try {
+    base = new URL(process.env.MODEL_BASE_URL ?? "");
+  } catch {
+    throw new Error("比赛模式缺少合法的阿里云百炼 MODEL_BASE_URL");
+  }
+  if (base.protocol !== "https:"
+    || !base.hostname.endsWith("aliyuncs.com")
+    || !base.pathname.endsWith("/compatible-mode/v1")) {
+    throw new Error("比赛模式要求 MODEL_BASE_URL 使用阿里云百炼 HTTPS OpenAI 兼容地址");
+  }
 }
 
 function buildDialogueSystem(context: CompiledContext, factBrief?: FactBriefOutput | null) {

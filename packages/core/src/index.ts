@@ -1,4 +1,5 @@
 export * from "./context";
+export * from "./config";
 export * from "./claims";
 export * from "./db";
 export * from "./mcp-client";

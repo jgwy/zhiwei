@@ -20,6 +20,7 @@ import {
   publishPersonalSkill,
   recordMcpCall,
   recordMemoryUsage,
+  resolveSecret,
   restoreMemoryVersion,
   searchMemories,
   setMemoryEmbedding,
@@ -28,7 +29,7 @@ import {
 import { z } from "zod";
 
 const port = Number(process.env.MCP_PORT ?? 4100);
-const token = process.env.INTERNAL_MCP_TOKEN ?? "local-development-mcp-token";
+const token = resolveSecret("INTERNAL_MCP_TOKEN", "local-development-mcp-token");
 const protocolVersion = "2026-07-28";
 const serverInfo = { name: "zhiwei-memory-mcp", version: "0.2.0" };
 

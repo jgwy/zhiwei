@@ -21,7 +21,8 @@
     "generate:skills": "node packages/skills/scripts/generate-manifest.mjs",
     "validate:skills": "node packages/skills/scripts/validate-skills.mjs",
     "db:migrate": "npm run migrate --workspace @zhiwei/core",
-    "compose:up": "docker compose up --build",
+    "competition:preflight": "node scripts/competition-preflight.mjs",
+    "compose:up": "npm run competition:preflight && docker compose up --build",
     "compose:down": "docker compose down",
     "package:source": "node scripts/package-source.mjs"
   },

@@ -1,3 +1,5 @@
+import { resolveSecret } from "./config";
+
 export async function callMemoryMcp<T>(input: {
   tool: string;
   userId: string;
@@ -11,7 +13,7 @@ export async function callMemoryMcp<T>(input: {
     headers: {
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
-      authorization: `Bearer ${process.env.INTERNAL_MCP_TOKEN ?? "local-development-mcp-token"}`,
+      authorization: `Bearer ${resolveSecret("INTERNAL_MCP_TOKEN", "local-development-mcp-token")}`,
       "mcp-protocol-version": "2026-07-28",
       "mcp-method": "tools/call",
       "mcp-name": input.tool,

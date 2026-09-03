@@ -1,6 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 
 const cookieName = "zhiwei_uid";
+const fallbackCookieSecret = "local-development-cookie-secret-change-before-deploy";
+
+// The proxy may run in an Edge-compatible runtime, so keep this guard Web API only.
+function requireCookieSecret(): string {
+  const secret = process.env.ANON_COOKIE_SECRET;
+  const hardened = process.env.NODE_ENV === "production"
+    || process.env.ZHIWI_FORCE_PRODUCTION_CHECKS === "true"
+    || process.env.COMPETITION_MODE === "true";
+  if (secret && (!hardened || (secret !== fallbackCookieSecret && secret.length >= 32))) return secret;
+  if (hardened) throw new Error("生产或比赛环境缺少有效的 ANON_COOKIE_SECRET");
+  return fallbackCookieSecret;
+}
 
 export async function proxy(request: NextRequest) {
   const response = NextResponse.next();
@@ -27,13 +39,18 @@ export const config = {
 async function valid(value: string) {
   const [id, issuedAt, signature] = value.split(".");
   if (!id || !issuedAt || !signature) return false;
-  return signature === (await sign(`${id}.${issuedAt}`));
+  return timingSafeEqualStrings(signature, await sign(`${id}.${issuedAt}`));
+}
+
+function timingSafeEqualStrings(left: string, right: string): boolean {
+  if (left.length !== right.length) return false;
+  let diff = 0;
+  for (let index = 0; index < left.length; index += 1) diff |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  return diff === 0;
 }
 
 async function sign(value: string) {
-  const secret =
-    process.env.ANON_COOKIE_SECRET ??
-    "local-development-cookie-secret-change-before-deploy";
+  const secret = requireCookieSecret();
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(secret),
@@ -50,4 +67,3 @@ function base64url(bytes: Uint8Array) {
   bytes.forEach((byte) => (binary += String.fromCharCode(byte)));
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
-
