@@ -117,7 +117,7 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #222; outline-
 @keyframes about-backdrop-in { from { opacity: 0; } }
 @keyframes about-panel-in { from { opacity: 0; transform: translateY(8px) scale(.985); } }
 
-.chat-column { min-width: 0; display: grid; grid-template-rows: 65px minmax(0, 1fr) auto; position: relative; }
+.chat-column { min-width: 0; min-height: 0; display: grid; grid-template-rows: 65px minmax(0, 1fr) auto; position: relative; }
 .chat-header { display: grid; grid-template-columns: 40px 1fr 40px; align-items: center; border-bottom: 1px solid #f0f0f0; padding: 0 20px; }
 .chat-header > div { text-align: center; display: flex; flex-direction: column; gap: 3px; }
 .chat-header strong { font-size: 14px; font-weight: 590; }
