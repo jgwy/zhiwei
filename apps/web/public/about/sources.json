@@ -15,10 +15,12 @@
     "processing": "裁取官方页眉原图左端 63×63 像素院徽，等比放大后置于 512×512 透明画布；原始白色图形与透明度保持不变"
   },
   "seu-science-park.png": {
-    "source": "https://sp.seu.edu.cn/_upload/article/images/b7/63/11993bb54c55976edfda9673421e/71121906-e87e-4074-95ea-8c1bfbc53dbb.png",
-    "page": "https://sp.seu.edu.cn/",
-    "assetName": "东南大学国家大学科技园中英文彩色组合标识",
-    "processing": "仅裁去官方原图外围留白，标识图形、颜色和标准字均保持不变"
+    "source": "https://sp.seu.edu.cn/_upload/tpl/07/79/1913/template1913/images/logo.png",
+    "archivedSource": "https://web.archive.org/web/20211001155934id_/https://sp.seu.edu.cn/_upload/tpl/07/79/1913/template1913/images/logo.png",
+    "page": "https://web.archive.org/web/20211029222741id_/https://sp.seu.edu.cn/",
+    "currentReference": "https://sp.seu.edu.cn/_upload/tpl/0a/c9/2761/template2761/image/logo.png",
+    "assetName": "东南大学国家大学科技园旧版官网页眉彩色透明横向组合标识",
+    "processing": "直接复用 2019—2022 年科技园中文官网左上角引用的官方 486×61 RGBA PNG，仅按项目文件名保存；图形、颜色、标准字、透明度和画布均未修改。官网原始路径现已下线，文件由互联网档案馆对应快照恢复；未使用灰底组合图或截图。"
   },
   "aliyun-cloud.png": {
     "source": "https://img.alicdn.com/imgextra/i4/O1CN01cMRNZN1Q3rqeuFGkP_!!6000000001921-55-tps-296-37.svg",
