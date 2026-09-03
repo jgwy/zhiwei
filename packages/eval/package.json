@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "eval": "node --import tsx src/run.ts",
+    "eval:real-memory": "node --import tsx src/run-real-memory-lifecycle.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

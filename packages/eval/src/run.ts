@@ -11,9 +11,9 @@ import {
   type MemoryCategory,
   type MemoryRecord,
 } from "@zhiwei/core";
-import { ScriptedAdapter } from "@zhiwei/model-gateway";
+import { ScriptedGateway } from "@zhiwei/model-gateway";
 
-const adapter = new ScriptedAdapter();
+const gateway = new ScriptedGateway();
 const cases: Array<{ input: string; expected: MemoryCategory[] }> = [
   { input: "我叫小满，以后叫我小满就好", expected: ["basic"] },
   { input: "我很喜欢看科幻小说。", expected: ["interest"] },
@@ -45,7 +45,7 @@ let falseNegative = 0;
 const outputs: string[] = [];
 
 for (const fixture of cases) {
-  const reflection = await adapter.reflect({
+  const reflection = await gateway.reflect({
     userId: crypto.randomUUID(),
     conversationId: crypto.randomUUID(),
     messageId: crypto.randomUUID(),
@@ -53,7 +53,9 @@ for (const fixture of cases) {
     context,
     kind: "chat",
   });
-  const actual = new Set(reflection.memories.map((memory) => memory.category));
+  const actual = new Set(
+    reflection.data.memories.flatMap((memory) => "category" in memory ? [memory.category] : []),
+  );
   const expected = new Set(fixture.expected);
   for (const category of actual) {
     if (expected.has(category)) truePositive += 1;
@@ -63,13 +65,18 @@ for (const fixture of cases) {
     if (!actual.has(category)) falseNegative += 1;
   }
   let reply = "";
-  for await (const chunk of adapter.streamDialogue({
+  let completed = false;
+  for await (const event of gateway.streamDialogue({
     userId: crypto.randomUUID(),
     conversationId: crypto.randomUUID(),
     messageId: crypto.randomUUID(),
     content: fixture.input,
     context,
-  })) reply += chunk;
+  })) {
+    if (event.type === "text.delta") reply += event.delta;
+    if (event.type === "completed") completed = true;
+  }
+  if (!completed) throw new Error("离线评测中的脚本回复未正常结束");
   outputs.push(reply);
 }
 
@@ -137,7 +144,9 @@ const scienceClaims = checkAtomicClaims(
 
 const report = {
   generatedAt: new Date().toISOString(),
-  adapter: adapter.id,
+  gateway: gateway.id,
+  transportInterface: "ModelGateway",
+  fixtureMode: "scripted-free",
   diagnosticsOnly: true,
   metrics: {
     memoryPrecision: round(precision),

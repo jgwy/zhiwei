@@ -59,11 +59,13 @@ describe("memory retrieval", () => {
 
     expect(result).toHaveLength(1);
     expect(result[0]?.content).toBe("喜欢周末跑步");
-    expect(database.query).toHaveBeenCalledTimes(1);
+    expect(database.query).toHaveBeenCalledTimes(2);
     const [sql, parameters] = database.query.mock.calls[0]!;
     expect(sql).toContain("WHERE m.user_id = $1");
     expect(parameters[0]).toBe(userId);
-    expect(String(parameters[1]).split(",")).toHaveLength(1024);
+    const [vectorSql, vectorParameters] = database.query.mock.calls[1]!;
+    expect(vectorSql).toContain("embedding_v2 <=>");
+    expect(String(vectorParameters[1]).split(",")).toHaveLength(1024);
   });
 
   it("falls back to keyword retrieval when an embedding has the wrong dimension", async () => {
@@ -99,7 +101,7 @@ describe("memory retrieval", () => {
     expect(database.query.mock.calls[1]?.[1]).toEqual([conversationId, userId, "我自己改的标题", "manual"]);
   });
 
-  it("writes every model-run column with exactly 27 positional parameters", async () => {
+  it("writes every model-run column with exactly 28 positional parameters", async () => {
     database.query.mockResolvedValue({ rowCount: 1, rows: [] });
     const userId = crypto.randomUUID();
     const conversationId = crypto.randomUUID();
@@ -127,6 +129,15 @@ describe("memory retrieval", () => {
       errorCode: undefined,
       thinking: false,
       sources: [{ title: "官方来源", url: "https://example.invalid/source" }],
+      attempts: [{
+        model: "qwen-plus-character",
+        transport: "openai-responses",
+        requestId: "request-test",
+        usage: { inputTokens: 100, outputTokens: 50, cachedInputTokens: 20, reasoningTokens: 0, searchCalls: 0 },
+        durationMs: 987,
+        finishReason: "completed",
+        outcome: "completed",
+      }],
       promptVersion: "v2",
       status: "completed",
       durationMs: 987,
@@ -135,12 +146,13 @@ describe("memory retrieval", () => {
 
     expect(database.query).toHaveBeenCalledTimes(1);
     const [sql, parameters] = database.query.mock.calls[0]!;
-    expect(sql).toContain("$27");
-    expect(parameters).toHaveLength(27);
+    expect(sql).toContain("$28");
+    expect(parameters).toHaveLength(28);
     expect(parameters[5]).toBe("qwen-plus-character");
     expect(parameters[8]).toBe(0.000183);
     expect(JSON.parse(parameters[24])).toEqual([{ title: "官方来源", url: "https://example.invalid/source" }]);
     expect(parameters[25]).toBe("v2");
     expect(parameters[26]).toBe("openai-responses");
+    expect(JSON.parse(parameters[27])).toEqual([expect.objectContaining({ outcome: "completed" })]);
   });
 });

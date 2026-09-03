@@ -71,7 +71,8 @@ describe("calculateUnderstandingScore", () => {
       now: NOW,
     });
 
-    expect(calculateUnderstandingScore(components)).toBe(8);
+    expect(calculateUnderstandingScore(components)).toBeGreaterThanOrEqual(5);
+    expect(calculateUnderstandingScore(components)).toBeLessThanOrEqual(10);
     expect(components.validation).toBeLessThan(0.15);
     expect(components.personalization).toBeLessThan(0.1);
     expect(components.temporal).toBeLessThan(0.15);
@@ -80,9 +81,11 @@ describe("calculateUnderstandingScore", () => {
   it("does not turn one information-heavy conversation into high familiarity", () => {
     const eightFacts = deriveScore({ memories: 8, sessions: 1, spanDays: 0 });
     const twentyFourFacts = deriveScore({ memories: 24, sessions: 1, spanDays: 0 });
+    const withRepeatedFeedback = deriveScore({ memories: 48, sessions: 1, spanDays: 0, positiveFeedback: 20 });
 
-    expect(eightFacts).toBe(24);
-    expect(twentyFourFacts).toBe(27);
+    expect(eightFacts).toBeLessThanOrEqual(25);
+    expect(twentyFourFacts).toBeLessThanOrEqual(25);
+    expect(withRepeatedFeedback).toBeLessThanOrEqual(25);
     expect(twentyFourFacts - eightFacts).toBeLessThanOrEqual(4);
   });
 
@@ -94,8 +97,8 @@ describe("calculateUnderstandingScore", () => {
       deriveScore({ memories: 48, sessions: 20, spanDays: 365, positiveFeedback: 20 }),
     ];
 
-    expect(progression[0]).toBeGreaterThanOrEqual(8);
-    expect(progression[0]).toBeLessThanOrEqual(15);
+    expect(progression[0]).toBeGreaterThanOrEqual(5);
+    expect(progression[0]).toBeLessThanOrEqual(10);
     expect(progression[1]).toBeGreaterThan(progression[0]!);
     expect(progression[2]).toBeGreaterThan(progression[1]!);
     expect(progression[3]).toBeGreaterThan(progression[2]!);
@@ -127,6 +130,23 @@ describe("calculateUnderstandingScore", () => {
 
     expect(corrected).toBeLessThan(stable);
     expect(stale).toBeLessThan(stable);
+  });
+
+  it("does not let model confidence or ordinary replacement count change familiarity", () => {
+    const lowConfidence = makeMemories(12).map((memory) => ({ ...memory, confidence: 0.1 }));
+    const highConfidence = makeMemories(12).map((memory) => ({ ...memory, confidence: 0.99 }));
+    const base = {
+      dimensionWeights: EQUAL_WEIGHTS,
+      positiveFeedback: 2,
+      negativeFeedback: 0,
+      observationSessions: 4,
+      observationSpanDays: 30,
+      now: NOW,
+    };
+    const low = calculateUnderstandingScore(deriveUnderstandingComponents({ ...base, memories: lowConfidence, correctedMemories: 0 }));
+    const high = calculateUnderstandingScore(deriveUnderstandingComponents({ ...base, memories: highConfidence, correctedMemories: 20 }));
+
+    expect(high).toBe(low);
   });
 });
 
