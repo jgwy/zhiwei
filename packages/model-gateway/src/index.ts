@@ -14,6 +14,8 @@ import {
 } from "@zhiwei/core";
 
 export * from "./gateway";
+export * from "./lifecycle";
+export * from "./response-quality";
 
 export type DialogueInput = {
   userId: string;
@@ -72,7 +74,7 @@ export class ScriptedAdapter implements ModelAdapter {
     const mood = extractMood(input.content);
     const allMemoryTexts = [
       ...input.context.memories.map((memory) => memory.content),
-      ...memories.map((memory) => memory.content),
+      ...memories.flatMap((memory) => "content" in memory ? [memory.content] : []),
     ];
     const dimensionWeights = buildDimensionWeights(
       allMemoryTexts,
@@ -279,6 +281,16 @@ function buildReply(input: DialogueInput): string {
 function extractMemories(input: ReflectionInput): MemoryMutation[] {
   const text = input.content.trim();
   if (!text) return [];
+  if (/忘掉|忘记|别再提|不再引用/u.test(text)) {
+    const current = input.context.memories[0];
+    return current ? [{
+      operation: "withdraw",
+      memoryId: current.id,
+      expectedVersionId: current.versionId,
+      reason: "用户明确要求停止使用这条认识。",
+      evidenceMessageIds: [input.messageId],
+    }] : [];
+  }
   if (input.kind === "onboarding" && input.questionCategory) {
     return [
       {
@@ -307,20 +319,20 @@ function extractMemories(input: ReflectionInput): MemoryMutation[] {
     const existing = input.context.memories.find(
       (memory) => memory.category === category && /其实|不是|改成|记错/.test(text),
     );
-    results.push({
-      operation: existing ? "supersede" : "create",
-      memoryId: existing?.id,
+    const common = {
       category,
       content,
       tier,
       confidence,
-      validUntil:
-        tier === "short" ? new Date(Date.now() + 30 * 86_400_000).toISOString() : null,
+      validUntil: tier === "short" ? new Date(Date.now() + 7 * 86_400_000).toISOString() : null,
       reason: existing
-        ? "用户在对话中给出了新的、更高优先级的表述。"
+        ? "用户在对话中明确纠正了过往认识。"
         : "用户在自然对话中提供了对以后交流有价值的信息。",
       evidenceMessageIds: [input.messageId],
-    });
+    };
+    results.push(existing
+      ? { operation: "supersede", memoryId: existing.id, expectedVersionId: existing.versionId, ...common }
+      : { operation: "create", ...common });
   };
 
   const name = text.match(/(?:我叫|叫我)([\u4e00-\u9fa5A-Za-z0-9_-]{1,16})/);
@@ -342,10 +354,7 @@ function extractMemories(input: ReflectionInput): MemoryMutation[] {
   if (/以前|小时候|曾经|那一年|经历过/.test(text)) {
     add("experience", `重要经历：${text.slice(0, 140)}`, "long", 0.74);
   }
-  if (/别再提|不要提|忘掉/.test(text)) {
-    add("boundary", `以后不要主动提及：${text.slice(0, 100)}`, "long", 0.94);
-  }
-  return uniqueMemories(results).slice(0, 5);
+  return uniqueMemories(results).slice(0, 3);
 }
 
 function onboardingMemoryText(category: MemoryCategory, answer: string): string {
@@ -428,7 +437,9 @@ function countMatches(text: string, words: string[]): number {
 function uniqueMemories(memories: MemoryMutation[]): MemoryMutation[] {
   const seen = new Set<string>();
   return memories.filter((memory) => {
-    const key = `${memory.category}:${memory.content}`;
+    const key = "content" in memory
+      ? `${memory.category}:${memory.content}`
+      : `${memory.operation}:${memory.memoryId}:${memory.expectedVersionId}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;

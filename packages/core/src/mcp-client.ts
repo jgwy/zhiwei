@@ -3,6 +3,7 @@ export async function callMemoryMcp<T>(input: {
   userId: string;
   arguments?: Record<string, unknown>;
   traceId?: string;
+  role?: "runtime" | "developer";
 }): Promise<T> {
   const url = process.env.MEMORY_MCP_URL ?? "http://127.0.0.1:4100/mcp";
   const response = await fetch(url, {
@@ -15,6 +16,7 @@ export async function callMemoryMcp<T>(input: {
       "mcp-method": "tools/call",
       "mcp-name": input.tool,
       "x-zhiwei-user": input.userId,
+      "x-zhiwei-role": input.role ?? "runtime",
       ...(input.traceId ? { traceparent: input.traceId } : {}),
     },
     body: JSON.stringify({
@@ -25,19 +27,22 @@ export async function callMemoryMcp<T>(input: {
         name: input.tool,
         arguments: input.arguments ?? {},
         _meta: {
+          "io.modelcontextprotocol/protocolVersion": "2026-07-28",
           "io.modelcontextprotocol/clientInfo": {
             name: "zhiwei-runtime",
             version: "0.1.0",
           },
+          "io.modelcontextprotocol/clientCapabilities": {},
+          ...(input.traceId ? { traceparent: input.traceId } : {}),
         },
       },
     }),
   });
+  const payload = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(`Memory MCP ${input.tool} 请求失败：${response.status}`);
+    throw new Error(payload?.error?.message ?? `Memory MCP ${input.tool} 请求失败：${response.status}`);
   }
-  const payload = await response.json();
+  if (!payload) throw new Error("Memory MCP 返回了无效响应");
   if (payload.error) throw new Error(payload.error.message ?? "Memory MCP 返回错误");
-  return payload.result as T;
+  return (payload.result?.structuredContent ?? payload.result) as T;
 }
-

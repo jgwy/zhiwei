@@ -1,18 +1,41 @@
 # Memory 输出协议
 
-每次 Reflection 返回 `memories[]`：
+每次 Reflection 返回 `memories[]`，数组硬上限为 3。
 
-- `operation`: `create`、`supersede` 或 `promote`。
-- `memoryId`: 仅在更新既有记忆时提供。
+## 公共字段
+
+- `operation`: `create`、`supersede`、`promote` 或 `withdraw`。
+- `reason`: 此证据为什么足以产生该动作。
+- `evidenceMessageIds`: 支持该动作的原始用户消息 ID；必须包含当前源消息。
+
+## 创建与新版本字段
+
+`create`、`supersede` 与 `promote` 需要：
+
 - `category`: basic、goal、interest、expression、emotion、experience、challenge、boundary。
 - `content`: 面向用户可读的一条认识，不超过 600 字。
-- `tier`: short 或 long。
-- `confidence`: 0–1。
-- `validUntil`: 短期记忆的失效时间；长期可为 null。
-- `reason`: 为什么此证据足以产生这条变化。
-- `evidenceMessageIds`: 产生该记忆的原始消息 ID。
+- `tier`: `short` 或 `long`；`promote` 的目标必须为 `long`。
+- `confidence`: 0–1，仅作开发诊断信息。
+- `validUntil`: `short` 提供 1–30 天后的时间；`long` 为 null。
 
-Memory MCP 只接受通过 Schema 校验的输出，并以追加版本方式写入。
+`supersede`、`promote` 与 `withdraw` 还需要：
+
+- `memoryId`: 要改变的记忆根 ID。
+- `expectedVersionId`: 模型在当前上下文中看到的活动版本 ID，用于并发保护。
+
+`withdraw` 不提供新的 content、category、tier 或 validUntil。
+
+Memory MCP 只接受通过 Schema、当前用户证据归属和版本检查的输出，并以追加版本方式写入。本协议不产生候选态，合法动作会直接生效。
+
+## 长期记忆收拢
+
+当活动长期记忆达到 48 条，或估算上下文超过 12k Token 时，将它们向约 32 条、8k Token 收拢。
+
+- 收拢方案只合并同一 category、同一主题且语义兼容的记忆；每个输出仍是一条可独立更新的认识。
+- 每个源版本只能进入一个收拢结果，输出保留全部 `sourceVersionIds`。
+- 方案生成后由一次独立的结构化调用逐组核对遗漏、矛盾和过度归纳；三项均为空才可以提交。
+- 方案与核对内容只进入 Trace，不作为记忆正文或新证据。
+- 提交在一个版本 CAS 事务中完成；源版本已变化或核对未通过时整批不写入。
 
 ## 分类边界
 
@@ -27,8 +50,8 @@ Memory MCP 只接受通过 Schema 校验的输出，并以追加版本方式写�
 
 一句话包含多个类别时拆成多条。例如“刚进入职场，项目压力很大，希望你先听我说”应分别形成 `basic`、`challenge` 与 `expression`，不能合并成 `goal`。
 
-## 禁止的过度推断
+## 语义粒度
 
-- 不从“先听我说”“不要建议”推断防御性、控制欲、依赖或人格特质。
-- 不把暂时的压力写成长期情绪模式，不把一次低落写成心理健康结论。
-- 不用“高权重即时指令”等内部措辞面向用户；记忆正文应是克制、自然、可纠正的认识。
+- 将“先听我说”“现在不要建议”保存为具体的交流偏好，不延伸为稳定人格特质。
+- 将暂时的压力保存为近期处境，稳定的长期认识需要更持久或更明确的证据。
+- 记忆正文面向用户可读，采用克制、自然、可纠正的表述，把并发、权重和任务状态留在开发记录中。
