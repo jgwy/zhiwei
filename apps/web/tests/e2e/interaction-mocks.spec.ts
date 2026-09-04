@@ -57,6 +57,20 @@ async function push(page: Page, index: number, event: Record<string, unknown>) {
   await page.evaluate(({ index, event }) => (window as any).testStreams[index].push(event), { index, event });
 }
 
+test("助手消息编译 markdown，用户消息保持原文", async ({ page }) => {
+  await mockApp(page);
+  const composer = page.getByLabel("消息内容");
+  await composer.fill("**我自己打的星号**");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await push(page, 0, { type: "text.delta", delta: "**核心结论**\n\n- 第一点\n- 第二点" });
+  await push(page, 0, { type: "message.completed", messageId: "server-assistant-0", status: "completed" });
+  await expect(page.locator(".message.user .message-content")).toHaveText("**我自己打的星号**");
+  await expect(page.locator(".message.user strong")).toHaveCount(0);
+  const markdown = page.locator(".message.assistant .message-markdown");
+  await expect(markdown.locator("strong")).toHaveText("核心结论");
+  await expect(markdown.locator("li")).toHaveText(["第一点", "第二点"]);
+});
+
 test("增量先于完成显示，后台刷新不吞回合，旧 SSE 不干扰下一轮", async ({ page }) => {
   const requests = await mockApp(page);
   await expect(page.locator(".empty-chart")).toHaveCount(1);
