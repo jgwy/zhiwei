@@ -150,11 +150,16 @@ export class AliyunBailianGateway implements ModelGateway {
       const buffer = new StreamTextBuffer();
       let emitted = false;
       let content = "";
-      const retryHint = attempt > 0
-        ? lastError instanceof Error && lastError.message === "invalid_generated_text:premature-memory-claim"
-          ? "上次把仍在后台处理的记忆操作误说成已经完成。请只确认收到这项意图，并说明完成后会出现更新提示。"
-          : "上次输出有技术异常，请重新输出完整、连贯的正文。"
-        : undefined;
+      let retryHint: string | undefined;
+      if (attempt > 0) {
+        if (lastError instanceof Error && lastError.message === "invalid_generated_text:premature-memory-claim") {
+          retryHint = "上次把仍在后台处理的记忆操作误说成已经完成。请只确认收到这项意图，并说明完成后会出现更新提示。";
+        } else if (lastError instanceof Error && lastError.message === "invalid_generated_text:internal-preface") {
+          retryHint = "上次把内部斟酌写进了正文。请直接说出给用户的回应，思路与角色旁白不作为聊天消息输出。";
+        } else {
+          retryHint = "上次输出有技术异常，请重新输出完整、连贯的正文。";
+        }
+      }
       const request = prepareDialogueRequest(input, { instructions, retryHint, maxInputTokens: contextBudget });
       const { messages } = request;
       await options.onRequest?.(requestSnapshot({
@@ -169,6 +174,7 @@ export class AliyunBailianGateway implements ModelGateway {
           firstTokenMs ??= Date.now() - started;
           const safe = buffer.push(delta);
           if (!safe) continue;
+          if (!emitted && !flashOnly) assertNoInternalPreface(safe);
           if (!emitted && pendingMemoryControl) {
             assertMemoryControlRemainsPending(safe);
           }
@@ -179,6 +185,7 @@ export class AliyunBailianGateway implements ModelGateway {
         }
         const tail = buffer.finish();
         if (tail) {
+          if (!emitted && !flashOnly) assertNoInternalPreface(tail);
           if (!emitted && pendingMemoryControl) {
             assertMemoryControlRemainsPending(tail);
           }
@@ -1166,6 +1173,12 @@ function assertReplyIsNotEcho(reply: string, userInput: string): void {
 function assertMemoryControlRemainsPending(prefix: string): void {
   if (/(?:已经|我已|已替你|已为你|这就).{0,16}(?:记住|忘掉|忘记|撤回|更新|修正)|(?:记住|忘掉|忘记|撤回|更新|修正)(?:好了|完成了)/u.test(prefix)) {
     throw new Error("invalid_generated_text:premature-memory-claim");
+  }
+}
+
+function assertNoInternalPreface(prefix: string): void {
+  if (/^\s*(?:<think(?:ing)?[\s>]|[（(]\s*(?:思考(?:中|过程|[:：])|内心(?:独白|活动|[:：])|心理活动|我(?:应该|需要|先)(?:分析|判断|理解|思考|安慰|回应|确认|评估)))/iu.test(prefix)) {
+    throw new Error("invalid_generated_text:internal-preface");
   }
 }
 

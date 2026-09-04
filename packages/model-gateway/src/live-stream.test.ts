@@ -87,6 +87,40 @@ describe("live stream protocol", () => {
     expect(mocks.chat).toHaveBeenCalledTimes(1);
   });
 
+  it("never forwards provider reasoning fields while preserving normal parentheses in the answer", async () => {
+    const visible = "这里的关键是把两件事分开：身体不适需要认真观察，学习压力（尤其是担心漏掉推导）也值得被听见。";
+    mocks.chat.mockResolvedValue({ async *[Symbol.asyncIterator]() {
+      yield { choices: [{ delta: { reasoning_content: "（我应该先分析，再决定怎么安慰用户。）" } }] };
+      yield { choices: [{ delta: { content: visible } }] };
+      yield { choices: [{ finish_reason: "stop" }], usage: { prompt_tokens: 20, completion_tokens: 30 } };
+    } });
+    const events: unknown[] = [];
+    let output = "";
+    for await (const event of new AliyunBailianGateway().streamDialogue(input())) {
+      events.push(event);
+      if (event.type === "text.delta") output += event.delta;
+    }
+    expect(output).toBe(visible);
+    expect(output).toContain("（尤其是担心漏掉推导）");
+    expect(JSON.stringify(events)).not.toContain("我应该先分析");
+    expect(JSON.stringify(events)).not.toContain("reasoning_content");
+  });
+
+  it("retries an internal preface before any text is visible, but keeps a normal term in parentheses", async () => {
+    const texts = ["（我需要分析用户现在的状态，然后选择一个合适的安慰方式。）你现在还好吗？", "（认知重评）是对解释角度的调整，不过你现在想先被听见，我们就先从这份难过说起。"];
+    mocks.chat.mockImplementation(async () => ({ async *[Symbol.asyncIterator]() {
+      yield { choices: [{ delta: { content: texts.shift() } }] };
+      yield { choices: [{ finish_reason: "stop" }], usage: { prompt_tokens: 20, completion_tokens: 30 } };
+    } }));
+    let output = "";
+    for await (const event of new AliyunBailianGateway().streamDialogue(input())) {
+      if (event.type === "text.delta") output += event.delta;
+    }
+    expect(output).toContain("（认知重评）");
+    expect(output).not.toContain("我需要分析");
+    expect(mocks.chat).toHaveBeenCalledTimes(2);
+  });
+
   it("stops on corruption across chunks and does not publish the held tail", () => {
     const buffer = new StreamTextBuffer();
     const prefix = "这是一段正常中文内容，足够达到首段验证所需的长度，可以先向用户逐步展示已经生成的部分。";

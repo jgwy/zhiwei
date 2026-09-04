@@ -38,10 +38,10 @@ describe("真实陪伴验收辅助逻辑", () => {
     expect(conservativeCompanionCost({ costCny: 0.3, unknownCalls: 2, inFlightReserveCny: 0.4 })).toBeCloseTo(1.2);
   });
 
-  it("八类轨迹均为3至4轮，检索失败明确区分注入上下文与Web路径", () => {
-    expect(companionScenarios).toHaveLength(8);
+  it("九类轨迹均为3至4轮，包含新增旁白检查并区分注入核验状态与Web路径", () => {
+    expect(companionScenarios).toHaveLength(9);
     expect(companionScenarios.every((scenario) => scenario.messages.length >= 3 && scenario.messages.length <= 4)).toBe(true);
-    expect(selectCompanionScenarios()).toHaveLength(7);
+    expect(selectCompanionScenarios()).toHaveLength(8);
     expect(selectCompanionScenarios("more-company,tone-repair").map((scenario) => scenario.id)).toEqual(["more-company", "tone-repair"]);
     expect(() => selectCompanionScenarios("sad-music,missing")).toThrow("unknown_companion_scenario");
     expect(() => selectCompanionScenarios("verification-unavailable")).toThrow("requires_direct_context_runner");

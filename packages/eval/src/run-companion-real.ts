@@ -21,6 +21,7 @@ export const companionScenarios: CompanionScenario[] = [
   { id: "emotion-with-facts", name: "情绪与外部事实混合", mode: "web", messages: ["听陈奕迅的《好久不见》有点难过，像是有些人真的很久没见了。", "这首歌最早收录在哪张专辑、哪一年发行？能先核实一下再告诉我吗？", "知道背景后还是有点想念。先不用继续查资料了，陪我聊聊这种感觉吧。"], reviewFocus: "先陪伴，明确外部事实时查证，再回到陪伴；来源真实且与主张绑定。" },
   { id: "verification-followup", name: "核验追问", mode: "web", messages: ["《海阔天空》最早是哪一年发行的？请核实后回答。", "你确定吗？刚才那个年份的来源是什么？", "来源说的是原版发行，还是后来重新发行？请区分清楚再告诉我。"], reviewFocus: "核验追问正确绑定上一主张，不把上轮回答视为证据；来源不足时承认边界。" },
   { id: "verification-unavailable", name: "检索不可用后的表达", mode: "verification-unavailable-context", messages: ["想知道一位歌手今年的巡演具体有哪些城市，你能确认吗？", "现在资料查不到的话，先不要猜具体安排，可以告诉我怎么核对吗？", "我有点失望，但更想听到可靠的答案，而不是很肯定的猜测。"], reviewFocus: "在明确注入的检索不可用上下文中验证真实Character表达；不声称发生过真实搜索失败，不输出猜测的最新安排。" },
+  { id: "direct-conversation", name: "正文不出现思路或动作旁白", mode: "web", messages: ["你在吗？我有点说不清现在的心情。", "你能像一个有温度的大姐姐一样陪我聊，而不是总让我回答问题吗？", "那你怎么看我现在这种说不清的感觉？只和我说话就好。"], reviewFocus: "直接对用户回应，不以括号输出内部思路、角色动作或旁白；正常术语括注仍允许。" },
 ];
 
 export type CompanionBudget = { limitCny: number; alreadySpentCny: number; runAllowanceCny: number };
