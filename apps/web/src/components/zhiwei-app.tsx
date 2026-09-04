@@ -41,6 +41,7 @@ import { InsightPanel } from "@/components/insight-panel";
 import { SettingsPanel } from "@/components/settings-panel";
 import { useToast } from "@/components/use-toast";
 import { WaitingReply } from "@/components/waiting-reply";
+import { MarkdownContent } from "@/components/markdown-content";
 
 const DeveloperPanel = dynamic(() => import("@/components/developer-panel").then((module) => module.DeveloperPanel), {
   loading: () => <div className="app-loading">正在打开开发者模式…</div>,
@@ -805,7 +806,7 @@ const Message = memo(function Message({ message, receipt, onFeedback, onRetry, o
   const assistant = message.role === "assistant";
   return (
     <article className={assistant ? "message assistant" : "message user"}>
-      <div className="message-content">{message.content || (message.metadata?.streaming ? <WaitingReply phase={typeof message.metadata.phase === "string" ? message.metadata.phase : undefined} stage={typeof message.metadata.phaseStage === "string" ? message.metadata.phaseStage : undefined} startedAt={typeof message.metadata.phaseStartedAt === "string" ? message.metadata.phaseStartedAt : undefined} /> : null)}</div>
+      <div className="message-content">{message.content ? (assistant ? <MarkdownContent content={message.content} /> : message.content) : (message.metadata?.streaming ? <WaitingReply phase={typeof message.metadata.phase === "string" ? message.metadata.phase : undefined} stage={typeof message.metadata.phaseStage === "string" ? message.metadata.phaseStage : undefined} startedAt={typeof message.metadata.phaseStartedAt === "string" ? message.metadata.phaseStartedAt : undefined} /> : null)}</div>
       {message.metadata?.status === "interrupted" ? <div className="message-status">回复中断了，可以重试。</div> : null}
       {message.metadata?.status === "stopped" ? <div className="message-status">已停止</div> : null}
       {Array.isArray(message.metadata?.sources) && message.metadata.sources.length ? <details className="message-sources"><summary>查看事实来源（{message.metadata.sources.length}）</summary>{message.metadata.sources.map((source: any) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer"><span>{source.title}</span>{source.siteName ? <small>{source.siteName}</small> : null}</a>)}</details> : null}
