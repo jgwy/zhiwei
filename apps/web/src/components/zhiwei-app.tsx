@@ -32,6 +32,7 @@ import { isNearChatBottom } from "@/lib/chat-scroll";
 import { resolveProfileReceiptMessageId } from "@/lib/profile-receipt";
 import { cacheConversation, mergeInflightTurn, prependMessagePage, type ConversationCache, type InflightTurn } from "@/lib/conversation-cache";
 import { createTextFrameBuffer } from "@/lib/text-frame-buffer";
+import { createClientId } from "@/lib/client-id";
 import { shouldSubmitOnEnter } from "@/lib/keyboard";
 import { browserTimeZone } from "@/lib/mood-date";
 import { Button } from "@/components/ui/button";
@@ -40,6 +41,7 @@ import { InsightPanel } from "@/components/insight-panel";
 import { SettingsPanel } from "@/components/settings-panel";
 import { useToast } from "@/components/use-toast";
 import { WaitingReply } from "@/components/waiting-reply";
+import { MarkdownContent } from "@/components/markdown-content";
 
 const DeveloperPanel = dynamic(() => import("@/components/developer-panel").then((module) => module.DeveloperPanel), {
   loading: () => <div className="app-loading">正在打开开发者模式…</div>,
@@ -358,8 +360,8 @@ export function ZhiweiApp() {
       if (!conversationId) throw new Error("无法创建新的对话");
       activeIdRef.current = conversationId;
       setActiveId(conversationId);
-      const userMessage: ChatMessage = { id: crypto.randomUUID(), role: "user", content: text, createdAt: new Date().toISOString() };
-      const assistantTemp: ChatMessage = { id: crypto.randomUUID(), role: "assistant", content: "", createdAt: new Date().toISOString(), metadata: { streaming: true } };
+      const userMessage: ChatMessage = { id: createClientId(), role: "user", content: text, createdAt: new Date().toISOString() };
+      const assistantTemp: ChatMessage = { id: createClientId(), role: "assistant", content: "", createdAt: new Date().toISOString(), metadata: { streaming: true } };
       await runTurn({ conversationId, user: userMessage, assistant: assistantTemp }, abort);
     } catch (error) {
       if (!abort.signal.aborted) showToast(error instanceof Error ? error.message : "这句话没有送达，请重试。");
@@ -376,7 +378,7 @@ export function ZhiweiApp() {
     const abort = new AbortController();
     abortRef.current = abort;
     setStreaming(true);
-    const assistant: ChatMessage = { id: crypto.randomUUID(), role: "assistant", content: "", createdAt: new Date().toISOString(), metadata: { streaming: true } };
+    const assistant: ChatMessage = { id: createClientId(), role: "assistant", content: "", createdAt: new Date().toISOString(), metadata: { streaming: true } };
     await runTurn({ conversationId, user: previous, assistant, retryOf: assistantId }, abort);
   }
 
@@ -580,7 +582,7 @@ export function ZhiweiApp() {
           {active?.hasMore ? <button className="load-older-messages" onClick={() => void loadOlderMessages()} disabled={loadingHistory}>{loadingHistory ? "正在读取更早的消息…" : "查看更早的消息"}</button> : null}
           {data.returnNote ? <button className="return-note" onClick={() => setInput(data.returnNote!.content)}><span>上次说到这里</span><p>{data.returnNote.content}</p><ChevronRight size={17} /></button> : null}
           {!active?.messages.length && !loadingConversation ? (
-            <div className="empty-conversation"><div className="empty-word">知微</div><h1>现在，你想从哪里聊起？</h1><p>可以是一件具体的事，也可以只是此刻说不清楚的心情。</p><div>{["最近脑子有点乱", "我有件事拿不定主意", "只是想找个人说说话"].map((prompt) => <button key={prompt} onClick={() => setInput(prompt)}>{prompt}</button>)}</div></div>
+            <div className="empty-conversation"><div className="empty-word">知微</div><h1>现在，你想从哪里聊起？</h1><p>可以是一件具体的事，也可以只是此刻说不清楚的心情。</p><div>{["今天我心情有一点坏，但是说不出来到底为什么", "我有件事拿不定主意，你可以帮我想想", "想找你聊聊生活的趣事"].map((prompt) => <button key={prompt} onClick={() => setInput(prompt)}>{prompt}</button>)}</div></div>
           ) : (
             <div className="messages">
               {(active?.messages ?? []).map((message, index, messages) => (
@@ -754,7 +756,7 @@ function AboutDialog({ onClose }: { onClose: () => void }) {
 
           <div className="about-hero">
             <h2 id="about-title">知微</h2>
-            <p>真切地陪伴你的数字分身</p>
+            <p>真切陪伴你、一直在了解你的数字分身</p>
           </div>
 
           <section className="about-project">
@@ -804,7 +806,7 @@ const Message = memo(function Message({ message, receipt, onFeedback, onRetry, o
   const assistant = message.role === "assistant";
   return (
     <article className={assistant ? "message assistant" : "message user"}>
-      <div className="message-content">{message.content || (message.metadata?.streaming ? <WaitingReply phase={typeof message.metadata.phase === "string" ? message.metadata.phase : undefined} stage={typeof message.metadata.phaseStage === "string" ? message.metadata.phaseStage : undefined} startedAt={typeof message.metadata.phaseStartedAt === "string" ? message.metadata.phaseStartedAt : undefined} /> : null)}</div>
+      <div className="message-content">{message.content ? (assistant ? <MarkdownContent content={message.content} /> : message.content) : (message.metadata?.streaming ? <WaitingReply phase={typeof message.metadata.phase === "string" ? message.metadata.phase : undefined} stage={typeof message.metadata.phaseStage === "string" ? message.metadata.phaseStage : undefined} startedAt={typeof message.metadata.phaseStartedAt === "string" ? message.metadata.phaseStartedAt : undefined} /> : null)}</div>
       {message.metadata?.status === "interrupted" ? <div className="message-status">回复中断了，可以重试。</div> : null}
       {message.metadata?.status === "stopped" ? <div className="message-status">已停止</div> : null}
       {Array.isArray(message.metadata?.sources) && message.metadata.sources.length ? <details className="message-sources"><summary>查看事实来源（{message.metadata.sources.length}）</summary>{message.metadata.sources.map((source: any) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer"><span>{source.title}</span>{source.siteName ? <small>{source.siteName}</small> : null}</a>)}</details> : null}
