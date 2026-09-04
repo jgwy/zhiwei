@@ -32,6 +32,7 @@ import { isNearChatBottom } from "@/lib/chat-scroll";
 import { resolveProfileReceiptMessageId } from "@/lib/profile-receipt";
 import { cacheConversation, mergeInflightTurn, prependMessagePage, type ConversationCache, type InflightTurn } from "@/lib/conversation-cache";
 import { createTextFrameBuffer } from "@/lib/text-frame-buffer";
+import { createClientId } from "@/lib/client-id";
 import { shouldSubmitOnEnter } from "@/lib/keyboard";
 import { browserTimeZone } from "@/lib/mood-date";
 import { Button } from "@/components/ui/button";
@@ -358,8 +359,8 @@ export function ZhiweiApp() {
       if (!conversationId) throw new Error("无法创建新的对话");
       activeIdRef.current = conversationId;
       setActiveId(conversationId);
-      const userMessage: ChatMessage = { id: crypto.randomUUID(), role: "user", content: text, createdAt: new Date().toISOString() };
-      const assistantTemp: ChatMessage = { id: crypto.randomUUID(), role: "assistant", content: "", createdAt: new Date().toISOString(), metadata: { streaming: true } };
+      const userMessage: ChatMessage = { id: createClientId(), role: "user", content: text, createdAt: new Date().toISOString() };
+      const assistantTemp: ChatMessage = { id: createClientId(), role: "assistant", content: "", createdAt: new Date().toISOString(), metadata: { streaming: true } };
       await runTurn({ conversationId, user: userMessage, assistant: assistantTemp }, abort);
     } catch (error) {
       if (!abort.signal.aborted) showToast(error instanceof Error ? error.message : "这句话没有送达，请重试。");
@@ -376,7 +377,7 @@ export function ZhiweiApp() {
     const abort = new AbortController();
     abortRef.current = abort;
     setStreaming(true);
-    const assistant: ChatMessage = { id: crypto.randomUUID(), role: "assistant", content: "", createdAt: new Date().toISOString(), metadata: { streaming: true } };
+    const assistant: ChatMessage = { id: createClientId(), role: "assistant", content: "", createdAt: new Date().toISOString(), metadata: { streaming: true } };
     await runTurn({ conversationId, user: previous, assistant, retryOf: assistantId }, abort);
   }
 
