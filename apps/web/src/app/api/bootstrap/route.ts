@@ -20,6 +20,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
   try {
+    const searchParams = new URL(request.url).searchParams;
     const userId = await getSessionUserId();
     // Bootstrap is the single explicit provisioning boundary. Internal MCP calls
     // never recreate a user after full deletion.
@@ -32,7 +33,7 @@ export async function GET(request: Request) {
       answers,
       returnNote,
     ] = await Promise.all([
-      getUserState(userId),
+      getUserState(userId, searchParams.get("timeZone")),
       callMemoryMcp<{ memories: MemoryRecord[] }>({
         tool: "memory_list",
         userId,
@@ -92,7 +93,7 @@ export async function GET(request: Request) {
     if (!state.user.onboarding_complete) {
       question = await getOrPlanOnboardingQuestion({ userId, answers });
     }
-    const requestedId = new URL(request.url).searchParams.get("conversationId");
+    const requestedId = searchParams.get("conversationId");
     const activeConversationId =
       state.conversations.find((c) => c.id === requestedId)?.id ??
       state.conversations[0]?.id ??

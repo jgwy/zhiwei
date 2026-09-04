@@ -33,6 +33,7 @@ import { resolveProfileReceiptMessageId } from "@/lib/profile-receipt";
 import { cacheConversation, mergeInflightTurn, prependMessagePage, type ConversationCache, type InflightTurn } from "@/lib/conversation-cache";
 import { createTextFrameBuffer } from "@/lib/text-frame-buffer";
 import { shouldSubmitOnEnter } from "@/lib/keyboard";
+import { browserTimeZone } from "@/lib/mood-date";
 import { Button } from "@/components/ui/button";
 import { Onboarding } from "@/components/onboarding";
 import { InsightPanel } from "@/components/insight-panel";
@@ -91,7 +92,9 @@ export function ZhiweiApp() {
   async function load(conversationId = activeIdRef.current) {
     const sequence = ++loadSequenceRef.current;
     try {
-      const response = await fetch(`/api/bootstrap${conversationId ? `?conversationId=${encodeURIComponent(conversationId)}` : ""}`, { cache: "no-store" });
+      const query = new URLSearchParams({ timeZone: browserTimeZone() });
+      if (conversationId) query.set("conversationId", conversationId);
+      const response = await fetch(`/api/bootstrap?${query}`, { cache: "no-store" });
       if (!response.ok) throw new Error(await responseMessage(response, "知微没有成功启动，请稍后重试。"));
       const next = (await response.json()) as BootstrapData;
       if (sequence !== loadSequenceRef.current) return;
@@ -231,7 +234,8 @@ export function ZhiweiApp() {
     try {
       const results = await Promise.all(resources.map(async (resource) => {
         const sequence = ++insightRequestRef.current[resource];
-        const response = await fetch(`/api/${resource}`, { cache: "no-store" });
+        const query = resource === "mood" ? `?${new URLSearchParams({ timeZone: browserTimeZone() })}` : "";
+        const response = await fetch(`/api/${resource}${query}`, { cache: "no-store" });
         if (!response.ok) throw new Error(await responseMessage(response, "新的认识暂时没有加载成功。"));
         return { resource, sequence, payload: await response.json() };
       }));

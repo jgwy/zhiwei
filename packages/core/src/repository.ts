@@ -4,6 +4,7 @@ import type { PoolClient } from "pg";
 import { getPool, withTransaction } from "./db";
 import { REFLECTION_JOB_ORDER } from "./job-lifecycle";
 import { defaultPersonalSkill } from "./personal-skill";
+import { normalizeTimeZone } from "./time-zone";
 import {
   containsForbiddenMemorySecret,
   extractSearchTerms,
@@ -93,11 +94,11 @@ export async function assertUserExists(userId: string): Promise<void> {
   if (!result.rowCount) throw new Error("user_not_found");
 }
 
-export async function getUserState(userId: string) {
+export async function getUserState(userId: string, timeZone?: string | null) {
   const [user, conversations, mood] = await Promise.all([
     getPool().query(`SELECT * FROM users WHERE id = $1`, [userId]),
     listConversations(userId),
-    getMoodSeries(userId),
+    getMoodSeries(userId, timeZone),
   ]);
   return {
     user: user.rows[0],
@@ -732,15 +733,15 @@ export async function getConversationSummary(
   return result.rows[0]?.summary ?? null;
 }
 
-export async function getMoodSeries(userId: string) {
+export async function getMoodSeries(userId: string, timeZone?: string | null) {
   const result = await getPool().query(
-    `SELECT date_trunc('day', observed_at) AS day,
+    `SELECT to_char(observed_at AT TIME ZONE $2, 'YYYY-MM-DD') AS day,
             round(avg(score)::numeric, 1) AS score,
             (array_agg(summary ORDER BY observed_at DESC))[1] AS summary
      FROM mood_samples WHERE user_id = $1
-     GROUP BY date_trunc('day', observed_at)
+     GROUP BY day
      ORDER BY day DESC LIMIT 30`,
-    [userId],
+    [userId, normalizeTimeZone(timeZone)],
   );
   return result.rows.reverse().map((row) => ({
     day: row.day,
