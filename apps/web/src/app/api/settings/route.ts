@@ -43,7 +43,7 @@ export async function PATCH(request: Request) {
           payload: { trigger: "settings-updated", sourceMessageId: null, conversationId: null },
         });
       } catch (error) {
-        warning = "设置已保存，长期认识会稍后同步。";
+        warning = "设置已保存，长期印象会稍后同步。";
         await recordTrace({
           userId,
           traceId: crypto.randomUUID(),

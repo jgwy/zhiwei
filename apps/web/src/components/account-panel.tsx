@@ -93,7 +93,7 @@ function AccountDialog({ mode, onClose, onSuccess }: {
           <small id="account-username-hint">3–32 位中文、字母、数字、下划线或短横线；英文字母不区分大小写。</small>
           <label htmlFor="account-password">密码</label>
           <input id="account-password" name="password" type="password" autoComplete={binding ? "new-password" : "current-password"} minLength={10} maxLength={128} required disabled={busy} value={password} onChange={(event) => setPassword(event.target.value)} aria-describedby="account-password-hint" />
-          <small id="account-password-hint">10–128 位，请使用与其他网站不同的密码。</small>
+          <small id="account-password-hint">至少 10 位，请使用与其他网站不同的密码。</small>
           {binding ? <><label htmlFor="account-confirmation">确认密码</label><input id="account-confirmation" name="password-confirmation" type="password" autoComplete="new-password" minLength={10} maxLength={128} required disabled={busy} value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></> : null}
           <p className="account-password-note">暂不提供忘记密码找回，请妥善保存。密码不会发给知微或用于生成记忆。</p>
           {error ? <p className="account-error" role="alert">{error}</p> : null}

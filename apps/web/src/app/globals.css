@@ -356,6 +356,8 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #222; outline-
 .settings-master strong, .settings-row strong { font-size: 12px; }
 .settings-master small, .settings-row small { color: #888; font-size: 10px; line-height: 1.5; }
 .settings-pause-note { margin: 10px 3px 0; color: #8a6f46; font-size: 10px; line-height: 1.55; }
+.settings-memory-preferences { margin-top: 22px; }
+.settings-memory-preferences-heading { margin-bottom: 10px; }
 .settings-list { border-top: 1px solid #ededed; }
 .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 62px; border-bottom: 1px solid #ededed; }
 .settings-row:last-child { border-bottom: 0; }

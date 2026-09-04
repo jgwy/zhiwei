@@ -30,6 +30,6 @@ export function accountJsonError(error: unknown) {
   if (error instanceof AccountError)
     return NextResponse.json({ code: error.code, error: error.message }, { status: error.status });
   if (error instanceof z.ZodError || error instanceof SyntaxError)
-    return NextResponse.json({ code: "account_input_invalid", error: "账号请用 3–32 位中文、字母、数字、下划线或短横线；密码需为 10–128 位。" }, { status: 400 });
+    return NextResponse.json({ code: "account_input_invalid", error: "账号请用 3–32 位中文、字母、数字、下划线或短横线；密码至少需要 10 位。" }, { status: 400 });
   return NextResponse.json({ code: "account_unavailable", error: "账号操作暂时没有完成，原有数据仍然保留，请稍后重试。" }, { status: 503 });
 }
