@@ -534,7 +534,7 @@ export function ZhiweiApp() {
     setSettingsMode(false);
     window.requestAnimationFrame(() => {
       const returnTarget = window.innerWidth < 900 ? mobileNavRef.current : settingsTriggerRef.current;
-      returnTarget?.focus();
+      if (document.activeElement === document.body) returnTarget?.focus();
     });
   }
 
@@ -542,7 +542,7 @@ export function ZhiweiApp() {
     setAboutOpen(false);
     window.requestAnimationFrame(() => {
       const returnTarget = window.innerWidth < 900 ? mobileNavRef.current : aboutTriggerRef.current;
-      returnTarget?.focus();
+      if (document.activeElement === document.body) returnTarget?.focus();
     });
   }
 

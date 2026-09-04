@@ -102,6 +102,30 @@ test("有心情数据时按需加载原样曲线与尺寸", async ({ page }, tes
   await expect(chart.locator(".recharts-tooltip-label")).toHaveText("9月4日");
 });
 
+test("从设置返回后的焦点恢复不抢走已经开始输入的消息框", async ({ page }, testInfo) => {
+  await mockApp(page);
+  if (testInfo.project.name.includes("mobile")) await page.locator(".mobile-nav-button").click();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("heading", { name: "你的信息，由你决定" }).waitFor();
+  await page.evaluate(() => {
+    const state = window as any;
+    state.savedAnimationFrame = window.requestAnimationFrame;
+    state.pendingAnimationFrames = [];
+    window.requestAnimationFrame = (callback) => { state.pendingAnimationFrames.push(callback); return state.pendingAnimationFrames.length; };
+  });
+  await page.getByRole("button", { name: "返回知微" }).click();
+  const composer = page.getByLabel("消息内容");
+  await composer.fill("我已经开始输入这一句");
+  await page.evaluate(() => {
+    const state = window as any;
+    window.requestAnimationFrame = state.savedAnimationFrame;
+    for (const callback of state.pendingAnimationFrames) callback(performance.now());
+  });
+  await expect(composer).toBeFocused();
+  await expect(composer).toHaveValue("我已经开始输入这一句");
+  await expect(page.getByRole("button", { name: "发送消息" })).toBeEnabled();
+});
+
 test("单点心情悬停使用真实日期，初始和刷新查询携带设备时区", async ({ page }, testInfo) => {
   const requests = await mockApp(page, false, "single");
   if (testInfo.project.name.includes("mobile")) await page.getByRole("button", { name: "打开或收起洞察栏" }).click();
