@@ -7,6 +7,7 @@ import {
   enqueueJob,
   ensureUser,
   getMessagePage,
+  getAccount,
   type MemoryRecord,
 } from "@zhiwei/core";
 import { getModelGateway } from "@zhiwei/model-gateway";
@@ -32,6 +33,7 @@ export async function GET(request: Request) {
       skillResult,
       answers,
       returnNote,
+      account,
     ] = await Promise.all([
       getUserState(userId, searchParams.get("timeZone")),
       callMemoryMcp<{ memories: MemoryRecord[] }>({
@@ -47,6 +49,7 @@ export async function GET(request: Request) {
       callMemoryMcp<any>({ tool: "personal_skill_get_active", userId }),
       getOnboardingAnswers(userId),
       getReturnNote(userId),
+      getAccount(userId),
     ]);
     const memoryEnabled = state.user.settings?.memoryEnabled !== false;
     const longTermEnabled =
@@ -103,6 +106,7 @@ export async function GET(request: Request) {
       : { messages: [], hasMore: false, nextCursor: null };
     return NextResponse.json({
       ...state,
+      account,
       profile,
       skill: skillResult.skill,
       activeConversationId,

@@ -16,3 +16,4 @@ export * from "./notifications";
 export * from "./job-lifecycle";
 export * from "./onboarding";
 export * from "./mcp-http";
+export * from "./accounts";

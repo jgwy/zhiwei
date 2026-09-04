@@ -115,6 +115,11 @@ export function ZhiweiApp() {
   }
 
   useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    const channel = new BroadcastChannel("zhiwei-account");
+    channel.onmessage = () => { void load(); };
+    return () => channel.close();
+  }, []);
   useEffect(() => { dataRef.current = data; }, [data]);
   const active = useMemo(
     () => {
@@ -180,6 +185,7 @@ export function ZhiweiApp() {
     };
     source.addEventListener("memory.updated", () => refresh("memories", "profile", "mood"));
     source.addEventListener("mood.updated", () => refresh("mood"));
+    source.addEventListener("account.restored", () => { void load(); });
     source.addEventListener("profile.updated", (raw) => {
       const event = JSON.parse((raw as MessageEvent).data);
       const payload = event.payload ?? {};
@@ -209,7 +215,7 @@ export function ZhiweiApp() {
       } : current);
     });
     return () => { source.close(); clearTimeout(timer); };
-  }, [data?.onboarding.complete, showToast]);
+  }, [data?.onboarding.complete, data?.user.id, showToast]);
 
   const actionRef = useRef({ feedback, retryMessage, sendMessage, startMemoryCorrection, withdrawMemory });
   actionRef.current = { feedback, retryMessage, sendMessage, startMemoryCorrection, withdrawMemory };
@@ -223,7 +229,7 @@ export function ZhiweiApp() {
   useEffect(() => () => abortRef.current?.abort(), []);
 
   if (!data) return <InitialLoading error={loadError} onRetry={() => void load()} />;
-  if (!data.onboarding.complete) return <Onboarding onboarding={data.onboarding} onComplete={async () => {
+  if (!data.onboarding.complete) return <Onboarding onboarding={data.onboarding} onAccountRestored={() => load()} onComplete={async () => {
     const response = await fetch("/api/onboarding/complete", { method: "POST" });
     if (!response.ok) throw new Error(await responseMessage(response, "暂时无法开始聊天，请稍后再试。"));
     await load();
@@ -602,6 +608,12 @@ export function ZhiweiApp() {
           data={data}
           onMemoryCorrect={handleMemoryCorrection}
           onWithdraw={handleWithdraw}
+          accountBusy={streaming}
+          onAccountUpdated={async () => {
+            // Drop old in-flight insight responses; retain chat pages and the current draft.
+            for (const key of ["memories", "profile", "mood"] as const) ++insightRequestRef.current[key];
+            await load();
+          }}
         />
       </div>
       {mobileMenu ? <button className="mobile-scrim" onClick={() => setMobileMenu(null)} aria-label="关闭面板" /> : null}

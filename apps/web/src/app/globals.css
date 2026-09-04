@@ -190,6 +190,28 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #222; outline-
 
 .insight-drawer { min-width: 0; min-height: 0; height: 100%; border-left: 1px solid #ededed; overflow: hidden; transition: .2s; }
 .insight-panel { min-height: 0; height: 100%; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; touch-action: pan-y; -webkit-overflow-scrolling: touch; background: #fbfbfb; padding: 20px 19px 60px; }
+.account-panel { margin-top: 28px; padding: 18px 15px; border: 1px solid #dadfe0; border-radius: 18px; background: #fff; }
+.account-panel h3 { display: flex; gap: 8px; align-items: center; margin: 0 0 10px; font-size: 14px; }
+.account-panel p { margin: 0 0 14px; color: #65696a; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.account-actions { display: grid; gap: 9px; }
+.account-actions button, .account-submit { min-height: 44px; display: flex; gap: 8px; align-items: center; justify-content: center; border: 1px solid #cdd3d2; border-radius: 11px; background: #fff; color: #293d37; cursor: pointer; font: inherit; font-size: 13px; }
+.account-actions .account-bind, .account-submit { background: #29473d; color: #fff; border-color: #29473d; }
+.account-actions button:hover:not(:disabled), .account-submit:hover:not(:disabled) { filter: brightness(.94); }
+.account-panel button:disabled, .account-dialog button:disabled { opacity: .55; cursor: not-allowed; }
+.account-panel > small { display: block; margin-top: 10px; color: #767676; font-size: 11px; }
+.account-panel .account-notice { margin: 12px 0 0; color: #29473d; }
+.account-panel-compact { margin-top: 18px; padding: 0; border: 0; background: transparent; }
+.account-panel-compact .account-actions { display: block; }
+.account-panel-compact button { width: 100%; }
+.account-dialog .memory-dialog-panel { width: min(480px, 100%); }
+.account-explanation { font-size: 13px; color: #656565; line-height: 1.8; margin: 0 0 16px; }
+.account-form { display: grid; gap: 8px; }
+.account-form label { margin-top: 8px; font-size: 13px; font-weight: 600; }
+.account-form input { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid #d2d6d4; border-radius: 10px; font-size: 16px; }
+.account-form input:focus { outline: 2px solid #3f705c; outline-offset: 2px; }
+.account-form small, .account-password-note { font-size: 12px; line-height: 1.65; color: #737373; }
+.account-password-note { margin: 8px 0; }
+.account-error { padding: 10px; margin: 0; color: #a13030; background: #fff4f4; border-radius: 8px; font-size: 13px; line-height: 1.7; }
 .insight-heading { height: 31px; display: flex; justify-content: space-between; align-items: center; }
 .insight-heading h2 { font-size: 14px; margin: 0; font-weight: 610; }.icon-plain { border: 0; background: transparent; cursor: pointer; color: #777; }
 .score-card { display: grid; grid-template-columns: 86px 1fr; gap: 15px; align-items: center; padding: 24px 0 18px; }

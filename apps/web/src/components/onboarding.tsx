@@ -5,13 +5,16 @@ import { useRef, useState } from "react";
 import { shouldSubmitOnEnter } from "@/lib/keyboard";
 import type { BootstrapData } from "@/lib/client-types";
 import { Button } from "@/components/ui/button";
+import { AccountPanel } from "./account-panel";
 
 export function Onboarding({
   onboarding,
   onComplete,
+  onAccountRestored,
 }: {
   onboarding: BootstrapData["onboarding"];
   onComplete: () => Promise<void>;
+  onAccountRestored: () => Promise<void>;
 }) {
   const [current, setCurrent] = useState(onboarding);
   const [answer, setAnswer] = useState("");
@@ -75,6 +78,7 @@ export function Onboarding({
           <Button variant="primary" onClick={() => setShowInfo(false)}>
             开始认识 <ArrowRight size={17} />
           </Button>
+          <AccountPanel restoreOnly onUpdated={onAccountRestored} />
         </section>
       </main>
     );

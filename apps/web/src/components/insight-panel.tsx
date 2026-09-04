@@ -6,6 +6,7 @@ import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import type { BootstrapData } from "@/lib/client-types";
 import { categoryLabel } from "@zhiwei/core/client";
 import { resolveLongTermSummary, selectUserMemories, type ProfileView, type UserMemoryView } from "@/lib/memory-view";
+import { AccountPanel } from "./account-panel";
 
 const MoodChart = dynamic(() => import("./mood-chart").then((module) => module.MoodChart), {
   loading: () => <div style={{ height: 118 }} role="status" aria-label="正在加载心情曲线" />,
@@ -15,10 +16,14 @@ export const InsightPanel = memo(function InsightPanel({
   data,
   onMemoryCorrect,
   onWithdraw,
+  accountBusy,
+  onAccountUpdated,
 }: {
   data: BootstrapData;
   onMemoryCorrect: (content: string) => void;
   onWithdraw: (memoryId: string, versionId: string) => Promise<void>;
+  accountBusy?: boolean;
+  onAccountUpdated: () => Promise<void>;
 }) {
   const score = data.profile?.score ?? 0;
   const components = data.profile?.understanding;
@@ -149,6 +154,8 @@ export const InsightPanel = memo(function InsightPanel({
       </section>
 
       {panelError ? <p className="memory-panel-error" role="alert">{panelError}</p> : null}
+
+      <AccountPanel account={data.account} disabled={accountBusy} onUpdated={onAccountUpdated} />
 
       {summaryOpen ? (
         <MemoryDialog id="long-term-summary-title" title="关于你的长期认识" onClose={() => setSummaryOpen(false)}>

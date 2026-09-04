@@ -20,6 +20,7 @@ export type MessagePage = { messages: ChatMessage[]; hasMore: boolean; nextCurso
 export type ConversationView = ConversationMeta & { messages: ChatMessage[] };
 
 export type BootstrapData = {
+  account?: { username: string } | null;
   user: {
     id: string;
     onboarding_complete: boolean;

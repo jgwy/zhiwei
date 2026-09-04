@@ -105,7 +105,7 @@ export function SettingsPanel({
           </section>
 
           <section className="settings-card settings-danger-card">
-            <div className="settings-card-heading"><div><h2>删除全部数据</h2><p>永久清除当前知微档案的对话、画像、记忆、相处方式和运行记录。</p></div><Trash2 size={17} /></div>
+            <div className="settings-card-heading"><div><h2>删除全部数据</h2><p>永久清除当前知微档案的对话、画像、记忆、相处方式和运行记录。如已绑定账号，也会删除账号及恢复合并的数据，其他设备将无法再恢复。</p></div><Trash2 size={17} /></div>
             <label htmlFor="delete-all-confirmation">输入“删除知微中的全部数据”以确认</label>
             <input id="delete-all-confirmation" value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} placeholder="删除知微中的全部数据" />
             <button className="settings-delete-button" disabled={deleting || deleteConfirmation !== "删除知微中的全部数据"} onClick={() => void deleteAll()}>{deleting ? "正在删除…" : "永久删除全部数据"}</button>

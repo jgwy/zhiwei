@@ -611,7 +611,7 @@ async function handleProfileSynthesis(job: any) {
       dimensionWeights: normalizeDimensionWeights(result.data.dimensionWeights),
       sourceMemoryVersionIds: profileSourceVersionIds,
       schemaVersion: result.data.schemaVersion,
-      idempotencyKey: `profile_synthesis:${profileSourceSignature(profileSourceVersionIds, settings.emotionTrackingEnabled !== false)}:${PROFILE_PROMPT_VERSION}`,
+      idempotencyKey: `profile_synthesis:${profileSourceSignature(profileSourceVersionIds, settings.emotionTrackingEnabled !== false)}:${PROFILE_PROMPT_VERSION}${payload.trigger === "account-restored" ? `:restored:${job.id}` : ""}`,
     },
   });
   await recordTrace({

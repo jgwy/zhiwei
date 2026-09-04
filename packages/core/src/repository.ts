@@ -1158,7 +1158,8 @@ export async function publishPersonalSkill(input: {
        WHERE user_id = $1 AND is_active = true FOR UPDATE`,
         [input.userId],
       );
-      const nextVersion = Number(current.rows[0]?.version ?? 0) + 1;
+      const versions = await client.query(`SELECT COALESCE(max(version),0)+1 AS next FROM personal_skill_versions WHERE user_id=$1`, [input.userId]);
+      const nextVersion = Number(versions.rows[0].next);
       await client.query(
         `UPDATE personal_skill_versions SET is_active = false
        WHERE user_id = $1 AND is_active = true`,
@@ -1652,6 +1653,10 @@ export async function deleteAllUserData(userId: string): Promise<void> {
       [userId],
     );
     if (!locked.rowCount) return;
+    await client.query(`DELETE FROM account_attempt_windows WHERE bucket IN (
+      SELECT 'name:' || username FROM accounts WHERE user_id=$1
+      UNION ALL SELECT 'device:' || id::text FROM users WHERE id=$1 OR merged_into_id=$1
+    )`, [userId]);
     const tables = [
       "message_sources",
       "onboarding_question_plans",
