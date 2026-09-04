@@ -1,0 +1,17 @@
+services:
+  web:
+    build:
+      target: web-dev
+    environment:
+      NODE_ENV: development
+      NEXT_TELEMETRY_DISABLED: "1"
+      WATCHPACK_POLLING: "true"
+    command: ["npm", "run", "dev", "--workspace", "@zhiwei/web", "--", "--hostname", "0.0.0.0"]
+    volumes:
+      - .:/app
+      - zhiwei-web-node-modules:/app/node_modules
+    ports:
+      - "127.0.0.1:3000:3000"
+
+volumes:
+  zhiwei-web-node-modules:
