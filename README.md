@@ -53,13 +53,19 @@ npm run dev
 
 真实模式按任务使用多种协议：普通陪伴与高情绪回复优先走 Character 的 Chat Completions；Flash 正文使用 Responses 文本流。标题、问卷规划、Reflection、画像、摘要与 Personal Skill 等结构化任务使用 Chat Completions JSON Schema；事实查证使用 DashScope 原生接口保留来源；向量使用 OpenAI 兼容 Embeddings。各协议统一记录任务、尝试、流事件、usage、费用、耗时、来源与标准错误。
 
-用户消息持久化后立即建立 SSE，准备上下文和查证事实时发送阶段事件。正文直接转发上游增量：首次缓冲 32 个非空白字符检查明显技术异常，之后保留 8 字尾缓冲检查跨分块乱码；正常短答结束时直接放行，不强求达到前缀长度。记忆控制回合还在首段放行前检查是否把待处理操作说成已经完成。字数、段落、追问数量和建议时机用于提示与运行诊断，不再等待整篇验收或改写已经显示的正文。
+Character 和 Flash 共用基底 Skills，不维护另一套独立人格提示。实际发送的 system/messages、Skill 版本、尝试编号、估算上下文预算和实际使用的记忆版本可在开发者运行记录中查看；认证信息与密钥被隐藏，推理过程不保存。最终请求预算包括任务说明、事实主张和重试提示，超限时缩减旧上下文，不扩大最近十二条消息的窗口。
+
+陪伴先跟随用户的具体处境：忧伤时先安静承接，喜悦时自然回应，用户指出语气不合适时直接修复。明确请求更多陪伴时以 200–400 字、2–4 段为生成目标，不用字数规则改写已显示的内容。真实质量通过代表性对话人工复核，不把提示要求本身当作已经达到的效果。
+
+用户消息持久化后立即建立 SSE，准备上下文和查证事实时发送阶段事件。正文直接转发上游增量：首次缓冲 32 个非空白字符检查明显技术异常，之后保留 8 字尾缓冲检查跨分块乱码；正常短答结束时直接放行，不强求达到前缀长度。记忆控制回合还在首段放行前检查是否把待处理操作说成已经完成。陪伴正文开头出现明确的内部思路前导时，在尚未显示前使用原有重试；正常术语括注保留，供应商独立推理字段不进入正文。字数、段落、追问数量和建议时机用于提示与运行诊断，不再等待整篇验收或改写已经显示的正文。
 
 在正文尚未显示时，Character 可重试一次，再降级 Flash；已经显示正文后发生断流，不自动重放、拼接其他模型或替换原文。停止、断流与截断保留已显示内容并标记状态，完成事件立即解锁输入。前端按动画帧合并增量，避免人为增加长时间的打字延迟。
 
 最新一条回复支持重试或重新生成，包括已完成、已停止和失败状态。服务端复用原用户消息并建立新的助手尝试，旧尝试保留在开发者记录；不会重复创建用户证据、记忆批次或标题任务。新回复可更新会话摘要，但不因措辞变化重新学习用户画像。
 
 科学问题会额外加载只读的 `scientific-answering` 基底 Skill，并经过独立 Science MCP：先审查来源等级和原子主张，最后由 Flash 流式表达，来源卡片保留真实检索和审计链。写作正文同样直接走文本流，不等待完整 `content` JSON。Science MCP 提供 `science_source_assess` 与 `science_claim_audit`，不联网、不调用模型、不读写用户记忆；高影响主张缺少权威一手证据时会转为需要人工复核。项目当前包含 11 个带版本与 SHA-256 清单的不可变基底 Skills。
+
+外部事实优先查证，但用户只是提到歌曲或人物并表达感受时，可以直接陪伴。“来源呢”等事实追问根据上一问题与回答还原核验对象，上一轮回答不作为证据。来源链接去重后重排索引，没有有效绑定的主张不会作为已核实事实传给正文模型。核验不可用时可明确补充未核实的一般常识，但不猜具体履历、发行时间、最新信息或高影响结论。搜索计时从实际检索开始，到检索完成即结束，不把之后的事实整理算入搜索时长。
 
 ## 记忆生命周期
 
@@ -94,6 +100,8 @@ Reflection 最多读取 12 条相关旧认识候选；同一事件的细化替�
 
 消息分页为 `GET /api/conversations/:id/messages?before=...`；最新回复重试为 `POST /api/conversations/:id/messages/:messageId/retry`，与普通发送共用 SSE 协议。普通界面错误使用简体中文，运行追踪保留内部诊断。页头提示为“记忆会在授权后用于个性化对话；AI 生成内容请注意核查”。
 
+`GET /api/bootstrap` 与 `GET /api/mood` 接受浏览器的 IANA `timeZone`，缺失或无效时使用 `Asia/Shanghai`。心情按设备时区聚合为 `YYYY-MM-DD` 日期键，图表 Tooltip 使用该日期；原始样本保持 UTC，换时区只改变按日展示，不修改历史记录。
+
 ## 验证
 
 - `npm run typecheck`
@@ -102,13 +110,15 @@ Reflection 最多读取 12 条相关旧认识候选；同一事件的细化替�
 - `npm run eval`
 - `ALLOW_PAID_MODEL_TESTS=true REAL_TEST_BUDGET_CNY=5 npm run eval:real-memory`（显式付费测试）
 - `ALLOW_PAID_MODEL_TESTS=true REAL_TEST_BUDGET_CNY=5 npm run eval:real-experience`（需提供独立测试服务的 `EXPERIENCE_BASE_URL` 和 `INTEGRATION_DATABASE_URL`）
+- `ALLOW_PAID_MODEL_TESTS=true COMPANION_BUDGET_CNY=20 npm run eval:real-companion`（需提供独立端口的 `COMPANION_BASE_URL` 与测试库 `INTEGRATION_DATABASE_URL`）
+- `ALLOW_PAID_MODEL_TESTS=true COMPANION_BUDGET_CNY=20 npm run eval:real-companion-direct`（直接验证真实 Character；检索不可用状态明确标为测试注入）
 - `npm run test:e2e`
 
 数据库生命周期集成测试默认跳过，需为独立测试库设置 `INTEGRATION_DATABASE_URL` 后单独运行。
 
 开发者模式由 `DEV_MODE=true` 开启，可查看运行追踪、记忆与画像、个人技能演化、比赛实验室和模型费用。费用总计独立于调用记录分页，按全部历史 usage、缓存 Token、搜索次数与对应价格估算；价格目录失败时保留最近快照。供应商首 Token、用户首字和总耗时分别记录，未返回 usage 的失败或取消尝试不标为真实零消耗。费用估算不等同于阿里云账单，也不会触发产品停用。
 
-默认测试、构建和离线评测不调用付费模型。真实测试必须显式启用，并受命令指定预算约束；本批真实验证预算为 ¥5。测试结果、浏览器检查和性能对比应以实际运行记录为准；仓库没有 CI workflow。
+默认测试、构建和离线评测不调用付费模型。真实测试必须显式启用，并受命令指定预算约束。陪伴测试使用合成场景，不读取原用户会话；每次运行生成独立 JSON 记录，可通过 `COMPANION_ALREADY_SPENT_CNY` 传入本批已用额度，通过 `COMPANION_REMAINING_CNY` 限制本次余量。费用按实际 usage、检索费用和未知 usage 预留累计，质量目标只作人工复核与诊断。测试结果、浏览器检查和性能对比以实际运行记录为准。
 
 ## 比赛验证
 
