@@ -325,7 +325,8 @@ integration("experience batches with isolated PostgreSQL", () => {
     expect(await claimJob("memory")).toBeNull();
     const backoffDelay = await nextJobDelay("memory");
     expect(backoffDelay).toBeGreaterThan(0);
-    expect(backoffDelay).toBeLessThanOrEqual(30_000);
+    // run_after is set by PostgreSQL; the test runner may be on a different host clock.
+    expect(backoffDelay).toBeLessThanOrEqual(31_000);
     const independent = await enqueueJob({ userId: other.userId, type: "reflection", payload: { conversationId: other.conversationId, sealed: true }, idempotencyKey: "independent-user" });
     expect((await claimJob("memory"))?.id).toBe(independent);
     await completeJob(independent);

@@ -22,6 +22,8 @@
     "eval": "npm run eval --workspace @zhiwei/eval",
     "eval:real-memory": "npm run eval:real-memory --workspace @zhiwei/eval",
     "eval:real-experience": "npm run eval:real-experience --workspace @zhiwei/eval",
+    "eval:real-companion": "npm run eval:real-companion --workspace @zhiwei/eval",
+    "eval:real-companion-direct": "npm run eval:real-companion-direct --workspace @zhiwei/eval",
     "generate:skills": "node packages/skills/scripts/generate-manifest.mjs",
     "validate:skills": "node packages/skills/scripts/validate-skills.mjs",
     "db:migrate": "npm run migrate --workspace @zhiwei/core",

@@ -7,12 +7,15 @@
     "eval": "node --import tsx src/run.ts",
     "eval:real-memory": "node --env-file-if-exists=../../.env --import tsx src/run-real-memory-lifecycle.ts",
     "eval:real-experience": "node --import tsx src/run-experience-real.ts",
+    "eval:real-companion": "node --import tsx src/run-companion-real.ts",
+    "eval:real-companion-direct": "node --env-file-if-exists=../../.env --import tsx src/run-companion-direct.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
     "@zhiwei/core": "0.1.0",
-    "@zhiwei/model-gateway": "0.1.0"
+    "@zhiwei/model-gateway": "0.1.0",
+    "@zhiwei/skills": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "^24.10.0",
