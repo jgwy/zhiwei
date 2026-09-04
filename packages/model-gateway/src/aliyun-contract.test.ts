@@ -15,6 +15,8 @@ vi.mock("openai", () => ({
 
 import { defaultPersonalSkill, type CompiledContext } from "@zhiwei/core";
 import { AliyunBailianGateway } from "./gateway";
+import { composeFoundationInstructions } from "../../skills/src/index";
+import type { ModelRequestSnapshot } from "./dialogue-prompt";
 
 
 function testInput(content: string) {
@@ -190,7 +192,7 @@ describe("Aliyun structured-output quality retry contract", () => {
   it("gives emotional dialogue enough output budget and a concrete listening protocol", async () => {
     openAiMock.completionCreate.mockResolvedValue(streamedChatText("我听见你今天被当众否定后的难受了，这不只是尴尬，也会让人怀疑自己的价值。我先陪你把最刺痛的部分说清楚。", "response-unit-test"));
     const context: CompiledContext = {
-      foundationInstructions: "知微基底技能",
+      foundationInstructions: composeFoundationInstructions(["zhiwei-persona", "dialogue-orchestrator"]),
       personalSkill: defaultPersonalSkill,
       profileSummary: "",
       memories: [],
@@ -201,13 +203,14 @@ describe("Aliyun structured-output quality retry contract", () => {
     };
 
     const events = [];
+    const snapshots: ModelRequestSnapshot[] = [];
     for await (const event of new AliyunBailianGateway().streamDialogue({
       userId: crypto.randomUUID(),
       conversationId: crypto.randomUUID(),
       messageId: crypto.randomUUID(),
       content: "今天被当众否定以后，我一直觉得自己特别差，只想找个人说说。",
       context,
-    })) events.push(event);
+    }, { onRequest: (request) => { snapshots.push(request); } })) events.push(event);
 
     expect(openAiMock.completionCreate).toHaveBeenCalledTimes(1);
     expect(openAiMock.responseCreate).not.toHaveBeenCalled();
@@ -220,11 +223,13 @@ describe("Aliyun structured-output quality retry contract", () => {
       stream_options: { include_usage: true },
     });
     const system = request.messages[0].content as string;
-    expect(system).toContain("4至8个完整句子");
-    expect(system).toContain("最难受、最为难的部分");
-    expect(system).toContain("不要用空泛安慰替代具体理解");
-    expect(system).toContain("简洁偏好不是硬性截断");
-    expect(system).not.toContain("只用1至3句具体承接");
+    expect(system).toContain(context.foundationInstructions);
+    expect(system).toContain("200–400 字、2–4 个自然段");
+    expect(system).toContain("悲伤时，语气安静、柔和");
+    expect(system).toContain("延续最近对话的情绪与话题");
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]).toMatchObject({ model: request.model, attempt: 1, messages: request.messages });
+    expect(snapshots[0]?.skillVersions.map((skill) => skill.name)).toEqual(["zhiwei-persona", "dialogue-orchestrator"]);
     expect(events.at(-1)).toMatchObject({
       type: "completed",
       meta: { task: "dialogue", model: "qwen-plus-character" },
@@ -611,6 +616,7 @@ describe("Aliyun structured-output quality retry contract", () => {
     };
     let output = "";
     let completed: any;
+    const snapshots: ModelRequestSnapshot[] = [];
 
     for await (const event of new AliyunBailianGateway().streamDialogue({
       userId: crypto.randomUUID(),
@@ -619,12 +625,17 @@ describe("Aliyun structured-output quality retry contract", () => {
       content: "我最近感觉一上课头就晕，我又害怕大学物理课跟不上",
       context,
       responsePlan: { responseMode: "emotional-deep", depth: "high", physicalSymptom: true, reason: "两条处境同时出现" },
-    })) {
+    }, { onRequest: (request) => { snapshots.push(request); } })) {
       if (event.type === "text.delta") output += event.delta;
       if (event.type === "completed") completed = event.meta;
     }
 
     expect(output).toBe(fallback);
+    expect(snapshots.map((snapshot) => snapshot.model)).toEqual(["qwen-plus-character", "qwen-plus-character", "qwen3.8-flash"]);
+    expect(snapshots.map((snapshot) => snapshot.attempt)).toEqual([1, 2, 3]);
+    expect(snapshots[2]?.messages).toEqual(openAiMock.responseCreate.mock.calls[0]?.[0].input);
+    expect(snapshots.every((snapshot) => snapshot.messages[0]?.content.includes(context.foundationInstructions))).toBe(true);
+    expect(snapshots.every((snapshot) => snapshot.estimatedTokens <= snapshot.contextBudget)).toBe(true);
     expect(completed).toMatchObject({
       model: "qwen3.8-flash",
       fallbackFrom: "qwen-plus-character",
