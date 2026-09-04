@@ -755,7 +755,7 @@ function AboutDialog({ onClose }: { onClose: () => void }) {
 
           <div className="about-hero">
             <h2 id="about-title">知微</h2>
-            <p>真切地陪伴你的数字分身</p>
+            <p>真切陪伴你、一直在了解你的数字分身</p>
           </div>
 
           <section className="about-project">
