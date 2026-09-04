@@ -192,7 +192,7 @@ export function ZhiweiApp() {
       const conversations = (dataRef.current?.conversations ?? []).map((conversation) => ({ ...conversation, messages: pagesRef.current.get(conversation.id)?.messages ?? [] }));
       const messageId = resolveProfileReceiptMessageId(conversations, payload);
       if (messageId) {
-        const receipt = typeof payload.receipt === "string" ? payload.receipt : "知微重新整理了对你的长期认识。";
+        const receipt = typeof payload.receipt === "string" ? payload.receipt : "知微重新整理了对你的总体印象。";
         setReceipts((current) => ({ ...current, [messageId]: receipt }));
       }
       if (payload.profile) {
@@ -243,11 +243,11 @@ export function ZhiweiApp() {
         const sequence = ++insightRequestRef.current[resource];
         const query = resource === "mood" ? `?${new URLSearchParams({ timeZone: browserTimeZone() })}` : "";
         const response = await fetch(`/api/${resource}${query}`, { cache: "no-store" });
-        if (!response.ok) throw new Error(await responseMessage(response, "新的认识暂时没有加载成功。"));
+        if (!response.ok) throw new Error(await responseMessage(response, "新的印象暂时没有加载成功。"));
         return { resource, sequence, payload: await response.json() };
       }));
       setData((current) => current ? { ...current, ...Object.assign({}, ...results.filter((result) => insightRequestRef.current[result.resource] === result.sequence).map((result) => result.payload)) } : current);
-    } catch (error) { showToast(error instanceof Error ? error.message : "新的认识暂时没有加载成功。"); }
+    } catch (error) { showToast(error instanceof Error ? error.message : "新的印象暂时没有加载成功。"); }
   }
 
   async function fetchConversationPage(id: string, prefetch = false) {
@@ -484,12 +484,12 @@ export function ZhiweiApp() {
       body: JSON.stringify({ versionId, reason: "用户在画像界面主动撤回" }),
     });
     if (response.status === 409) {
-      showToast("这条认识刚刚发生了变化，已为你刷新。");
+      showToast("这条印象刚刚发生了变化，已为你刷新。");
       await refreshInsights();
       return;
     }
-    if (!response.ok) throw new Error(await responseMessage(response, "这条认识没有撤回成功，请重试。"));
-    showToast("这条认识已撤回，之后不会再用于回答。");
+    if (!response.ok) throw new Error(await responseMessage(response, "这条印象没有撤回成功，请重试。"));
+    showToast("这条印象已撤回，之后不会再用于回答。");
     await refreshInsights();
   }
 
@@ -504,7 +504,7 @@ export function ZhiweiApp() {
   }
 
   function startMemoryCorrection(content: string) {
-    setInput(`我想修正你对我的这条认识：“${content}”。新的说法是：`);
+    setInput(`我想修正你对我的这条印象：“${content}”。新的说法是：`);
     setMobileMenu(null);
     window.setTimeout(() => document.querySelector<HTMLTextAreaElement>(".chat-composer textarea")?.focus(), 50);
   }

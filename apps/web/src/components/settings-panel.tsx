@@ -59,32 +59,31 @@ export function SettingsPanel({
         <div className="settings-content">
           <section className="settings-intro">
             <span><ShieldCheck size={17} /></span>
-            <div><h1>你的信息，由你决定</h1><p>你可以随时暂停记忆，或分别调整不同能力。暂停不会删除已有认识，也不会改动下方的分层偏好。</p></div>
+            <div><h1>你的信息，由你决定</h1><p>你可以随时暂停记忆，或分别调整不同能力。暂停不会删除已有印象，也不会改动下方的分层偏好。</p></div>
           </section>
 
           {error ? <p className="settings-error" role="alert">{error}</p> : null}
 
-          <section className="settings-card">
+          <section className="settings-card settings-memory-card">
             <div className="settings-card-heading"><div><h2>记忆总开关</h2><p>控制知微是否记录和使用记忆与画像。</p></div><Database size={17} /></div>
             <div className={`settings-master ${paused ? "paused" : ""}`}>
               <span><strong>使用记忆与画像</strong><small>{paused ? "已暂停；当前了解度、近期与长期偏好均已保留" : "正在按照近期与长期偏好工作"}</small></span>
               <Toggle label="使用记忆与画像" checked={!paused} disabled={Boolean(busySetting)} onChange={(checked) => void updateSetting("memoryEnabled", checked)} />
             </div>
             {paused ? <p className="settings-pause-note">恢复后会继续沿用暂停前的近期与长期分层偏好；下方其他陪伴能力不受总开关影响。</p> : null}
-          </section>
-
-          <section className="settings-card">
-            <div className="settings-card-heading"><div><h2>记忆分层偏好</h2><p>这些选择在记忆总开关暂停期间仍会原样保留。</p></div></div>
-            <div className="settings-list">
-              {([
-                ["shortTermMemoryEnabled", "近期认识", "保留一段时间内仍有帮助的上下文"],
-                ["longTermMemoryEnabled", "长期认识", "跨对话使用稳定的个人认识"],
-              ] as const).map(([key, label, description]) => (
-                <div className="settings-row" key={key}>
-                  <span><strong>{label}</strong><small>{description}</small></span>
-                  <Toggle label={label} checked={memorySettingChecked(settings, key)} disabled={Boolean(busySetting)} onChange={(checked) => void updateSetting(key, checked)} />
-                </div>
-              ))}
+            <div className="settings-memory-preferences">
+              <div className="settings-card-heading settings-memory-preferences-heading"><div><h2>记忆分层偏好</h2><p>这些选择在记忆总开关暂停期间仍会原样保留。</p></div></div>
+              <div className="settings-list">
+                {([
+                  ["shortTermMemoryEnabled", "近况", "保留一段时间内仍有帮助的上下文"],
+                  ["longTermMemoryEnabled", "长期印象", "跨对话使用稳定的个人印象"],
+                ] as const).map(([key, label, description]) => (
+                  <div className="settings-row" key={key}>
+                    <span><strong>{label}</strong><small>{description}</small></span>
+                    <Toggle label={label} checked={memorySettingChecked(settings, key)} disabled={Boolean(busySetting)} onChange={(checked) => void updateSetting(key, checked)} />
+                  </div>
+                ))}
+              </div>
             </div>
           </section>
 
@@ -92,7 +91,7 @@ export function SettingsPanel({
             <div className="settings-card-heading"><div><h2>其他陪伴偏好</h2><p>以下能力独立生效，不受记忆总开关影响。</p></div></div>
             <div className="settings-list">
               {([
-                ["emotionTrackingEnabled", "情绪趋势", "关闭后不再生成新的心情样本"],
+                ["emotionTrackingEnabled", "心情趋势", "关闭后不再记录你的情绪变化趋势"],
                 ["skillEvolutionEnabled", "相处方式学习", "关闭后保持目前学到的相处方式"],
                 ["returnNotesEnabled", "站内回访", "关闭后不再展示未完话题提醒"],
               ] as const).map(([key, label, description]) => (

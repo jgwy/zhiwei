@@ -26,12 +26,12 @@ test("从空白问卷进入聊天并生成画像、memory 与 Skill 证据", asy
   } else {
     await expect(page.getByRole("heading", { name: "关于你", exact: true })).toBeVisible();
   }
-  await expect(page.getByRole("heading", { name: "关于你的长期认识" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "对你的总体印象" })).toBeVisible();
   await page.getByRole("button", { name: "查看全文" }).click();
-  await expect(page.getByRole("dialog", { name: "关于你的长期认识" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "对你的总体印象" })).toBeVisible();
   await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "管理具体认识" }).click();
-  await expect(page.getByRole("dialog", { name: "管理具体认识" })).toBeVisible();
+  await page.getByRole("button", { name: "管理具体印象" }).click();
+  await expect(page.getByRole("dialog", { name: "管理具体印象" })).toBeVisible();
   await page.keyboard.press("Escape");
   if (testInfo.project.name.includes("mobile")) await page.getByRole("button", { name: "返回对话" }).click();
 
@@ -65,8 +65,8 @@ test("从空白问卷进入聊天并生成画像、memory 与 Skill 证据", asy
   await page.getByRole("button", { name: "设置", exact: true }).click();
   await expect(page.getByRole("heading", { name: "你的信息，由你决定" })).toBeVisible();
   await expect(page.getByRole("switch", { name: "使用记忆与画像" })).toBeVisible();
-  await expect(page.getByRole("switch", { name: "近期认识" })).toBeVisible();
-  await expect(page.getByRole("switch", { name: "长期认识" })).toBeVisible();
+  await expect(page.getByRole("switch", { name: "近况" })).toBeVisible();
+  await expect(page.getByRole("switch", { name: "长期印象" })).toBeVisible();
   await page.getByRole("button", { name: "返回知微" }).click();
 
   const composer = page.getByLabel("消息内容");
@@ -125,13 +125,13 @@ test("记忆可撤回且当前匿名档案可全量删除", async ({ page }, tes
   await page.getByRole("button", { name: "学习或工作" }).click();
   await page.getByRole("button", { name: "先听我说" }).click();
   await page.getByRole("button", { name: "先聊到这里，开始聊天" }).click();
-  await page.getByRole("button", { name: "管理具体认识" }).click();
+  await page.getByRole("button", { name: "管理具体印象" }).click();
   const withdraw = page.getByRole("button", { name: /撤回：/ }).first();
   await expect(withdraw).toBeVisible({ timeout: 10_000 });
   await withdraw.click();
   await page.getByRole("button", { name: "确认撤回", exact: true }).click();
-  await expect(page.getByText("这条认识已撤回", { exact: false })).toBeVisible();
-  await page.getByRole("button", { name: "关闭管理具体认识" }).click();
+  await expect(page.getByText("这条印象已撤回", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "关闭管理具体印象" }).click();
   await page.getByRole("button", { name: "设置", exact: true }).click();
   await page.getByPlaceholder("删除知微中的全部数据").fill("删除知微中的全部数据");
   await page.getByRole("button", { name: "永久删除全部数据" }).click();

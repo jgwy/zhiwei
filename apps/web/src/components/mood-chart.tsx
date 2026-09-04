@@ -14,7 +14,7 @@ export function MoodChart({ mood }: { mood: BootstrapData["mood"] }) {
           contentStyle={{ borderRadius: 12, border: "1px solid #e8e8e8", boxShadow: "0 10px 30px rgba(0,0,0,.08)", fontSize: 12 }}
           labelFormatter={formatMoodDay}
         />
-        <Line name="心情值" type="monotone" dataKey="score" stroke="#222" strokeWidth={2.2} dot={{ r: 3, fill: "white", strokeWidth: 2 }} activeDot={{ r: 4 }} />
+        <Line name="心情分数" type="monotone" dataKey="score" stroke="#222" strokeWidth={2.2} dot={{ r: 3, fill: "white", strokeWidth: 2 }} activeDot={{ r: 4 }} />
       </LineChart>
     </ResponsiveContainer>
   );

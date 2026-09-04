@@ -21,7 +21,7 @@ function memory(index: number, overrides: Partial<UserMemoryView> = {}): UserMem
 function profile(overrides: Partial<ProfileView> = {}): ProfileView {
   return {
     id: "profile-1",
-    summary: "一段可靠的长期认识。",
+    summary: "一段可靠的长期印象。",
     dimensionWeights: {},
     understanding: { coverage: 0, validation: 0, personalization: 0, temporal: 0 },
     score: 20,
@@ -49,7 +49,7 @@ describe("ordinary memory view", () => {
     expect(resolveLongTermSummary(profile({ schemaVersion: "legacy-v1" })).state).toBe("rebuilding");
     expect(resolveLongTermSummary(profile({ schemaVersion: "long-profile-v2" })).state).toBe("ready");
     expect(resolveLongTermSummary(profile({ schemaVersion: "long-profile-v2", syncStatus: "current" })).state).toBe("ready");
-    expect(resolveLongTermSummary(profile({ schemaVersion: "long-profile-v2", syncStatus: "stale" }))).toMatchObject({ state: "stale", text: "一段可靠的长期认识。" });
+    expect(resolveLongTermSummary(profile({ schemaVersion: "long-profile-v2", syncStatus: "stale" }))).toMatchObject({ state: "stale", text: "一段可靠的长期印象。" });
     expect(resolveLongTermSummary(profile()).state).toBe("ready");
   });
 
