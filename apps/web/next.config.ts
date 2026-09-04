@@ -1,8 +1,15 @@
 import type { NextConfig } from "next";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+const rootEnv = fileURLToPath(new URL("../../.env", import.meta.url));
+if (existsSync(rootEnv)) process.loadEnvFile(rootEnv);
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  outputFileTracingRoot: new URL("../..", import.meta.url).pathname,
+  outputFileTracingRoot: fileURLToPath(new URL("../..", import.meta.url)),
+  reactCompiler: true,
+  agentRules: false,
   transpilePackages: ["@zhiwei/core", "@zhiwei/model-gateway", "@zhiwei/skills"],
   async headers() {
     return [
@@ -18,4 +25,3 @@ const nextConfig: NextConfig = {
 };
 
 export default nextConfig;
-

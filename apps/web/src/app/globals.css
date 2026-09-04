@@ -158,7 +158,7 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #222; outline-
 .message time { opacity: 0; font-size: 10px; color: #aaa; transition: .15s; }
 .message:hover time { opacity: 1; }
 .message-actions { display: flex; opacity: 0; transition: .15s; }
-.message:hover .message-actions { opacity: 1; }
+.message:hover .message-actions, .message:focus-within .message-actions, .message-actions-visible { opacity: 1; }
 .message-actions button { border: 0; background: transparent; width: 28px; height: 25px; display: grid; place-items: center; cursor: pointer; color: #999; border-radius: 7px; }
 .message-actions button:hover { background: #f2f2f2; color: #333; }
 .typing { display: flex; gap: 4px; padding: 10px 0; }
@@ -185,7 +185,7 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #222; outline-
 .composer-wrap { position: relative; z-index: 3; flex: 0 0 auto; padding: 8px 0 18px; background: linear-gradient(to top, white 82%, rgba(255,255,255,0)); }
 .chat-composer { display: flex; gap: 8px; align-items: flex-end; border: 1px solid #dedede; border-radius: 18px; padding: 9px 9px 9px 15px; background: white; box-shadow: 0 8px 30px rgba(0,0,0,.055); }
 .chat-composer:focus-within { border-color: #bcbcbc; box-shadow: 0 10px 36px rgba(0,0,0,.075); }
-.chat-composer textarea { min-width: 0; flex: 1; border: 0; outline: 0; resize: none; min-height: 38px; max-height: 140px; padding: 8px 2px 6px; line-height: 1.5; }
+.chat-composer textarea { min-width: 0; flex: 1; border: 0; outline: 0; resize: none; min-height: 38px; max-height: 180px; padding: 8px 2px 6px; line-height: 1.5; }
 .composer-wrap > small { display: block; text-align: center; color: #b2b2b2; font-size: 9px; margin-top: 7px; }
 
 .insight-drawer { min-width: 0; min-height: 0; height: 100%; border-left: 1px solid #ededed; overflow: hidden; transition: .2s; }
@@ -276,6 +276,18 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #222; outline-
 .mobile-insight-close { display: none; }
 .toast { position: fixed; left: 50%; bottom: 92px; transform: translateX(-50%); background: rgba(20,20,20,.92); color: white; border-radius: 12px; padding: 10px 14px; display: flex; gap: 8px; align-items: center; font-size: 12px; z-index: 100; box-shadow: 0 10px 34px rgba(0,0,0,.2); animation: toast-in .22s ease; }
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%, 8px); } }
+.toast-leaving { opacity: 0; transform: translate(-50%, 5px); transition: opacity .18s ease, transform .18s ease; animation: none; }
+.waiting-reply { display: flex; align-items: center; gap: 10px; color: #888; font-size: 12px; }
+.load-older-messages { display: block; margin: 0 auto 20px; padding: 10px 16px; border: 0; border-radius: 10px; background: #f7f7f7; color: #777; font-size: 12px; cursor: pointer; }
+.conversation-loading { text-align: center; padding: 30px; color: #777; font-size: 13px; }
+@media (hover: none), (pointer: coarse) {
+  .message-actions { opacity: 1; }
+  .message-actions button, .conversation-more { min-width: 44px; min-height: 44px; }
+  .feedback-reasons button, .option-chips button, .text-button { min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .toast, .toast-leaving, .typing i { animation: none; transition: none; }
+}
 
 .settings-shell { height: 100dvh; display: grid; grid-template-rows: 64px minmax(0, 1fr); overflow: hidden; background: #f7f7f7; }
 .settings-header { display: grid; grid-template-columns: 120px 1fr 120px; align-items: center; padding: 0 24px; border-bottom: 1px solid #e7e7e7; background: rgba(255,255,255,.94); backdrop-filter: blur(16px); }

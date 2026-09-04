@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/worker.ts",
-    "start": "node --import tsx src/worker.ts",
+    "dev": "node --env-file-if-exists=../../.env --import tsx --watch src/worker.ts",
+    "start": "node --env-file-if-exists=../../.env ../../dist/apps/worker/worker.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"
   },
@@ -17,7 +17,7 @@
   "devDependencies": {
     "@types/node": "^24.10.0",
     "tsx": "4.23.13",
-    "typescript": "^5.9.3",
+    "typescript": "7.0.2",
     "vitest": "4.1.11"
   }
 }

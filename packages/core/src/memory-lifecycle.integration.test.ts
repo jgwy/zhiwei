@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   addMessage,
   commitMemoryConsolidation,
@@ -22,10 +22,21 @@ const integration = process.env.INTEGRATION_DATABASE_URL ? describe : describe.s
 
 integration("memory lifecycle with PostgreSQL", () => {
   const userId = crypto.randomUUID();
+  const originalDatabaseUrl = process.env.DATABASE_URL;
+
+  beforeAll(async () => {
+    await closePool();
+    process.env.DATABASE_URL = process.env.INTEGRATION_DATABASE_URL!;
+  });
 
   afterAll(async () => {
-    await deleteAllUserData(userId).catch(() => undefined);
-    await closePool();
+    try {
+      await deleteAllUserData(userId);
+    } finally {
+      await closePool();
+      if (originalDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = originalDatabaseUrl;
+    }
   });
 
   it("keeps direct memory writes scoped, idempotent, reversible and auditable", async () => {

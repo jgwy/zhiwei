@@ -16,6 +16,15 @@ vi.mock("openai", () => ({
 import { defaultPersonalSkill, type CompiledContext } from "@zhiwei/core";
 import { AliyunBailianGateway } from "./gateway";
 
+
+function testInput(content: string) {
+  const context: CompiledContext = {
+    foundationInstructions: "", personalSkill: defaultPersonalSkill, profileSummary: "",
+    memories: [], sessionSummary: "", recentMessages: [], estimatedTokens: 0, truncated: false,
+  };
+  return { userId: crypto.randomUUID(), conversationId: crypto.randomUUID(), messageId: crypto.randomUUID(), content, context };
+}
+
 const weights = {
   basic: 1,
   goal: 1,
@@ -72,6 +81,7 @@ function streamedChatText(content: string, id: string = crypto.randomUUID()) {
 function reflectionDecision(memories: unknown[]) {
   return {
     memories,
+    summaryEvidenceMessageIds: [],
     mood: null,
     refreshProfile: memories.length > 0,
     refreshSummary: false,
@@ -282,7 +292,7 @@ describe("Aliyun structured-output quality retry contract", () => {
   });
 
   it("keeps an explicit memory-control command on the concise acknowledgement path", async () => {
-    const reply = "好，这条认识会立即撤回，之后不再用于回答。";
+    const reply = "好，我会按你的要求处理，完成后会显示更新提示。";
     openAiMock.completionCreate.mockResolvedValue(streamedChatText(reply));
     const context: CompiledContext = {
       foundationInstructions: "",
@@ -311,45 +321,36 @@ describe("Aliyun structured-output quality retry contract", () => {
     expect(openAiMock.responseCreate).not.toHaveBeenCalled();
   });
 
-  it("repairs onboarding memory output that omits the current question category", async () => {
-    const messageId = crypto.randomUUID();
-    const wrong = {
-      operation: "create",
-      category: "expression",
-      content: "愿意慢慢交流",
-      tier: "long",
-      confidence: 0.8,
-      validUntil: null,
-      reason: "错误分类",
-      evidenceMessageIds: [messageId],
-    };
-    const repaired = { ...wrong, category: "basic", content: "希望被称作小满，目前是大四学生" };
+  it("retries an unseen memory-control reply that claims the background change already completed", async () => {
+    const premature = "好的，我已经按照你的要求忘记了关于上海求职的事情。";
+    const corrected = "好，我会按你刚才的要求整理，完成后会显示更新提示。";
     openAiMock.completionCreate
-      .mockResolvedValueOnce(completion(reflectionDecision([wrong])))
-      .mockResolvedValueOnce(completion(reflectionDecision([repaired])));
-    const context: CompiledContext = {
-      foundationInstructions: "",
-      personalSkill: defaultPersonalSkill,
-      profileSummary: "",
-      memories: [],
-      sessionSummary: "",
-      recentMessages: [],
-      estimatedTokens: 0,
-      truncated: false,
-    };
+      .mockResolvedValueOnce(streamedChatText(premature))
+      .mockResolvedValueOnce(streamedChatText(corrected));
 
+    let output = "";
+    for await (const event of new AliyunBailianGateway().streamDialogue(testInput(
+      "请忘掉刚才上海找工作的事情，之后别再提它",
+    ))) {
+      if (event.type === "text.delta") output += event.delta;
+    }
+
+    expect(output).toBe(corrected);
+    expect(output).not.toContain(premature);
+    expect(openAiMock.completionCreate).toHaveBeenCalledTimes(2);
+    const repairSystem = openAiMock.completionCreate.mock.calls[1]?.[0].messages[0].content as string;
+    expect(repairSystem).toContain("误说成已经完成");
+  });
+
+  it("allows an onboarding answer to produce no memory without a repair call", async () => {
+    openAiMock.completionCreate.mockResolvedValueOnce(completion(reflectionDecision([])));
     const result = await new AliyunBailianGateway().reflect({
-      userId: crypto.randomUUID(),
-      conversationId: crypto.randomUUID(),
-      messageId,
-      content: "我叫小满，现在是大四学生。",
-      context,
-      kind: "onboarding",
-      questionCategory: "basic",
+      ...testInput("最近有点烦"), kind: "onboarding", questionCategory: "challenge",
     });
-
-    expect(result.meta.retries).toBe(1);
-    expect(result.data.memories).toEqual([expect.objectContaining({ category: "basic" })]);
+    expect(result.data.memories).toEqual([]);
+    expect(result.data.mood).toBeNull();
+    expect(result.meta.retries).toBe(0);
+    expect(openAiMock.completionCreate).toHaveBeenCalledTimes(1);
   });
 
   it("repairs an explicit forget request unless it contains only exact withdrawals", async () => {
@@ -367,8 +368,8 @@ describe("Aliyun structured-output quality retry contract", () => {
       reason: "用户明确要求忘掉这条认识",
     };
     openAiMock.completionCreate
-      .mockResolvedValueOnce(completion({ withdrawals: [wrongSelection], decisionReason: "错误选择" }))
-      .mockResolvedValueOnce(completion({ withdrawals: [withdrawal], decisionReason: "精确匹配上海求职认识" }));
+      .mockResolvedValueOnce(completion(reflectionDecision([{ operation: "withdraw", ...wrongSelection, evidenceMessageIds: ["E1"], triggerMessageId: "E1" }])))
+      .mockResolvedValueOnce(completion(reflectionDecision([{ operation: "withdraw", ...withdrawal, evidenceMessageIds: ["E1"], triggerMessageId: "E1" }])));
     const context: CompiledContext = {
       foundationInstructions: "",
       personalSkill: defaultPersonalSkill,
@@ -404,71 +405,45 @@ describe("Aliyun structured-output quality retry contract", () => {
     expect(result.data.memories).toEqual([expect.objectContaining({ operation: "withdraw", memoryId, expectedVersionId: versionId })]);
   });
 
-  it("does not turn a neutral statement into a mood sample", async () => {
-    openAiMock.completionCreate.mockResolvedValue(completion({
-      ...reflectionDecision([]),
-      mood: { score: 5, summary: "用户情绪高涨。", meaningful: true },
-    }));
-    const messageId = crypto.randomUUID();
-    const context: CompiledContext = {
-      foundationInstructions: "",
-      personalSkill: defaultPersonalSkill,
-      profileSummary: "",
-      memories: [],
-      sessionSummary: "",
-      recentMessages: [],
-      estimatedTokens: 0,
-      truncated: false,
-    };
-
-    const result = await new AliyunBailianGateway().reflect({
-      userId: crypto.randomUUID(),
-      conversationId: crypto.randomUUID(),
-      messageId,
-      content: "我是做交互设计的，目前在带一个小团队。",
-      context,
-      kind: "chat",
-    });
-
+  it("requires a real batch source for a mood sample", async () => {
+    openAiMock.completionCreate
+      .mockResolvedValueOnce(completion({ ...reflectionDecision([]), mood: { score: 5, summary: "用户情绪高涨。", meaningful: true, evidenceMessageIds: ["E2"] } }))
+      .mockResolvedValueOnce(completion(reflectionDecision([])));
+    const result = await new AliyunBailianGateway().reflect({ ...testInput("我是做交互设计的，目前在带一个小团队。"), kind: "chat" });
     expect(result.data.mood).toBeNull();
+    expect(result.meta.retries).toBe(1);
   });
 
-  it("retries an interaction preference placed in boundary instead of expression", async () => {
-    const messageId = crypto.randomUUID();
-    const common = {
-      operation: "create",
-      content: "用户害怕时希望先被听懂，不要急着给方法。",
-      tier: "long",
-      confidence: 0.9,
-      validUntil: null,
-      reason: "明确的回应偏好",
-      evidenceMessageIds: [messageId],
-    };
-    openAiMock.completionCreate
-      .mockResolvedValueOnce(completion(reflectionDecision([{ ...common, category: "boundary" }])))
-      .mockResolvedValueOnce(completion(reflectionDecision([{ ...common, category: "expression" }])));
-    const context: CompiledContext = {
-      foundationInstructions: "",
-      personalSkill: defaultPersonalSkill,
-      profileSummary: "",
-      memories: [],
-      sessionSummary: "",
-      recentMessages: [],
-      estimatedTokens: 0,
-      truncated: false,
-    };
-
+  it("maps each action, mood and summary to their selected batch sources", async () => {
+    const input = testInput("今天购物退货被拒，我非常委屈");
+    const firstId = crypto.randomUUID();
+    const secondId = crypto.randomUUID();
+    const thirdId = input.messageId;
+    openAiMock.completionCreate.mockResolvedValueOnce(completion({
+      ...reflectionDecision([{
+        operation: "create", category: "expression", content: "希望先听自己说，不急着给建议",
+        tier: "long", confidence: 0.8, validUntil: null, reason: "明确回应偏好",
+        evidenceMessageIds: ["E1"], triggerMessageId: "E1",
+      }, {
+        operation: "create", category: "challenge", content: "购物退货被拒，正在处理此事",
+        tier: "short", confidence: 0.8, validUntil: new Date(Date.now() + 86_400_000).toISOString(),
+        reason: "后续消息补足同一具体事件", evidenceMessageIds: ["E2", "E3"], triggerMessageId: "E3",
+      }]),
+      mood: { score: -2, summary: "退货受阻后感到委屈", meaningful: true, evidenceMessageIds: ["E3"] },
+      refreshSummary: true, summaryEvidenceMessageIds: ["E1", "E2", "E3"],
+    }));
     const result = await new AliyunBailianGateway().reflect({
-      userId: crypto.randomUUID(),
-      conversationId: crypto.randomUUID(),
-      messageId,
-      content: "我现在不想要很多方法，只希望你先把我的害怕听明白。",
-      context,
-      kind: "chat",
+      ...input, kind: "chat", sourceMessages: [
+        { id: firstId, role: "user", content: "我希望你先听我说，不急着建议", createdAt: "2026-09-04T00:00:00Z" },
+        { id: secondId, role: "user", content: "我买的鞋子需要退货", createdAt: "2026-09-04T00:01:00Z" },
+        { id: thirdId, role: "user", content: input.content, createdAt: "2026-09-04T00:02:00Z" },
+      ],
     });
-
-    expect(result.meta.retries).toBe(1);
-    expect(result.data.memories).toEqual([expect.objectContaining({ category: "expression" })]);
+    expect(result.data.memories[0]).toMatchObject({ evidenceMessageIds: [firstId], triggerMessageId: firstId });
+    expect(result.data.memories[1]).toMatchObject({ evidenceMessageIds: [secondId, thirdId], triggerMessageId: thirdId });
+    expect(result.data.mood?.evidenceMessageIds).toEqual([thirdId]);
+    expect(result.data.summaryEvidenceMessageIds).toEqual([firstId, secondId, thirdId]);
+    expect(openAiMock.completionCreate).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a supersede that leaves the memory text unchanged", async () => {
@@ -485,7 +460,8 @@ describe("Aliyun structured-output quality retry contract", () => {
       confidence: 0.9,
       validUntil: new Date(Date.now() + 86_400_000).toISOString(),
       reason: "没有实质变化",
-      evidenceMessageIds: [messageId],
+      evidenceMessageIds: ["E1"],
+      triggerMessageId: "E1",
     };
     openAiMock.completionCreate
       .mockResolvedValueOnce(completion(reflectionDecision([unchanged])))
@@ -525,7 +501,7 @@ describe("Aliyun structured-output quality retry contract", () => {
     expect(result.data.memories).toEqual([]);
   });
 
-  it("buffers and validates a Character reply for routed deep emotional dialogue", async () => {
+  it("streams a Character reply with deep emotional guidance", async () => {
     const paragraphs = [
       "一上课就头晕，会直接打断注意力，也很容易让你把身体的不舒服和“是不是跟不上”连在一起。大学物理本来就需要持续跟住概念和推导，所以当身体状态先把节奏打乱，那种慌张可能不只是怕漏掉一节课，而是担心自己会从这里一路落下去。",
       "我先把这两件事都认真放在这里，不急着把它变成学习技巧清单，也不会仅凭头晕替你判断原因。头晕这件事本身值得现实地留意，害怕跟不上也并不说明你能力不够。为了先陪你找准最迫近的部分，此刻更让你不安的，是头晕本身，还是已经听不懂某些物理内容的感觉？",
@@ -793,62 +769,27 @@ describe("Aliyun structured-output quality retry contract", () => {
     expect(openAiMock.completionCreate.mock.calls[1]?.[0].response_format.json_schema.name).toBe("memory_consolidation_review");
   });
 
-  it("keeps ordinary scientific and writing tasks on their structured Flash path", async () => {
-    openAiMock.completionCreate
-      .mockResolvedValueOnce(completion({
-        content: "太阳耀斑会释放增强的电磁辐射；这里先区分耀斑本身与随后可能到达的高能粒子影响。",
-        claimIndicesUsed: [1],
-        analogy: null,
-        distinctions: ["电磁辐射与高能粒子不是同一种传播过程。"],
-      }))
-      .mockResolvedValueOnce(completion({
-        content: "这是按用户要求生成的一段简短课程开场。",
-      }));
-    const context: CompiledContext = {
-      foundationInstructions: "知微基底技能",
-      personalSkill: defaultPersonalSkill,
-      profileSummary: "",
-      memories: [],
-      sessionSummary: "",
-      recentMessages: [],
-      estimatedTokens: 0,
-      truncated: false,
-    };
+  it("streams scientific and writing text directly from Flash with the audited fact packet", async () => {
+    const scienceText = "太阳耀斑会释放增强的电磁辐射；这里先区分耀斑本身与随后可能到达的高能粒子影响。";
+    const writingText = "这是按用户要求生成的一段简短课程开场。";
+    openAiMock.responseCreate.mockResolvedValueOnce(streamedText(scienceText)).mockResolvedValueOnce(streamedText(writingText));
     const gateway = new AliyunBailianGateway();
-
-    for await (const _event of gateway.streamDialogue({
-      userId: crypto.randomUUID(),
-      conversationId: crypto.randomUUID(),
-      messageId: crypto.randomUUID(),
-      content: "太阳耀斑为什么会影响通信？",
-      context,
-      scienceMode: true,
-      factBrief: {
-        claims: [{ text: "太阳耀斑会释放增强的电磁辐射。", status: "supported", sourceIndices: [1] }],
-        summary: "已核实一项机制事实。",
-      },
-      responsePlan: { responseMode: "character", depth: "light", physicalSymptom: false, reason: "普通科学问题" },
-    })) {
-      // Consume the simulated stream to verify routing and metadata generation.
+    let science = "";
+    for await (const event of gateway.streamDialogue({
+      ...testInput("太阳耀斑为什么会影响通信？"), scienceMode: true,
+      factBrief: { claims: [{ text: "太阳耀斑会释放增强的电磁辐射。", status: "supported", sourceIndices: [1] }], summary: "已核实一项机制事实。" },
+    })) if (event.type === "text.delta") science += event.delta;
+    let writing = "";
+    for await (const event of gateway.streamDialogue(testInput("帮我写一段大学物理课的开场。"))) {
+      if (event.type === "text.delta") writing += event.delta;
     }
-    for await (const _event of gateway.streamDialogue({
-      userId: crypto.randomUUID(),
-      conversationId: crypto.randomUUID(),
-      messageId: crypto.randomUUID(),
-      content: "帮我写一段大学物理课的开场。",
-      context,
-      responsePlan: { responseMode: "character", depth: "light", physicalSymptom: false, reason: "普通写作任务" },
-    })) {
-      // Consume the simulated stream to verify routing and metadata generation.
-    }
-
-    expect(openAiMock.responseCreate).not.toHaveBeenCalled();
-    expect(openAiMock.completionCreate).toHaveBeenCalledTimes(2);
-    for (const [request] of openAiMock.completionCreate.mock.calls) {
-      expect(request).toMatchObject({
-        model: "qwen3.8-flash",
-        response_format: { type: "json_schema" },
-      });
-    }
+    expect(science).toBe(scienceText);
+    expect(writing).toBe(writingText);
+    expect(openAiMock.completionCreate).not.toHaveBeenCalled();
+    expect(openAiMock.responseCreate).toHaveBeenCalledTimes(2);
+    expect(openAiMock.responseCreate.mock.calls[0]?.[0]).toMatchObject({ model: "qwen3.8-flash", stream: true });
+    expect(openAiMock.responseCreate.mock.calls[0]?.[0].input[0].content).toContain("status=supported");
+    expect(openAiMock.responseCreate.mock.calls[0]?.[0]).not.toHaveProperty("response_format");
   });
+
 });

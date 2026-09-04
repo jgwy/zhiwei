@@ -7,6 +7,43 @@ export type TextQualityOptions = {
   maxQuestions?: number;
 };
 
+/** Only transport corruption blocks a live stream. Style metrics remain diagnostic. */
+export function assertStreamTextIntegrity(text: string, final = false): void {
+  if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\uFFFD]/u.test(text)) {
+    throw new Error("invalid_generated_text:control-character");
+  }
+  if (/[\u00C0-\u024F]{6,}/u.test(text)) throw new Error("invalid_generated_text:mojibake-run");
+  if ((final || [...text.replace(/\s/gu, "")].length >= 32) && !/[\p{L}\p{N}]/u.test(text)) {
+    throw new Error("invalid_generated_text:too-little-language");
+  }
+}
+
+/** Holds an initial 32-character prefix and an eight-code-point look-behind tail. */
+export class StreamTextBuffer {
+  private pending = "";
+  private opened = false;
+  private hadLanguage = false;
+
+  push(delta: string): string {
+    this.pending += delta;
+    if (!this.opened && [...this.pending.replace(/\s/gu, "")].length < 32) return "";
+    assertStreamTextIntegrity(this.pending);
+    this.opened = true;
+    this.hadLanguage ||= /[\p{L}\p{N}]/u.test(this.pending);
+    const characters = [...this.pending];
+    const output = characters.slice(0, -8).join("");
+    this.pending = characters.slice(-8).join("");
+    return output;
+  }
+
+  finish(): string {
+    assertStreamTextIntegrity(this.pending, !this.hadLanguage);
+    const output = this.pending;
+    this.pending = "";
+    return output;
+  }
+}
+
 export type TextQualityResult = {
   ok: boolean;
   reason: string | null;
@@ -68,58 +105,6 @@ export function inspectGeneratedText(
   return { ok: true, reason: null, metrics };
 }
 
-export function assertGeneratedTextQuality(content: string, options: TextQualityOptions = {}): void {
-  const result = inspectGeneratedText(content, options);
-  if (!result.ok) throw new Error(`invalid_generated_text:${result.reason}`);
-}
-
-export function limitUnquotedQuestions(content: string, maximum = 1): string {
-  const characters = [...content];
-  const questionIndices: number[] = [];
-  const closingForOpening = new Map([["“", "”"], ["‘", "’"], ["\"", "\""], ["'", "'"], ["`", "`"]]);
-  let closingQuote: string | null = null;
-
-  for (const [index, character] of characters.entries()) {
-    if (closingQuote) {
-      if (character === closingQuote) closingQuote = null;
-      continue;
-    }
-    const closing = closingForOpening.get(character);
-    if (closing) {
-      closingQuote = closing;
-      continue;
-    }
-    if (character === "？" || character === "?") questionIndices.push(index);
-  }
-
-  if (questionIndices.length <= maximum) return content;
-  const keep = new Set(maximum > 0 ? questionIndices.slice(-maximum) : []);
-  for (const index of questionIndices) {
-    if (!keep.has(index)) characters[index] = "，";
-  }
-  return characters.join("");
-}
-
-export function ensureEmotionalParagraphs(content: string, minimum = 2): string {
-  const trimmed = content.trim();
-  const paragraphs = trimmed.split(/\n\s*\n/u).filter(Boolean);
-  if (paragraphs.length >= minimum || minimum !== 2) return trimmed;
-
-  const sentences = trimmed.match(/[^。！？!?]+[。！？!?]?/gu)?.map((sentence) => sentence.trim()).filter(Boolean) ?? [];
-  if (sentences.length < 2) return trimmed;
-  const totalLength = sentences.reduce((sum, sentence) => sum + [...sentence].length, 0);
-  let accumulated = 0;
-  let splitIndex = -1;
-  for (let index = 0; index < sentences.length - 1; index += 1) {
-    accumulated += [...sentences[index]!].length;
-    if (accumulated >= totalLength * 0.42) {
-      splitIndex = index + 1;
-      break;
-    }
-  }
-  if (splitIndex <= 0 || splitIndex >= sentences.length) return trimmed;
-  return `${sentences.slice(0, splitIndex).join("")}\n\n${sentences.slice(splitIndex).join("")}`;
-}
 
 function lexicalTokens(content: string): string[] {
   const tokens: string[] = [];

@@ -26,7 +26,7 @@ export type PreparedReflection = {
 
 export function prepareReflectionActions(
   decision: ReflectionDecision,
-  sourceMessageId: string,
+  sourceMessageId: string | string[],
   settings: MemoryLayerSettings,
   now = new Date(),
 ): PreparedReflection {
@@ -37,7 +37,14 @@ export function prepareReflectionActions(
 
   for (const [index, raw] of decision.memories.slice(0, 3).entries()) {
     const action = MemoryMutationSchema.parse(raw);
-    if (!action.evidenceMessageIds.includes(sourceMessageId)) {
+    const sourceIds = Array.isArray(sourceMessageId)
+      ? sourceMessageId
+      : [sourceMessageId];
+    const trigger = action.triggerMessageId ?? sourceIds.at(-1)!;
+    if (
+      !sourceIds.includes(trigger) ||
+      !action.evidenceMessageIds.includes(trigger)
+    ) {
       throw new Error("memory_evidence_scope_invalid");
     }
     if ("content" in action && containsForbiddenMemorySecret(action.content)) {
@@ -49,19 +56,36 @@ export function prepareReflectionActions(
       continue;
     }
     if ("tier" in action) {
-      const validity = normalizeMemoryValidity(action.tier, action.validUntil, now);
-      if (validity.reason) validityAdjustments.push({ index, reason: validity.reason });
-      actions.push({ ...action, validUntil: validity.validUntil } as MemoryMutation);
+      const validity = normalizeMemoryValidity(
+        action.tier,
+        action.validUntil,
+        now,
+      );
+      if (validity.reason)
+        validityAdjustments.push({ index, reason: validity.reason });
+      actions.push({
+        ...action,
+        validUntil: validity.validUntil,
+      } as MemoryMutation);
     } else {
       actions.push(action);
     }
   }
 
-  return { actions, blockedSecretCount, disabledLayerCount, validityAdjustments };
+  return {
+    actions,
+    blockedSecretCount,
+    disabledLayerCount,
+    validityAdjustments,
+  };
 }
 
-export function embeddingInputs(actions: MemoryMutation[]): Array<{ index: number; content: string }> {
-  return actions.flatMap((action, index) => "content" in action ? [{ index, content: action.content }] : []);
+export function embeddingInputs(
+  actions: MemoryMutation[],
+): Array<{ index: number; content: string }> {
+  return actions.flatMap((action, index) =>
+    "content" in action ? [{ index, content: action.content }] : [],
+  );
 }
 
 export function alignEmbeddings(
@@ -69,17 +93,26 @@ export function alignEmbeddings(
   inputs: Array<{ index: number }>,
   vectors: number[][] | null,
 ): Array<number[] | null> {
-  const aligned = Array.from({ length: actionCount }, () => null as number[] | null);
+  const aligned = Array.from(
+    { length: actionCount },
+    () => null as number[] | null,
+  );
   if (!vectors || vectors.length !== inputs.length) return aligned;
-  for (const [vectorIndex, input] of inputs.entries()) aligned[input.index] = vectors[vectorIndex] ?? null;
+  for (const [vectorIndex, input] of inputs.entries())
+    aligned[input.index] = vectors[vectorIndex] ?? null;
   return aligned;
 }
 
-export function profileMemories(memories: MemoryRecord[]): LifecycleMemoryInput[] {
+export function profileMemories(
+  memories: MemoryRecord[],
+): LifecycleMemoryInput[] {
   return memories
     .filter((memory) => (memory.status ?? "active") === "active")
     .filter((memory) => memory.tier === "long")
-    .filter((memory) => memory.category !== "emotion" && memory.category !== "boundary")
+    .filter(
+      (memory) =>
+        memory.category !== "emotion" && memory.category !== "boundary",
+    )
     .map((memory) => ({
       memoryId: memory.id,
       versionId: memory.versionId,
@@ -89,9 +122,14 @@ export function profileMemories(memories: MemoryRecord[]): LifecycleMemoryInput[
     }));
 }
 
-export function consolidationMemories(memories: MemoryRecord[]): LifecycleMemoryInput[] {
+export function consolidationMemories(
+  memories: MemoryRecord[],
+): LifecycleMemoryInput[] {
   return memories
-    .filter((memory) => (memory.status ?? "active") === "active" && memory.tier === "long")
+    .filter(
+      (memory) =>
+        (memory.status ?? "active") === "active" && memory.tier === "long",
+    )
     .map((memory) => ({
       memoryId: memory.id,
       versionId: memory.versionId,
@@ -124,10 +162,19 @@ export function backgroundReflection(input: {
   });
 }
 
-function memoryLayerEnabled(action: Extract<MemoryMutation, { tier: "short" | "long" }>, settings: MemoryLayerSettings) {
+function memoryLayerEnabled(
+  action: Extract<MemoryMutation, { tier: "short" | "long" }>,
+  settings: MemoryLayerSettings,
+) {
   if (settings.memoryEnabled === false) return false;
-  if (action.tier === "short" && settings.shortTermMemoryEnabled === false) return false;
-  if (action.tier === "long" && settings.longTermMemoryEnabled === false) return false;
-  if (action.category === "emotion" && settings.emotionTrackingEnabled === false) return false;
+  if (action.tier === "short" && settings.shortTermMemoryEnabled === false)
+    return false;
+  if (action.tier === "long" && settings.longTermMemoryEnabled === false)
+    return false;
+  if (
+    action.category === "emotion" &&
+    settings.emotionTrackingEnabled === false
+  )
+    return false;
   return true;
 }

@@ -1,7 +1,8 @@
 "use client";
 
 import { ArrowRight, Check, Info, Sparkles } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { shouldSubmitOnEnter } from "@/lib/keyboard";
 import type { BootstrapData } from "@/lib/client-types";
 import { Button } from "@/components/ui/button";
 
@@ -17,6 +18,7 @@ export function Onboarding({
   const [submitting, setSubmitting] = useState(false);
   const [showInfo, setShowInfo] = useState(current.answeredCount === 0);
   const [error, setError] = useState("");
+  const composingRef = useRef(false);
 
   async function responseError(response: Response, fallback: string) {
     const payload = await response.json().catch(() => null);
@@ -66,7 +68,7 @@ export function Onboarding({
             不用一次说完，也没有标准答案。回答三题后就可以开始聊天，剩下的我们以后慢慢认识。
           </p>
           <div className="privacy-notes">
-            <div><Sparkles size={18} /><span><strong>什么时候记住</strong>　每次回答或聊天结束后，知微会整理新的认识。</span></div>
+            <div><Sparkles size={18} /><span><strong>什么时候记住</strong>　知微会在后台分批整理具体、有用的新认识；你也可以明确告诉她记住或忘记。</span></div>
             <div><Check size={18} /><span><strong>什么时候使用</strong>　只在未来确实相关的对话里使用，不会塞入全部历史。</span></div>
             <div><Info size={18} /><span><strong>怎么修改</strong>　在右侧“关于你”中点选内容，回到聊天告诉知微新的说法；授权可在设置里直接关闭。</span></div>
           </div>
@@ -101,8 +103,10 @@ export function Onboarding({
             <textarea
               value={answer}
               onChange={(event) => setAnswer(event.target.value)}
+              onCompositionStart={() => { composingRef.current = true; }}
+              onCompositionEnd={() => { composingRef.current = false; }}
               onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
+                if (shouldSubmitOnEnter(event, composingRef.current)) {
                   event.preventDefault();
                   void submit();
                 }

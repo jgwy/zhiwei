@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, CheckCircle2, ChevronDown, Clock3, Coins, Database, FlaskConical, GitBranch, RefreshCw, ScrollText, ShieldCheck, Undo2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { categoryLabel } from "@zhiwei/core/client";
@@ -82,9 +82,8 @@ function numberValue(value: number | string | null | undefined) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function formatTokens(value: number | string | null | undefined) {
-  return new Intl.NumberFormat("zh-CN").format(numberValue(value));
-}
+const tokenFormatter = new Intl.NumberFormat("zh-CN");
+function formatTokens(value: number | string | null | undefined) { return tokenFormatter.format(numberValue(value)); }
 
 function formatCost(value: number | string | null | undefined) {
   return `¥${numberValue(value).toFixed(6)}`;
@@ -129,8 +128,8 @@ function modelRunBatchSummary(batch: ModelRunBatch) {
   const traces = new Set(batch.runs.map((run) => run.trace_id).filter(Boolean));
   const roles = [...new Set(batch.runs.map((run) => taskLabels[run.role] ?? "其他任务"))];
   const firstTokenValues = batch.runs
-    .filter((run) => run.first_token_ms != null && Number.isFinite(Number(run.first_token_ms)))
-    .map((run) => Number(run.first_token_ms));
+    .filter((run) => run.first_delta_ms != null && Number.isFinite(Number(run.first_delta_ms)))
+    .map((run) => Number(run.first_delta_ms));
   const statuses = batch.runs.map((run) => run.status ?? "completed");
   const status = statuses.includes("running") ? "running" : statuses.includes("failed") ? "failed" : statuses.includes("cancelled") ? "cancelled" : "completed";
   return {
@@ -150,6 +149,7 @@ function modelRunBatchSummary(batch: ModelRunBatch) {
 }
 
 function ModelRunCard({ run }: { run: any }) {
+  const [expanded, setExpanded] = useState(false);
   return (
     <article className="model-run-card">
       <header><div><strong>{taskLabels[run.role] ?? "其他任务"}</strong><span>{run.model_name ?? run.adapter_id}{run.transport && run.transport !== "unknown" ? ` · ${run.transport}` : ""}</span></div><em className={`run-status ${run.status ?? "completed"}`}>{statusLabels[run.status ?? "completed"] ?? "未知状态"}</em></header>
@@ -160,20 +160,23 @@ function ModelRunCard({ run }: { run: any }) {
         <div><dt>思考</dt><dd>{formatTokens(run.reasoning_tokens)}</dd></div>
         <div><dt>搜索</dt><dd>{formatTokens(run.search_calls)} 次</dd></div>
         <div><dt>费用</dt><dd>{formatCost(run.estimated_cost_cny)}</dd></div>
-        <div><dt>首字延迟</dt><dd>{run.first_token_ms == null ? "—" : `${run.first_token_ms} 毫秒`}</dd></div>
+        <div><dt>用户首字</dt><dd>{run.first_delta_ms == null ? "—" : `${run.first_delta_ms} 毫秒`}</dd></div>
+        <div><dt>供应商首词元</dt><dd>{run.first_token_ms == null ? "—" : `${run.first_token_ms} 毫秒`}</dd></div>
         <div><dt>总耗时</dt><dd>{formatTokens(run.duration_ms)} 毫秒</dd></div>
       </dl>
       <footer><span>{new Date(run.created_at).toLocaleString("zh-CN")}</span><span>{run.thinking ? "已开启思考" : "未开启思考"}{run.retries ? ` · 重试 ${run.retries} 次` : ""}</span></footer>
-      <details><summary>查看原始调用记录</summary><pre>{JSON.stringify(run, null, 2)}</pre></details>
+      {run.usage_reported === false ? <p>供应商未完整返回用量；费用为估算，不代表实际用量为零。</p> : null}
+      <details onToggle={(event) => setExpanded(event.currentTarget.open)}><summary>查看原始调用记录</summary>{expanded ? <pre>{JSON.stringify(run, null, 2)}</pre> : null}</details>
     </article>
   );
 }
 
 function ModelRunBatchCard({ batch }: { batch: ModelRunBatch }) {
+  const [expanded, setExpanded] = useState(false);
   const summary = modelRunBatchSummary(batch);
   const identifier = batch.conversationId ?? batch.traceId;
   return (
-    <details className={styles.modelRunBatch}>
+    <details className={styles.modelRunBatch} onToggle={(event) => setExpanded(event.currentTarget.open)}>
       <summary className={styles.modelRunBatchSummary} title={identifier}>
         <span className={styles.batchHeading}>
           <span>
@@ -191,9 +194,9 @@ function ModelRunBatchCard({ batch }: { batch: ModelRunBatch }) {
         </span>
         <span className={styles.expandHint}><span>展开明细</span><ChevronDown aria-hidden="true" size={15} /></span>
       </summary>
-      <div className={styles.batchRuns}>
+      {expanded ? <div className={styles.batchRuns}>
         {batch.runs.map((run) => <ModelRunCard key={run.id} run={run} />)}
-      </div>
+      </div> : null}
     </details>
   );
 }
@@ -227,6 +230,8 @@ export function DeveloperPanel({ onClose }: { onClose: () => void }) {
   const [data, setData] = useState<DeveloperData | null>(null);
   const [costData, setCostData] = useState<ModelCostData | null>(null);
   const [costError, setCostError] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const loadSequenceRef = useRef(0);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [restoreTarget, setRestoreTarget] = useState<string | null>(null);
   const [restoreBusy, setRestoreBusy] = useState(false);
@@ -235,20 +240,24 @@ export function DeveloperPanel({ onClose }: { onClose: () => void }) {
   const [labRunning, setLabRunning] = useState(false);
 
   async function load() {
-    const [dataResponse, costResponse] = await Promise.all([
-      fetch("/api/dev/data", { cache: "no-store" }),
-      fetch("/api/dev/model-costs", { cache: "no-store" }),
-    ]);
-    if (dataResponse.ok) setData(await dataResponse.json());
-    if (costResponse.ok) {
-      setCostData(await costResponse.json());
-      setCostError("");
-    } else {
-      const payload = await costResponse.json().catch(() => null);
-      setCostError(payload?.error ?? "模型费用记录暂时无法读取，请稍后重试。");
+    const sequence = ++loadSequenceRef.current;
+    const costs = tab === "costs";
+    if (!costs) setData(null);
+    setLoadError("");
+    try {
+      const response = await fetch(costs ? "/api/dev/model-costs" : `/api/dev/data?section=${tab}`, { cache: "no-store" });
+      const payload = await response.json();
+      if (sequence !== loadSequenceRef.current) return;
+      if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : "运行记录暂时无法读取，请稍后重试。");
+      if (costs) { setCostData(payload); setCostError(""); }
+      else setData({ traces: [], memories: [], profiles: [], skills: [], mcpCalls: [], modelRuns: [], foundationSkills: [], competition: { runs: [], risks: [], withdrawals: [], conversations: [] }, ...payload });
+    } catch (error) {
+      if (sequence !== loadSequenceRef.current) return;
+      const message = error instanceof Error ? error.message : "运行记录暂时无法读取，请稍后重试。";
+      if (costs) setCostError(message); else setLoadError(message);
     }
   }
-  useEffect(() => { void load(); }, []);
+  useEffect(() => { void load(); return () => { ++loadSequenceRef.current; }; }, [tab]);
 
   async function runLab() {
     setLabRunning(true);
@@ -334,7 +343,8 @@ export function DeveloperPanel({ onClose }: { onClose: () => void }) {
         <button className={tab === "costs" ? "active" : ""} onClick={() => setTab("costs")}><Coins size={17} />模型与费用</button>
       </nav>
       <main className="developer-content">
-        {!data ? <div className="loading-state">正在读取运行证据…</div> : null}
+        {loadError && tab !== "costs" ? <div className="dev-error" role="alert">{loadError}</div> : null}
+        {!data && !loadError && tab !== "costs" ? <div className="loading-state">正在读取运行证据…</div> : null}
         {data && tab === "trace" ? (
           <section>
             <div className="dev-section-heading"><div><h1>每一次回答是怎么产生的</h1><p>先看阶段、耗时与版本；需要时再展开完整上下文和模型输出。</p></div><span>{data.traces.length} 个事件</span></div>

@@ -63,7 +63,9 @@ export function deriveUnderstandingComponents(input: {
   // Breadth is useful immediately, but depth must be earned across independent
   // conversations. More facts from one conversation therefore have a limited effect.
   const evidenceDepth = 0.43 + 0.19 * volumeMaturity + 0.38 * sessionMaturity;
-  const coverage = clamp(weightedBreadth * evidenceDepth);
+  // Concentrating model weights on the first known dimensions must not make a
+  // single observation look mature. Independent conversations lift this ceiling.
+  const coverage = clamp(Math.min(weightedBreadth * evidenceDepth, 0.25 + 0.75 * sessionMaturity));
 
   const representedCategories = byCategory.size;
   const corroborationMaturity = saturate(

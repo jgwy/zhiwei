@@ -24,9 +24,10 @@ export function compileContext(input: {
   sessionSummary: string | null;
   messages: ChatMessage[];
   maxInputTokens: number;
+  memoryLimit?: number;
 }): CompiledContext {
   const recentMessages = input.messages.slice(-12);
-  const memories = input.memories.slice(0, 8);
+  const memories = input.memories.slice(0, input.memoryLimit ?? 8);
   let context: CompiledContext = {
     foundationInstructions: input.foundationInstructions,
     personalSkill: input.personalSkill,
@@ -58,10 +59,10 @@ export function compileContext(input: {
     context.truncated = true;
     context.estimatedTokens = roughTokens(context);
   }
+  if (context.estimatedTokens > input.maxInputTokens) throw new Error("context_budget_exceeded");
   return context;
 }
 
 function roughTokens(value: unknown): number {
   return Math.ceil(JSON.stringify(value).length / 2.4);
 }
-

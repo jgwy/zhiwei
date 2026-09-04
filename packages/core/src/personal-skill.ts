@@ -1,4 +1,4 @@
-import { PersonalSkillSchema, type PersonalSkill } from "./types";
+import { MemoryCategorySchema, PersonalSkillSchema, type PersonalSkill } from "./types";
 
 export const defaultPersonalSkill: PersonalSkill = PersonalSkillSchema.parse({
   expression: {
@@ -33,18 +33,20 @@ export function normalizeDimensionWeights(
   weights: Record<string, number>,
 ): Record<string, number> {
   const entries = Object.entries(weights)
-    .filter(([, value]) => Number.isFinite(value) && value > 0)
-    .map(([key, value]) => [key, Math.min(0.35, Math.max(0.04, value))] as const);
+    .filter(([key, value]) => MemoryCategorySchema.options.includes(key as any) && Number.isFinite(value) && value >= 0)
+    .map(([key, value]) => [key, value === 0 ? 0 : Math.min(0.35, Math.max(0.04, value))] as const);
   const total = entries.reduce((sum, [, value]) => sum + value, 0);
   if (!total) {
+    if (entries.length) return Object.fromEntries(entries.map(([key]) => [key, 1 / entries.length]));
     return {
-      basic: 0.12,
-      goal: 0.18,
-      interest: 0.12,
-      expression: 0.16,
-      emotion: 0.12,
-      experience: 0.12,
-      challenge: 0.18,
+      basic: 0.125,
+      goal: 0.125,
+      interest: 0.125,
+      expression: 0.125,
+      emotion: 0.125,
+      experience: 0.125,
+      challenge: 0.125,
+      boundary: 0.125,
     };
   }
   return Object.fromEntries(entries.map(([key, value]) => [key, value / total]));

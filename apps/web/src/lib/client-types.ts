@@ -6,15 +6,18 @@ import type {
   QuestionDefinition,
 } from "@zhiwei/core/client";
 
-export type ConversationView = {
+export type ConversationMeta = {
   id: string;
   title: string;
   titleSource: "default" | "model" | "manual";
   titleLocked: boolean;
   createdAt: string;
   updatedAt: string;
-  messages: ChatMessage[];
+  messageCount: number;
 };
+
+export type MessagePage = { messages: ChatMessage[]; hasMore: boolean; nextCursor: string | null };
+export type ConversationView = ConversationMeta & { messages: ChatMessage[] };
 
 export type BootstrapData = {
   user: {
@@ -22,7 +25,9 @@ export type BootstrapData = {
     onboarding_complete: boolean;
     settings: Record<string, boolean>;
   };
-  conversations: ConversationView[];
+  conversations: ConversationMeta[];
+  activeConversationId: string | null;
+  messagePage: MessagePage;
   profile: ProfileSnapshot | null;
   memories: MemoryRecord[];
   mood: Array<{ day: string; score: number; summary: string }>;

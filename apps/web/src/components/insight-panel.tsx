@@ -1,13 +1,17 @@
 "use client";
 
-import { LineChart, Line, ResponsiveContainer, YAxis, Tooltip } from "recharts";
+import dynamic from "next/dynamic";
 import { BookOpenText, ChevronDown, ListTree, MessageSquareText, Undo2, X } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import type { BootstrapData } from "@/lib/client-types";
 import { categoryLabel } from "@zhiwei/core/client";
 import { resolveLongTermSummary, selectUserMemories, type ProfileView, type UserMemoryView } from "@/lib/memory-view";
 
-export function InsightPanel({
+const MoodChart = dynamic(() => import("./mood-chart").then((module) => module.MoodChart), {
+  loading: () => <div style={{ height: 118 }} role="status" aria-label="正在加载心情曲线" />,
+});
+
+export const InsightPanel = memo(function InsightPanel({
   data,
   onMemoryCorrect,
   onWithdraw,
@@ -24,7 +28,7 @@ export function InsightPanel({
   const { longTerm, allRecent } = selectUserMemories(data.memories as UserMemoryView[]);
   const longTermSummary = resolveLongTermSummary(profileView);
   const profileUnsynced = longTermSummary.state !== "ready";
-  const scoreReasons = (profileView?.scoreChangeReasons ?? profileView?.score_change_reasons ?? []).map((reason) => typeof reason === "string" ? reason : reason.message).filter(Boolean);
+  const scoreReasons = (profileView?.scoreChangeReasons ?? []).map((reason) => reason.message).filter(Boolean);
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [managerOpen, setManagerOpen] = useState(false);
   const [showAllRecent, setShowAllRecent] = useState(false);
@@ -108,16 +112,7 @@ export function InsightPanel({
         <div className="section-title"><h3>最近的状态</h3><span>{data.mood.length ? `${data.mood.length} 天` : "还没有记录"}</span></div>
         <div className="mood-chart" aria-label="最近心情曲线">
           {data.mood.length ? (
-            <ResponsiveContainer width="100%" height={118}>
-              <LineChart data={data.mood} margin={{ top: 14, right: 8, bottom: 4, left: 8 }}>
-                <YAxis domain={[-5, 5]} hide />
-                <Tooltip
-                  contentStyle={{ borderRadius: 12, border: "1px solid #e8e8e8", boxShadow: "0 10px 30px rgba(0,0,0,.08)", fontSize: 12 }}
-                  labelFormatter={(value) => new Date(String(value ?? "")).toLocaleDateString("zh-CN", { month: "short", day: "numeric" })}
-                />
-                <Line name="心情值" type="monotone" dataKey="score" stroke="#222" strokeWidth={2.2} dot={{ r: 3, fill: "white", strokeWidth: 2 }} activeDot={{ r: 4 }} />
-              </LineChart>
-            </ResponsiveContainer>
+            <MoodChart mood={data.mood} />
           ) : <div className="empty-chart"><span>—</span><p>聊到明确感受时，曲线会慢慢出现。</p></div>}
         </div>
       </section>
@@ -180,7 +175,7 @@ export function InsightPanel({
       ) : null}
     </aside>
   );
-}
+});
 
 function MemoryDialog({ id, title, onClose, children }: { id: string; title: string; onClose: () => void; children: ReactNode }) {
   const dialogRef = useRef<HTMLDialogElement | null>(null);
@@ -200,8 +195,9 @@ function MemoryDialog({ id, title, onClose, children }: { id: string; title: str
   );
 }
 
+const memoryDateFormatter = new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric" });
 function formatMemoryDate(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "近期";
-  return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric" }).format(date);
+  return memoryDateFormatter.format(date);
 }

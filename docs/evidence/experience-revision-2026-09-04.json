@@ -1,0 +1,80 @@
+{
+  "date": "2026-09-04",
+  "baselineCommit": "8001082af5fdd857ac6ef2168665aeacf275fd3e",
+  "implementationCommit": "62dd161",
+  "environment": "macOS, OrbStack, isolated PostgreSQL test database, production containers",
+  "freeVerification": {
+    "typecheck": "passed",
+    "unitAndContractTests": 174,
+    "postgresIntegrationTests": 16,
+    "foundationSkillsValidated": 11,
+    "unusedLocalsAndParameters": "passed for core, gateway, worker, web and both MCP services",
+    "productionBuild": "passed",
+    "browserInteractionTests": { "passed": 15, "engines": ["Chromium desktop", "WebKit desktop", "Chromium mobile"] },
+    "databaseBackedBrowserTests": { "passed": 4, "skipped": 2, "skipReason": "Destructive data-removal flow runs once on Chromium desktop." },
+    "visualInspection": ["desktop synthetic conversation", "mobile onboarding-to-chat", "mobile insights drawer"]
+  },
+  "offlineHarness": {
+    "provider": "scripted",
+    "memoryPrecision": 1,
+    "memoryRecall": 0.818,
+    "memoryF05": 0.957,
+    "retrievalRecallAt8": 1,
+    "contextOverflowCount": 0,
+    "openingRepeatRate": 0.727,
+    "averageReplyLength": 44.818,
+    "diagnosticsOnly": true
+  },
+  "realModelVerification": {
+    "distinctSyntheticScenarios": 10,
+    "returnedUsageEstimateCny": 0.312999,
+    "unreportedUsageReserveCny": 1,
+    "conservativeBudgetUsedCny": 1.312999,
+    "authorizedBudgetCny": 5,
+    "costNotice": "Usage-based estimate, not the provider bill. Four attempts without returned usage reserve 0.25 CNY each.",
+    "findingsFixed": [
+      "Explicit zero profile weights must remain zero through schema validation.",
+      "Native multimodal web search requires streaming SSE with incremental output.",
+      "Character dialogue should speak directly instead of emitting stage directions.",
+      "Pending memory operations must not be described as completed before the first visible prefix.",
+      "Concentrated profile weights must not inflate first-meeting familiarity."
+    ],
+    "targetedResults": {
+      "fourScenarioSearchAndDialogueRerun": "passed",
+      "finalVagueToSpecific": "21 checks passed; initial and final score 10",
+      "finalWithdrawRelearn": "16 of 17 original checks passed; the remaining check incorrectly required two chunks for a sub-32-character acknowledgement",
+      "correctedDeliveryAssertion": "9 frozen real turns passed without additional paid calls",
+      "withdrawalCausalityAndRelearning": "passed"
+    }
+  },
+  "browserPerformance": {
+    "fixture": { "conversations": 50, "messagesPerConversation": 80, "viewport": "1280x800", "runs": 3 },
+    "method": "Identical synthetic content, all API requests intercepted, fresh Chromium context and disabled HTTP cache, heap measured after explicit GC; medians reported.",
+    "baseline": {
+      "bootstrapBytes": 1667441,
+      "apiBytesIncludingPrefetch": 1667472,
+      "heapUsedBytes": 7001952,
+      "initialJavaScriptTransferBytes": 297935,
+      "firstComposerMs": 216.8,
+      "renderedElements": 1781
+    },
+    "current": {
+      "bootstrapBytes": 43135,
+      "apiBytesIncludingPrefetch": 109404,
+      "heapUsedBytes": 5522836,
+      "initialJavaScriptTransferBytes": 257679,
+      "firstComposerMs": 156.4,
+      "renderedElements": 1626
+    },
+    "pageErrors": 0,
+    "unexpectedApiRequests": 0,
+    "timingInterpretation": "Local navigation to a rendered composer, not model first-token latency or an Internet benchmark."
+  },
+  "images": {
+    "backendBaselineBytes": 497103086,
+    "backendCurrentBytes": 84213752,
+    "webCurrentBytes": 103023412
+  },
+  "notMeasuredComparably": ["React render counts", "idle SQL statement counts", "backend cold-start duration", "container CPU and RSS under an identical synthetic workload"],
+  "ciWorkflowPresent": false
+}
