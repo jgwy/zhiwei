@@ -581,7 +581,7 @@ export function ZhiweiApp() {
           {active?.hasMore ? <button className="load-older-messages" onClick={() => void loadOlderMessages()} disabled={loadingHistory}>{loadingHistory ? "正在读取更早的消息…" : "查看更早的消息"}</button> : null}
           {data.returnNote ? <button className="return-note" onClick={() => setInput(data.returnNote!.content)}><span>上次说到这里</span><p>{data.returnNote.content}</p><ChevronRight size={17} /></button> : null}
           {!active?.messages.length && !loadingConversation ? (
-            <div className="empty-conversation"><div className="empty-word">知微</div><h1>现在，你想从哪里聊起？</h1><p>可以是一件具体的事，也可以只是此刻说不清楚的心情。</p><div>{["最近脑子有点乱", "我有件事拿不定主意", "只是想找个人说说话"].map((prompt) => <button key={prompt} onClick={() => setInput(prompt)}>{prompt}</button>)}</div></div>
+            <div className="empty-conversation"><div className="empty-word">知微</div><h1>现在，你想从哪里聊起？</h1><p>可以是一件具体的事，也可以只是此刻说不清楚的心情。</p><div>{["今天我心情有一点坏，但是说不出来到底为什么", "我有件事拿不定主意，你可以帮我想想", "想找你聊聊生活的趣事"].map((prompt) => <button key={prompt} onClick={() => setInput(prompt)}>{prompt}</button>)}</div></div>
           ) : (
             <div className="messages">
               {(active?.messages ?? []).map((message, index, messages) => (
