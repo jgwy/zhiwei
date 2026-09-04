@@ -4,6 +4,9 @@ const cookieName = "zhiwei_uid";
 
 export async function proxy(request: NextRequest) {
   const response = NextResponse.next();
+  // This endpoint provisions its identity inside POST so one initial request
+  // returns the same cookie identity used to persist its conversation.
+  if (request.nextUrl.pathname === "/api/test/chat") return response;
   const current = request.cookies.get(cookieName)?.value;
   if (!current || !(await valid(current))) {
     const id = crypto.randomUUID();
@@ -50,4 +53,3 @@ function base64url(bytes: Uint8Array) {
   bytes.forEach((byte) => (binary += String.fromCharCode(byte)));
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
-
