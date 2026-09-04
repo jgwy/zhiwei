@@ -2497,7 +2497,7 @@ function explainScoreChange(
 ): ScoreChangeReason[] {
   if (!previous) {
     return [
-      { component: "total", delta: score, message: "形成了第一轮长期认识。" },
+      { component: "total", delta: score, message: "形成了第一轮长期印象。" },
     ];
   }
   const labels: Record<keyof ProfileSnapshot["understanding"], string> = {

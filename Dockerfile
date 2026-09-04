@@ -48,11 +48,3 @@ COPY --from=builder /app/apps/web/.next/static ./apps/web/.next/static
 COPY --from=builder /app/apps/web/public ./apps/web/public
 EXPOSE 3000
 CMD ["node", "apps/web/server.js"]
-
-# Development image: source code is mounted by docker-compose.dev.yml and
-# Next.js runs in dev mode so changes are picked up without rebuilding.
-FROM deps AS web-dev
-WORKDIR /app
-ENV NODE_ENV=development NEXT_TELEMETRY_DISABLED=1 PORT=3000 HOSTNAME=0.0.0.0
-EXPOSE 3000
-CMD ["npm", "run", "dev", "--workspace", "@zhiwei/web", "--", "--hostname", "0.0.0.0"]

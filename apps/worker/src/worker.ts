@@ -627,7 +627,7 @@ async function handleProfileSynthesis(job: any) {
       score: committed.profile?.score,
     },
   });
-  const receipt = "知微重新整理了对你的长期认识。";
+  const receipt = "知微重新整理了对你的总体印象。";
   const assistantMessageId =
     payload.sourceMessageId && payload.conversationId
       ? await attachMemoryReceipt({
