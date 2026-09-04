@@ -120,7 +120,7 @@ export async function GET(request: Request) {
       modelModeLabel:
         (process.env.MODEL_PROVIDER ?? "scripted") === "scripted"
           ? "仿真模式"
-          : "千问模式",
+          : "千问服务正常",
       modelCapabilities: gateway.capabilities,
       foundationSkills: isDeveloperMode()
         ? foundationSkills.map(({ content: _content, ...skill }) => skill)
