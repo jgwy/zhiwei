@@ -39,6 +39,7 @@ import { Onboarding } from "@/components/onboarding";
 import { InsightPanel } from "@/components/insight-panel";
 import { SettingsPanel } from "@/components/settings-panel";
 import { useToast } from "@/components/use-toast";
+import { WaitingReply } from "@/components/waiting-reply";
 
 const DeveloperPanel = dynamic(() => import("@/components/developer-panel").then((module) => module.DeveloperPanel), {
   loading: () => <div className="app-loading">正在打开开发者模式…</div>,
@@ -421,7 +422,7 @@ export function ZhiweiApp() {
           textBuffer.push(event.delta);
         }
         if (event.type === "phase") {
-          turn.assistant = { ...turn.assistant, metadata: { ...turn.assistant.metadata, phase: event.message } };
+          turn.assistant = { ...turn.assistant, metadata: { ...turn.assistant.metadata, phase: event.message, phaseStage: event.stage, phaseStartedAt: event.startedAt } };
           updateConversationMessages(conversationId, (messages) => messages.map((message) => message.id === turn.assistant.id ? turn.assistant : message));
         }
         if (event.type === "message.completed") {
@@ -791,7 +792,7 @@ const Message = memo(function Message({ message, receipt, onFeedback, onRetry, o
   const assistant = message.role === "assistant";
   return (
     <article className={assistant ? "message assistant" : "message user"}>
-      <div className="message-content">{message.content || (message.metadata?.streaming ? <WaitingReply phase={typeof message.metadata.phase === "string" ? message.metadata.phase : undefined} /> : null)}</div>
+      <div className="message-content">{message.content || (message.metadata?.streaming ? <WaitingReply phase={typeof message.metadata.phase === "string" ? message.metadata.phase : undefined} stage={typeof message.metadata.phaseStage === "string" ? message.metadata.phaseStage : undefined} startedAt={typeof message.metadata.phaseStartedAt === "string" ? message.metadata.phaseStartedAt : undefined} /> : null)}</div>
       {message.metadata?.status === "interrupted" ? <div className="message-status">回复中断了，可以重试。</div> : null}
       {message.metadata?.status === "stopped" ? <div className="message-status">已停止</div> : null}
       {Array.isArray(message.metadata?.sources) && message.metadata.sources.length ? <details className="message-sources"><summary>查看事实来源（{message.metadata.sources.length}）</summary>{message.metadata.sources.map((source: any) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer"><span>{source.title}</span>{source.siteName ? <small>{source.siteName}</small> : null}</a>)}</details> : null}
@@ -807,16 +808,6 @@ const Message = memo(function Message({ message, receipt, onFeedback, onRetry, o
     </article>
   );
 });
-
-function WaitingReply({ phase }: { phase?: string }) {
-  const [stage, setStage] = useState(0);
-  useEffect(() => {
-    const preparing = setTimeout(() => setStage(1), 6_000);
-    const longer = setTimeout(() => setStage(2), 15_000);
-    return () => { clearTimeout(preparing); clearTimeout(longer); };
-  }, []);
-  return <span className="waiting-reply" role="status"><span className="typing" aria-hidden="true"><i /><i /><i /></span><span>{stage === 2 ? "这次需要多一点时间，你可以继续等，也可以停止回复。" : phase ?? (stage === 1 ? "知微正在整理回应，再等一小会儿…" : "")}</span></span>;
-}
 
 function SparkleDot() { return <span className="sparkle-dot" />; }
 

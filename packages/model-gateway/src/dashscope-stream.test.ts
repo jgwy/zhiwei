@@ -101,6 +101,35 @@ describe("原生检索与事实整理元数据", () => {
     expect(error.modelMeta.sources).toHaveLength(1);
   });
 
+  it("真实搜索结束后先关闭计时，再开始结构化事实整理", async () => {
+    const phases: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      expect(phases).toEqual(["started"]);
+      return sse(nativeFrames());
+    }));
+    mock.completion.mockImplementation(async () => {
+      expect(phases).toEqual(["started", "completed"]);
+      return structured();
+    });
+    await new AliyunBailianGateway().buildFactBrief(input, {
+      onSearch(event) {
+        expect(Number.isNaN(Date.parse(event.startedAt))).toBe(false);
+        phases.push(event.status);
+      },
+    });
+    expect(phases).toEqual(["started", "completed"]);
+  });
+
+  it("搜索失败也关闭计时，不继续生成事实包", async () => {
+    const phases: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ code: "ServiceUnavailable" }, { status: 503 })));
+    await expect(new AliyunBailianGateway().buildFactBrief(input, {
+      onSearch: (event) => { phases.push(event.status); },
+    })).rejects.toThrow();
+    expect(phases).toEqual(["started", "completed"]);
+    expect(mock.completion).not.toHaveBeenCalled();
+  });
+
   it("native失败也提供unknown usage和安全错误元数据", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ code: "InvalidParameter", request_id: "request-invalid", message: "unit-test-key 不应写入记录" }, { status: 400 })));
     const error = await new AliyunBailianGateway().buildFactBrief(input).then(() => { throw new Error("expected native failure"); }, error => error as Error & { modelMeta: ModelCallMeta });

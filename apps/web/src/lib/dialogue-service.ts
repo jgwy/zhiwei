@@ -19,7 +19,7 @@ import {
   type StreamEvent,
   type TurnAccepted,
 } from "@zhiwei/core";
-import { getModelGateway } from "@zhiwei/model-gateway";
+import { bindFactSources, getModelGateway } from "@zhiwei/model-gateway";
 import { composeFoundationInstructions } from "@zhiwei/skills";
 
 const encoder = new TextEncoder();
@@ -40,13 +40,14 @@ export function streamAcceptedTurn(
     async start(controller) {
       let output = "";
       let sources: ModelSource[] = [];
+      const usedMemoryVersionIds = new Set<string>();
       let gateway: ReturnType<typeof getModelGateway> | undefined;
       const send = (event: StreamEvent) =>
         controller.enqueue(
           encoder.encode(`data: ${JSON.stringify(event)}\n\n`),
         );
-      const phase = (stage: string, message: string) =>
-        send({ type: "phase", stage, message });
+      const phase = (stage: string, message: string, startedAt?: string) =>
+        send({ type: "phase", stage, message, ...(startedAt ? { startedAt } : {}) });
       const trace = (stage: string, payload: Record<string, unknown>) =>
         recordTrace({ userId, traceId, stage, payload }).catch(() => undefined);
       const record = (meta: ModelCallMeta) =>
@@ -143,12 +144,12 @@ export function streamAcceptedTurn(
         ]);
         const compiled = compileContext({
           foundationInstructions: composeFoundationInstructions([
-            "zhiwei-persona",
-            "dialogue-orchestrator",
-            "fact-and-tool-use",
-            "scientific-answering",
             "risk-and-boundary",
             "privacy-and-withdrawal",
+            "fact-and-tool-use",
+            "scientific-answering",
+            "zhiwei-persona",
+            "dialogue-orchestrator",
           ]),
           personalSkill: skillResult.skill.content,
           profile: profileResult.profile,
@@ -161,16 +162,22 @@ export function streamAcceptedTurn(
           ),
         });
         let factBrief: FactBriefOutput | null = null;
+        let factVerification: "not-requested" | "available" | "unavailable" = "not-requested";
         if (route && (route.needsSearch || route.scientific)) {
+          factVerification = "unavailable";
           phase("verification", "正在核对相关事实与来源…");
           try {
             const brief = await gateway.buildFactBrief(
               { content: userMessage.content, route },
-              { signal },
+              { signal, onSearch: (event) => {
+                if (event.status === "started") phase("search", "正在查找资料", event.startedAt);
+                else phase("verification", "正在核对资料中的具体说法…");
+              } },
             );
             await record(brief.meta);
-            factBrief = brief.data;
-            sources = brief.meta.sources;
+            const bound = bindFactSources(brief.data, brief.meta.sources);
+            factBrief = bound.brief;
+            sources = bound.sources;
             if (route.scientific && factBrief.claims.length) {
               try {
                 const audit = await callScienceMcp<any>({
@@ -224,6 +231,17 @@ export function streamAcceptedTurn(
                 });
               }
             }
+            const audited = bindFactSources(factBrief, sources);
+            factBrief = audited.brief;
+            sources = audited.sources;
+            factVerification = factBrief.claims.some((claim) => claim.status === "supported" && claim.sourceIndices.length > 0)
+              ? "available" : "unavailable";
+            await trace("fact.sources_bound", {
+              sources,
+              claims: factBrief.claims,
+              downgradedClaims: bound.downgradedClaims + audited.downgradedClaims,
+              verificationStatus: factVerification,
+            });
           } catch (error) {
             await failedCall(error);
             if (signal.aborted) throw error;
@@ -240,6 +258,7 @@ export function streamAcceptedTurn(
           riskAssessment: turn.riskAssessment,
           responsePlan,
           factBrief,
+          factVerification,
           skillVersion: skillResult.skill.version,
         });
         phase("generation", "正在回应你…");
@@ -255,10 +274,14 @@ export function streamAcceptedTurn(
             context: compiled,
             riskAssessment: turn.riskAssessment,
             factBrief,
+            factVerification,
             scienceMode: route?.scientific ?? false,
             responsePlan,
           },
-          { signal },
+          { signal, onRequest: async (snapshot) => {
+            for (const versionId of snapshot.memoryVersionIds) usedMemoryVersionIds.add(versionId);
+            await trace("dialogue.request", { ...snapshot, personalSkillVersion: skillResult.skill.version });
+          } },
         )) {
           if (signal.aborted) throw signal.reason;
           if (event.type === "text.delta") {
@@ -305,7 +328,7 @@ export function streamAcceptedTurn(
           sources,
           status: "completed",
         });
-        const versionIds = compiled.memories.map((memory) => memory.versionId);
+        const versionIds = [...usedMemoryVersionIds];
         if (versionIds.length)
           await callMemoryMcp({
             tool: "memory_record_usage",

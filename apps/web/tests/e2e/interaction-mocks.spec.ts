@@ -3,7 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 const message = (id: string, role = "user", content = id) => ({ id, role, content, createdAt: "2026-09-04T00:00:00.000Z", metadata: { status: "completed" } });
 const conversation = (id: string) => ({ id, title: `对话 ${id}`, titleSource: "default", titleLocked: false, messageCount: 0, createdAt: "2026-09-04T00:00:00.000Z", updatedAt: "2026-09-04T00:00:00.000Z" });
 
-async function mockApp(page: Page, history = false, withMood = false) {
+async function mockApp(page: Page, history = false, withMood: boolean | "single" = false) {
   const requests: string[] = [];
   const messages = history ? Array.from({ length: 80 }, (_, index) => message(`recent-${index}`, index % 2 ? "assistant" : "user", `当前消息 ${index}：这是一段用来验证真实页面滚动位置的内容。`)) : [];
   await page.addInitScript(() => {
@@ -37,7 +37,7 @@ async function mockApp(page: Page, history = false, withMood = false) {
       user: { id: "mock-user", onboarding_complete: true, settings: {} },
       conversations: [conversation("one"), conversation("two"), conversation("three"), conversation("four")],
       activeConversationId: "one", messagePage: { messages, hasMore: history, nextCursor: history ? "before-recent" : null },
-      profile: null, memories: [], mood: withMood ? [{ day: "2026-09-03", score: -1, summary: "准备课程展示，有一点紧张。" }, { day: "2026-09-04", score: 2, summary: "完成展示后，心情轻松了些。" }] : [], skill: null, onboarding: { complete: true, answeredCount: 3, canFinish: true, question: null },
+      profile: null, memories: [], mood: withMood ? [{ day: "2026-09-03", score: -1, summary: "准备课程展示，有一点紧张。" }, { day: "2026-09-04", score: 2, summary: "完成展示后，心情轻松了些。" }].slice(0, withMood === "single" ? 1 : 2) : [], skill: null, onboarding: { complete: true, answeredCount: 3, canFinish: true, question: null },
       returnNote: null, developerModeAvailable: true, adapter: "scripted", modelModeLabel: "测试模式", modelCapabilities: {},
     } : url.pathname === "/api/memories" ? { memories: [] }
       : url.pathname === "/api/profile" ? { profile: null }
@@ -95,6 +95,58 @@ test("有心情数据时按需加载原样曲线与尺寸", async ({ page }, tes
   await expect(chart.locator(".recharts-line-curve")).toHaveCount(1);
   expect(await chart.evaluate((element) => element.getBoundingClientRect().height)).toBe(118);
   await expect(page.locator(".empty-chart")).toHaveCount(0);
+  const dots = chart.locator(".recharts-line-dot");
+  await dots.nth(0).hover();
+  await expect(chart.locator(".recharts-tooltip-label")).toHaveText("9月3日");
+  await dots.nth(1).hover();
+  await expect(chart.locator(".recharts-tooltip-label")).toHaveText("9月4日");
+});
+
+test("单点心情悬停使用真实日期，初始和刷新查询携带设备时区", async ({ page }, testInfo) => {
+  const requests = await mockApp(page, false, "single");
+  if (testInfo.project.name.includes("mobile")) await page.getByRole("button", { name: "打开或收起洞察栏" }).click();
+  const chart = page.locator(".mood-chart .recharts-responsive-container");
+  await chart.locator(".recharts-line-dot").hover();
+  await expect(chart.locator(".recharts-tooltip-label")).toHaveText("9月3日");
+  const timeZone = await page.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
+  expect(new URL(requests.find((path) => path.startsWith("/api/bootstrap"))!, "http://test").searchParams.get("timeZone")).toBe(timeZone);
+  await page.evaluate(() => (window as any).testActivity.dispatchEvent(new MessageEvent("mood.updated", { data: JSON.stringify({ payload: {} }) })));
+  await expect.poll(() => requests.some((path) => path.startsWith("/api/mood?"))).toBe(true);
+  expect(new URL(requests.find((path) => path.startsWith("/api/mood?"))!, "http://test").searchParams.get("timeZone")).toBe(timeZone);
+});
+
+test("搜索计时沿用真实开始时间，阶段切换和停止后清除，旧请求不恢复计时", async ({ page }) => {
+  await mockApp(page);
+  await page.clock.install();
+  const composer = page.getByLabel("消息内容");
+  await composer.fill("请核验这条消息");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  const startedAt = await page.evaluate(() => new Date(Date.now() - 4_000).toISOString());
+  await push(page, 0, { type: "phase", stage: "search", message: "正在查找资料", startedAt });
+  await expect(page.getByText("正在查找资料 · 已用 4 秒", { exact: true })).toBeVisible();
+  await page.clock.fastForward(2_000);
+  await expect(page.getByText("正在查找资料 · 已用 6 秒", { exact: true })).toBeVisible();
+  await push(page, 0, { type: "phase", stage: "compose", message: "正在根据资料整理回应" });
+  await expect(page.getByText("正在根据资料整理回应", { exact: true })).toBeVisible();
+  await expect(page.getByText(/正在查找资料 · 已用/)).toHaveCount(0);
+  await push(page, 0, { type: "text.delta", delta: "这是根据资料整理的回应。" });
+  await push(page, 0, { type: "message.completed", messageId: "server-assistant-0", status: "completed" });
+  await expect(page.locator(".waiting-reply")).toHaveCount(0);
+  await composer.fill("再核验另一个问题");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await push(page, 0, { type: "phase", stage: "search", message: "旧请求不应影响当前状态", startedAt });
+  await expect(page.getByText(/正在查找资料 · 已用/)).toHaveCount(0);
+  await push(page, 1, { type: "phase", stage: "search", message: "正在查找资料", startedAt });
+  await expect(page.getByText(/正在查找资料 · 已用/)).toBeVisible();
+  await page.getByRole("button", { name: "停止回复" }).click();
+  await expect(page.locator(".waiting-reply")).toHaveCount(0);
+  await expect(page.getByText("已停止", { exact: true })).toBeVisible();
+  await composer.fill("最后一个核验问题");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await push(page, 2, { type: "phase", stage: "search", message: "正在查找资料", startedAt });
+  await push(page, 2, { type: "error", message: "这次查证没有完成，请重试。" });
+  await expect(page.locator(".waiting-reply")).toHaveCount(0);
+  await expect(page.getByText("回复中断了，可以重试。", { exact: true })).toBeVisible();
 });
 
 test("最新回复重试复用用户消息，空回复错误保留入口，停止保留正文", async ({ page }) => {

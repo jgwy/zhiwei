@@ -349,7 +349,7 @@ export const FactRoutingOutputSchema = z.object({
   depth: z.enum(["light", "moderate", "high"]).default("light"),
   physicalSymptom: z.boolean().default(false),
   query: z.string().max(300),
-  impact: z.enum(["ordinary", "high"]),
+  impact: z.enum(["ordinary", "high"]).describe("事实错误的现实后果，不是情绪浓度或准确性要求。ordinary用于歌曲、作品发行、文化常识和普通课程知识；high仅用于会影响健康、法律、财产或人身安全决策的事实。"),
   reason: z.string().min(1).max(240),
 });
 export type FactRoutingOutput = z.infer<typeof FactRoutingOutputSchema>;
@@ -500,7 +500,7 @@ export type QuestionDefinition = {
 
 export type StreamEvent =
   | { type: "message.started"; messageId: string; traceId: string; userMessage?: ChatMessage }
-  | { type: "phase"; stage: string; message: string }
+  | { type: "phase"; stage: string; message: string; startedAt?: string }
   | { type: "text.delta"; delta: string }
   | { type: "tool.started"; name: string }
   | { type: "tool.completed"; name: string }

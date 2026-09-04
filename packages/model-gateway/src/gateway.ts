@@ -51,6 +51,7 @@ import {
 } from "./lifecycle";
 import { inspectGeneratedText, StreamTextBuffer } from "./response-quality";
 import { readDashScopeStream, type DashScopeStreamState } from "./dashscope-stream";
+import { factRoutingInput } from "./fact-grounding";
 import { prepareDialogueRequest, requestSnapshot, type FactVerification, type ModelRequestSnapshot } from "./dialogue-prompt";
 export type { ModelRequestSnapshot, FactVerification } from "./dialogue-prompt";
 
@@ -68,6 +69,11 @@ export type FactBriefRequest = {
   route: FactRoutingOutput;
 };
 
+export type FactBriefOptions = {
+  signal?: AbortSignal;
+  onSearch?: (event: { status: "started" | "completed"; startedAt: string }) => void;
+};
+
 export interface ModelGateway {
   readonly id: string;
   readonly capabilities: ModelCapabilities;
@@ -82,7 +88,7 @@ export interface ModelGateway {
   generateReturnNote(input: { topic: string; profileSummary?: string }, options?: { signal?: AbortSignal }): Promise<StructuredResult<{ content: string }>>;
   evolvePersonalSkill(input: EvolutionInput, options?: { signal?: AbortSignal; deep?: boolean }): Promise<StructuredResult<PersonalSkill>>;
   routeFacts(content: string, options?: { signal?: AbortSignal; recentMessages?:Array<{role:string;content:string}> }): Promise<StructuredResult<FactRoutingOutput>>;
-  buildFactBrief(input: FactBriefRequest, options?: { signal?: AbortSignal }): Promise<StructuredResult<FactBriefOutput>>;
+  buildFactBrief(input: FactBriefRequest, options?: FactBriefOptions): Promise<StructuredResult<FactBriefOutput>>;
   embed(texts: string[], options?: { signal?: AbortSignal }): Promise<StructuredResult<number[][]>>;
   listModels(options?: { signal?: AbortSignal }): Promise<any[]>;
 }
@@ -437,12 +443,12 @@ export class AliyunBailianGateway implements ModelGateway {
 
   routeFacts(content: string, options?: { signal?: AbortSignal; recentMessages?:Array<{role:string;content:string}> }) {
     return this.structured("fact-routing", FactRoutingOutputSchema,
-      "同时完成事实与回复深度路由，不增加后续规划调用。判断消息是否需要实时联网查证，并识别是否属于科学解释。价格、新闻、法律、政策、人物职位、最新产品和具体科学事实倾向查证；纯情绪陪伴不查。scientific只在自然科学、工程、医学机制或科学传播问题中为true。depth表示用户此刻表达的情绪浓度与处境复杂度；physicalSymptom只在用户本人正描述身体疼痛、不适、睡眠或明显生理反应时为true，不把知识提问或他人经历算作本人症状。高情绪浓度，或身体不适与现实压力、关系、学业、工作等困扰并存时，responseMode必须为emotional-deep；其余普通陪伴为character。理由要说明判定依据，使用简体中文。",
-      options?.recentMessages ? JSON.stringify({recentMessages:options.recentMessages.slice(-6).map(message=>({role:message.role,content:message.content.slice(0,2000)})),currentMessage:content,instructions:"先判断这句话是在讲述自身经历、倾诉，还是请求外部事实。叙述退货受阻、课程压力、身体感受本身不要求联网；只有具体追问法规、外部知识、时效信息或建议确实依赖查证时才搜索。跟进问题中的代词与省略主题须根据前文还原，不加入前文未提的健康等话题。impact=high只用于健康、法律、财产等高影响决策，普通科学课程知识为ordinary，问题复杂或要求查证本身不等于高影响。"}) : content,
+      "同时完成事实与回复深度路由，不增加后续规划调用。先分别判断：needsSearch是是否需要查证；impact是事实错误的现实后果，不是准确性要求或情绪强度。歌曲、专辑、发行年份、人物作品背景及普通课程知识都用impact=ordinary；只有影响健康、法律、财产或人身安全决策的事实用high。用户说‘请核实、你确定吗’也不因此变成high。判断回答是否需要外部事实，并识别是否属于科学解释。作品、人物经历、创作背景、发行时间、价格、新闻、政策、人物职位和外部知识优先联网查证；仅提到这些对象的个人感受不等于事实提问，纯情绪陪伴不查。科学问题scientific为true，query还原用户要理解的具体问题；短追问从前文还原主题，不把之前助手的说法当证据。scientific只在自然科学、工程、医学机制或科学传播问题中为true。depth表示用户此刻表达的情绪浓度与处境复杂度；physicalSymptom只在用户本人正描述身体疼痛、不适、睡眠或明显生理反应时为true，不把知识提问或他人经历算作本人症状。高情绪浓度，或身体不适与现实压力、关系、学业、工作等困扰并存时，responseMode必须为emotional-deep；其余普通陪伴为character。理由要说明判定依据，使用简体中文。",
+      factRoutingInput(content, options?.recentMessages),
       { signal: options?.signal, temperature: 0.05 });
   }
 
-  async buildFactBrief(input: FactBriefRequest, options?: { signal?: AbortSignal }) {
+  async buildFactBrief(input: FactBriefRequest, options?: FactBriefOptions) {
     const started = Date.now();
     const strategy = input.route.scientific || input.route.impact === "high" ? "max" : "turbo";
     const thinking = input.route.impact === "high";
@@ -458,13 +464,16 @@ export class AliyunBailianGateway implements ModelGateway {
       finishReason, retries, sources, thinking, searchStrategy: strategy, attempts,
     });
     try {
-      const searched = await this.dashScopeSearch(input.route.query, strategy, thinking, options?.signal);
+      const searchStartedAt = new Date().toISOString();
+      options?.onSearch?.({ status: "started", startedAt: searchStartedAt });
+      const searched = await this.dashScopeSearch(input.route.query, strategy, thinking, options?.signal)
+        .finally(() => options?.onSearch?.({ status: "completed", startedAt: searchStartedAt }));
       sources = searched.sources;
       attempts.push(searched.attempt);
       usage = searched.attempt.usage;
       usageReported = searched.attempt.usageReported === true;
       const structured = await this.structured("fact-brief", FactBriefOutputSchema,
-        "把已完成的联网结果拆成原子事实简报。只有能由给定来源支持的主张才标记supported，并填写对应来源序号；无法支持就标记uncertain或human_review。不要写最终陪伴语气，使用简体中文。",
+        "围绕用户这次具体问题，把已完成的联网结果拆成必要的原子事实简报，通常一至三个主张足够。只保留直接回答问题所需的信息，不把搜索附带的创作史、生平或其他背景都扩充进来。同名作品先区分对象。只有能由给定来源支持的主张才标记supported，并填写对应来源序号；无法支持就标记uncertain或human_review。不要写最终陪伴语气，使用简体中文。",
         JSON.stringify({ originalQuestion: input.content, searchAnswer: searched.content, sources: sources.map((source, index) => ({ index: index + 1, ...source })) }),
         { signal: options?.signal, thinking: false, temperature: 0.05 });
       attempts.push(...structured.meta.attempts ?? []);

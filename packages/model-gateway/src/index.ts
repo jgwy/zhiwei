@@ -3,6 +3,7 @@ import type { ChatMessage, CompiledContext, MemoryCategory, PersonalSkill, RiskA
 export * from "./gateway";
 export * from "./lifecycle";
 export * from "./response-quality";
+export * from "./fact-grounding";
 
 export type DialogueInput = {
   userId: string;
